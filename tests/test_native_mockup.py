@@ -250,7 +250,7 @@ def test_cloner_draws_a_card_per_disk_it_found_not_three():
     assert "for (int i = 0; i < s->ndrawers; i++)" in entries and "for (int i = 0; i < s->nidisks; i++)" in entries
     assert "s->smart_pending" in entries and "out[i].port == s->smart_port" in entries
     cloner = body(src, "screen_cloner")
-    assert "n = cloner_entries(&a->st, entries);" in cloner
+    assert "int n = cloner_entries(s, entries);" in cloner   # 17/10: a row per entry (lcbay.c)
 
 
 def test_cloner_smart_answers_are_ordered_by_risk():
@@ -281,13 +281,12 @@ def test_cloner_explains_a_wave_lost_to_server_restart():
 def test_live_round_draws_a_bar_per_reported_disk():
     """The live grid drew max(drawer_count, nroom_drawers) bars -- a slot with
     no disk got a bar with the machine's percentage on it."""
-    live = code(body(_src("screens_room.c"), "room_live_grid_draw"))
+    # 17/10 ("גרסה ב׳"): the live round is a cage of rows per cloner (lcbay.c) --
+    # a row per present drawer the round writes, sorted by its drawer number
+    live = code(body(_src("screens_room.c"), "live_bays"))
     assert "m->drawer_count" not in live
-    # #1495: every present drawer, sorted by its drawer number (not by port)
-    assert "if (m->room_drawers[j].present)" in live and "room_drawer_after(found[k - 1], v)" in live
-    room = code(body(_src("screens_room.c"), "screen_room"))
-    assert "found += s->machines[i].room_drawers[j].present;" in room
-    assert "if (slots < s->machines[i].drawer_count) slots = s->machines[i].drawer_count;" not in room
+    assert "live_target(&m->room_drawers[j])" in live and "room_drawer_after(out[k - 1], v)" in live
+    assert "d->present" in code(body(_src("screens_room.c"), "live_target"))
 
 
 def _white_runs_mode(path: Path, top: int, bottom: int) -> int:
@@ -310,6 +309,21 @@ def _white_runs_mode(path: Path, top: int, bottom: int) -> int:
     return max(counts, key=counts.get) if counts else 0
 
 
+def _track_runs(path: Path) -> int:
+    """The 8px progress tracks down one column, top to bottom -- one per
+    target row (lcbay.c): the rows stack, they no longer sit side by side."""
+    w, h, ch, px = _png_rgb(path)
+    track = _theme_hex("track")
+    # a column near the start of the bars (they fill from the right, RTL)
+    x, runs, inside = int(w * 0.15), 0, False
+    for y in range(48, h - 36):
+        i = (y * w + x) * ch
+        on = all(abs(px[i + k] - track[k]) <= 3 for k in range(3))
+        runs += on and not inside
+        inside = on
+    return runs
+
+
 @GUI_BUILD
 def test_a_two_disk_cloner_shows_two_cards(tmp_path):
     binary = _build_gui(tmp_path)
@@ -319,7 +333,7 @@ def test_a_two_disk_cloner_shows_two_cards(tmp_path):
                      "drawer=2|sdb|waiting|0|0|\n"
                      "message=x|y\n", newline="\n")
     _png(binary, tmp_path / "two", state, "1000x760")
-    assert _white_runs_mode(tmp_path / "two-cloner-light.png", 60, 760 - 40) == 2
+    assert _track_runs(tmp_path / "two-cloner-light.png") == 2      # two rows, not three
 
 
 @GUI_BUILD
@@ -355,8 +369,8 @@ def _theme_hex(field: str) -> tuple[int, int, int]:
 @GUI_BUILD
 def test_the_live_round_draws_two_bars_for_two_reported_disks(tmp_path):
     """One machine, three configured slots, two disks reported. Down the
-    middle column the track colour appears once for the round's big bar and
-    once per disk bar: 1 + 2. The old grid drew a third bar for the empty slot."""
+    middle column the track colour appears once per disk row: 2. The old grid
+    drew a third bar for the empty slot (17/10: no big bar -- the hero says the %)."""
     binary = _build_gui(tmp_path)
     state = tmp_path / "live.txt"
     state.write_text("round=img|2|0|7|24|5|17|-1|-1|-1\n"
@@ -366,15 +380,8 @@ def test_the_live_round_draws_two_bars_for_two_reported_disks(tmp_path):
                      "room_drawer=0|2|S2|Model B|500107862016|passed|1|0\n"
                      "message=x|y\n", newline="\n")
     _png(binary, tmp_path / "live", state, "1000x760")
-    w, h, ch, px = _png_rgb(tmp_path / "live-room-live-light.png")
-    track = _theme_hex("track")
-    x, runs, inside = w // 2, 0, False
-    for y in range(48, h - 36):
-        i = (y * w + x) * ch
-        on = all(abs(px[i + k] - track[k]) <= 3 for k in range(3))
-        runs += on and not inside
-        inside = on
-    assert runs == 3, f"{runs} track runs down the middle (want the big bar + 2 disks)"
+    runs = _track_runs(tmp_path / "live-room-live-light.png")
+    assert runs == 2, f"{runs} track runs down the middle (want 2 disks)"
 
 
 # --- 4. the installer -------------------------------------------------------------
@@ -600,12 +607,14 @@ def test_an_image_name_is_one_isolated_run_in_an_rtl_line():
     iso = code(body(_src("screens_rounds.c"), "bidi_isolate"))
     assert r'"\xE2\x81\xA8%s\xE2\x81\xA9"' in iso                      # FSI ... PDI
     assert r'#define RLM "\xE2\x80\x8F"' in _src("screens_rounds.h")
-    title = code(body(_src("screens_cloner.c"), "cloner_title"))
-    assert 'snprintf(sub, sizeof sub, RLM "%s · %s%s%s", image,' in title
+    title = code(body(_src("screens_cloner.c"), "screen_cloner"))
+    assert 'snprintf(label, sizeof label, RLM "שיכפול במקביל · %s%s%s%s", image,' in title   # #1331: + the drivers phrase
     assert "bidi_isolate(s->cloner_image[0] ? s->cloner_image" in title
     live = code(body(_src("screens_room.c"), "screen_room"))
     assert "bidi_isolate(s->round_image, image, sizeof image);" in live
-    assert 'RLM "משדר: %s · גל %d%s%s", image,' in live
+    # 17/10: "נכשל" for a failed wave, else "משדר" -- the image is still one isolated run;
+    # #1331 (mockup v2): a wave that ended says neither "משדר" nor anything -- a failed one still says "נכשל"
+    assert 'RLM "הפצה למחשבי שיכפול · %s%s · גל %d%s%s%s", wave_failed ? "נכשל: " : wave_over ? "" : "משדר: ",' in live
 
 
 def test_tool_fields_are_cut_on_a_character_boundary():
@@ -781,7 +790,7 @@ def test_a_selected_slot_has_a_ring_and_a_check_and_the_rest_are_lighter():
     assert "draw_border_rrect(cr, slot, RADIUS_SM, smart, 2);" in room # the SMART colour stays
     assert "cairo_line_to(cr, cx + h * .90, cy + h * .20);" in room    # the check
     assert '"ער · %d מגירות מוכנות · %d נבחרו"' in room
-    assert "if (nsel) draw_border_rrect(cr, item, RADIUS_SM, t->indigo, 2);" in room
+    assert "if (nsel || picked) draw_border_rrect(cr, item, RADIUS_SM, t->indigo, 2);" in room   # 17/10: a whole picked machine too
     assert "#define SLOT_GAP  (2 * SLOT_RING)" in _src("screens_room.c")
 
 

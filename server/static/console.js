@@ -52,16 +52,16 @@ async function apiFetch(url, options) {
    `toast(e.message)` ב-200 האתרים הקיימים נצבע נכון בלי לשנות אף אחד מהם. */
 let lastApiFailure = { text: "", at: 0 };
 function noteApiFailure(text) { lastApiFailure = { text: String(text), at: Date.now() }; }
-/* ‏#1179: "הקשר שרת". כשנבחר משני בעץ, SERVER_CTX הוא המזהה שלו, וכל בקשת קונסולה
+/* ‏#1179: "הקשר שרת". כשנבחר שרת משנה בעץ, SERVER_CTX הוא המזהה שלו, וכל בקשת קונסולה
    הולכת דרך ה-relay של הראשי (‏/storage-nodes/{id}/console/…, ‏8443) — אותן
-   פונקציות ה-load וה-render של הראשי מציירות את המשני, ולכן אותם עמודים ואותן לשוניות.
-   ‏/me, כניסה ויציאה הם של המשתמש בראשי. גם post/put/del בהקשר משני הולכים ל-relay
+   פונקציות ה-load וה-render של הראשי מציירות את שרת המשנה, ולכן אותם עמודים ואותן לשוניות.
+   ‏/me, כניסה ויציאה הם של המשתמש בראשי. גם post/put/del בהקשר שרת משנה הולכים ל-relay
    (שלב 2) — לעולם לא לנתיב של הראשי; ה-relay מעביר רק פעולות מהרשימה המותרת
    (משתמשים · הגדרות · רשת) ומסרב לשאר. העלאה/הורדה של קבצים אינה עוברת בערוץ (JSON
    בלבד) — נחסמת כאן, כדי שלא תפעל על הראשי. */
 let SERVER_CTX = null, PRIMARY_ME = null;
 const PRIMARY_ONLY_PATH = /^\/(me|login|logout|session)(\/|\?|$)/;
-const SECONDARY_READ_ONLY = "לא זמין על השרת המשני מכאן — קבצים (העלאה/הורדה) אינם עוברים בערוץ בין השרתים";
+const SECONDARY_READ_ONLY = "לא זמין על שרת המשנה מכאן — קבצים (העלאה/הורדה) אינם עוברים בערוץ בין השרתים";
 function consoleUrl(path, primary = false) {
   if (primary || !SERVER_CTX || PRIMARY_ONLY_PATH.test(path)) return "/api/console" + path;
   return `/api/console/storage-nodes/${encodeId(SERVER_CTX)}/console${path}`;
@@ -435,8 +435,15 @@ const IMPACT_ICONS = {
 function impactList(items) {
   return `<ul class="n-impact">${items.map(([kind, html]) => `<li class="${kind === "b" ? "bad" : kind === "ok" ? "imp-ok" : "imp-w"}">${IMPACT_ICONS[kind] || IMPACT_ICONS.w}<span>${html}</span></li>`).join("")}</ul>`;
 }
+/* נדב 18/10 (rc6f): ‏onSubmit שפותח את החלון הבא בעצמו (רישום שרת משנה: "בדוק SPKI" → שלב 2)
+   מצייר אותו לתוך אותו #sheet — וה-close() שאחרי ה-await סגר את **החלון החדש**: שלב 2
+   הופיע לשנייה ונעלם, בלי בקשה נוספת לשרת. כל sheet() מקבל מספר; החלון נסגר אחרי
+   onSubmit רק אם הוא עדיין החלון שפתוח. */
+let SHEET_GEN = 0;
+
 function sheet({ title, sub = "", fields = [], submitLabel = "שמירה", cancelLabel = "ביטול",
-                 danger = false, note = "", size = "", hint = "", onSubmit }) {
+                 danger = false, note = "", size = "", hint = "", extra = null, onSubmit }) {
+  const gen = ++SHEET_GEN;
   const modal = $("#modal");
   const form = $("#sheet");
   const help = (f) => (f.help ? `<div class="n-help">${esc(f.help)}</div>` : "");
@@ -479,10 +486,11 @@ function sheet({ title, sub = "", fields = [], submitLabel = "שמירה", cance
   form.className = `sheet win ${winSizeClass(sizeName, "narrow")}`;
   form.innerHTML = `
     <div class="n-h shead"><div><h2 id="sheetTitle">${esc(title)}</h2>${sub ? `<p>${esc(sub)}</p>` : ""}</div>${winCloseBtn('id="sf-x"')}</div>
-    <div class="n-b sbody">${SERVER_CTX ? `<div class="sheet-note${danger ? " danger" : ""}" data-target-server>הפעולה תתבצע על <b>${esc(serverRootName("השרת המשני"))}</b> (שרת משני), דרך הערוץ בין השרתים.</div>` : ""}${note}${fields.map(fieldHtml).join("")}<p class="error n-formerr" id="sf-error" role="alert"></p></div>
+    <div class="n-b sbody">${SERVER_CTX ? `<div class="sheet-note${danger ? " danger" : ""}" data-target-server>הפעולה תתבצע על <b>${esc(serverRootName("שרת המשנה"))}</b> (שרת משנה), דרך הערוץ בין השרתים.</div>` : ""}${note}${fields.map(fieldHtml).join("")}<p class="error n-formerr" id="sf-error" role="alert"></p></div>
     <footer class="n-f-bar sfoot">
       <span class="n-hint" id="sf-hint">${esc(hint)}</span>
       <button class="btn" type="button" id="sf-cancel">${esc(cancelLabel)}</button>
+      ${extra ? `<button class="btn" type="button" id="sf-extra">${esc(extra.label)}</button>` : ""}
       <button class="btn ${danger ? "danger" : "primary"}" type="submit" id="sf-submit">${esc(submitLabel)}</button>
     </footer>`;
   form.classList.remove("hidden");
@@ -490,14 +498,16 @@ function sheet({ title, sub = "", fields = [], submitLabel = "שמירה", cance
   const first = form.querySelector("input, textarea, select");
   if (first) first.focus();
   const close = () => {
-    form.onsubmit = null;
     document.removeEventListener("keydown", onKey);
+    if (gen !== SHEET_GEN) return;   // another sheet owns the window now -- it is not ours to close
+    form.onsubmit = null;
     closeModal();
   };
   const onKey = (event) => { if (event.key === "Escape") close(); };
   document.addEventListener("keydown", onKey);
   $("#sf-cancel").onclick = close;
   $("#sf-x").onclick = close;
+  if (extra) $("#sf-extra").onclick = () => { close(); extra.onClick(); };   // כפתור שני בתחתית: סוגר ופותח את הבא
   wireWindowParts(form);
   form.querySelectorAll("[data-segment]").forEach((group) => group.querySelectorAll("button[data-value]").forEach((button) => {
     button.onclick = () => {
@@ -577,14 +587,14 @@ function applyServerTheme(me) {
   applyTheme(t === "light" || t === "dark" ? t : "auto");
 }
 
-/* בחירה מפורשת (כרטיס "מראה" בהגדרות): אותו מנגנון כמו הכפתור שבכותרת, ונשמרת בשרת (users.theme). */
+/* בחירה מפורשת (כרטיס "מראה" ב"החשבון שלי"): אותו מנגנון כמו הכפתור שבכותרת, ונשמרת בשרת (users.theme). */
 function setThemePref(pref) {
   if (!THEME_CYCLE.includes(pref)) return;
   applyTheme(pref);
   if (!ME) return;
   ME.theme = pref;
   const done = put("/me/theme", { theme: pref }).catch((e) => toast(e.message));
-  if (current === "settings") renderCurrent();
+  if (current === "account") renderCurrent();   // הכרטיס "מראה" עבר ל"החשבון שלי" (נדב 17/10)
   return done;
 }
 /* ‏#1499: מה שרואים מתחלף — auto מצויר בהיר, ולכן הלחיצה ממנו היא לכהה. */
@@ -870,10 +880,15 @@ function loginRender(state) {
 
 function showLogin() {
   ME = null;
-  OVERVIEW = IMAGES = FOLDERS = MACHINES = GROUPS = HEALTH = NETCFG = USERS = JOURNAL = SETTINGS = null; SETTINGS_DRAFT = {}; LOG.rows = null;
+  OVERVIEW = IMAGES = FOLDERS = MACHINES = GROUPS = HEALTH = NETCFG = USERS = JOURNAL = SETTINGS = null; LOG.rows = null;
   SERVER_CTX = null; PRIMARY_ME = null;   // ‏#1179
   SESSION_MACHINES = {group:null,list:[]};
   CAPTURE_TASKS = [];
+  dockStore(false); HOME_DOCK_HAD = null;   // הכניסה הבאה — דוק סגור
+  try {
+    const dock = document.getElementById("taskPanel");
+    if (dock && dock.classList.contains("open")) { dock.classList.remove("open"); document.body.classList.remove("tasks-open"); }
+  } catch (e) { /* קוסמטי */ }
   clearInterval(pollTimer);
   closeDrawer(); closeModal();
   clearInterval(idleTimer);
@@ -888,13 +903,48 @@ function showLogin() {
   loginRender();
 }
 
+/* נדב 18/10 (TA, b951c1fd: "התחברתי עכשיו, והלשוניות לא היו סגורות"): אחרי **כל** כניסה — העץ במצב
+   ההתחלתי של index.html (TA פתוח; מלאי, תשתית וניהול מקופלים; כל שרת משנה מקופל) ו"סקירה כללית" נבחרת
+   (showApp). הקונסולה אינה חוזרת לדף אחרון (אין hash, אין זיכרון דף); אבל ה-DOM של העץ נשאר בין
+   יציאה לכניסה באותו דף — מה שהמשתמש פתח לפני היציאה (או ניתוק בחוסר פעילות) נשאר פתוח. המצב
+   נלכד פעם אחת בטעינת הדף (TREE_INITIAL, init); רענון (F5) בתוך session קיים — init → showApp, בלי איפוס. */
+let TREE_INITIAL = null;
+function treeBoxOpen(box) { return !(box.hasAttribute("hidden") || (box.style && box.style.display === "none")); }
+function treeSnapshot() {
+  const srv = document.getElementById("srvTA");
+  if (!srv) return null;
+  const snap = { srvTA: treeBoxOpen(srv) };
+  srv.querySelectorAll(".inventory-children[id]").forEach((box) => { snap[box.id] = treeBoxOpen(box); });
+  return snap;
+}
+function treeSetOpen(box, on) {
+  if (on) { box.removeAttribute("hidden"); if (box.style) box.style.removeProperty("display"); }
+  else box.setAttribute("hidden", "");
+  const owner = box.previousElementSibling;
+  if (!owner || !owner.classList || !owner.classList.contains("inventory-node")) return;
+  owner.setAttribute("aria-expanded", String(on));
+  const arrow = owner.querySelector(".tree-arrow");
+  if (arrow) { arrow.dataset.open = String(on); arrow.textContent = on ? "▾" : "▸"; }
+}
+function resetTreeToInitial() {
+  for (const [id, on] of Object.entries(TREE_INITIAL || {})) {
+    const box = document.getElementById(id);
+    if (box) treeSetOpen(box, on);
+  }
+  const sec = document.getElementById("secondaryServers");   // כל שרת משנה — מקופל, וכל מה שבתוכו
+  if (sec) sec.querySelectorAll(".inventory-children").forEach((box) => treeSetOpen(box, false));
+}
+
 async function enterApp() {
   SERVER_CTX = null;
+  resetTreeToInitial();   // נדב 18/10: אחרי כניסה — העץ ההתחלתי, לא מה שנשאר מלפני היציאה
+  for (const k of Object.keys(SERVER_HEALTH)) delete SERVER_HEALTH[k];   // ונקודות המצב — נמדדות מחדש
   ME = PRIMARY_ME = await api("/me");
   LOGIN = { screen: "login", username: "", error: "",
             challenge: "", secret: "", otpauth: "", svg: "", backupCodes: [],
             savedAck: false, otpBackup: false, otp: ["", "", "", "", "", ""] };
   await showApp();
+  restoreTaskDock();
 }
 
 async function showApp() {
@@ -936,7 +986,7 @@ async function showApp() {
   // המתאים ב-capabilities הוא true. הדגל הוא הסמכות — לא התפקיד לבדו.
   const caps = ME.capabilities || {};
   document.querySelectorAll("[data-cap]").forEach(
-    (el) => el.classList.toggle("hidden", !caps[el.dataset.cap]));
+    (el) => el.classList.toggle("hidden", !el.dataset.cap.split("|").some((cap) => caps[cap])));   // "a|b" = אחת מהיכולות
   pages.deploy.tabs = deployTabs();
   applyServerName();
   renderActivity();
@@ -945,7 +995,8 @@ async function showApp() {
   loadImages();
   populateSidebarImages();
   populateSidebarGroups();
-  populateSidebarSecondaries().catch((e) => toast("טעינת השרתים המשניים נכשלה: " + e.message));
+  populateSidebarSecondaries().catch((e) => toast("טעינת שרתי המשנה נכשלה: " + e.message))
+    .then(() => refreshServerDots());   // נדב 18/10: נקודת המצב של כל שרת בעץ
   if (isAdmin() && typeof loadNet === "function") {
     loadNet().catch((e) => toast("טעינת כרטיסי הרשת נכשלה: " + e.message));
   }
@@ -1151,8 +1202,8 @@ function loginOnPaste(event) {
   loginRender({ screen: "login" });
 })();
 
-/* ‏#1179: בהקשר משני — לחיצה על צומת **של הראשי** בעץ יוצאת מההקשר לפני ה-onclick שלו
-   (רוב הצמתים קוראים ל-selectPageById, שבהקשר משני היה נשאר במשני); חץ פתיחה אינו ניווט.
+/* ‏#1179: בהקשר שרת משנה — לחיצה על צומת **של הראשי** בעץ יוצאת מההקשר לפני ה-onclick שלו
+   (רוב הצמתים קוראים ל-selectPageById, שבהקשר שרת משנה היה נשאר בשרת המשנה); חץ פתיחה אינו ניווט.
    קישור הורדה של הקונסולה (CSV, אימג') היה מוריד קובץ של הראשי — נחסם. */
 document.addEventListener("click", (event) => {
   const t = event.target;
@@ -1284,11 +1335,6 @@ function stateClass(state) {
   return "";
 }
 
-function memberRows(members) {
-  if (!members?.length) return '<div class="empty">No joined machines</div>';
-  return members.map(m => memberRow(m, OVERVIEW?.session || {}, stuckNote(OVERVIEW?.session?.stuck,m.mac))).join("");
-}
-
 /* עיקרון 5 (#517): קריאת /overview שנכשלה מסמנת את הכרטיס כישן — ולא
    חוזרת בשקט. "לא נקרא" ו"נקרא, ריק" הם שני מצבים נבדלים. */
 function markStatusStale() {
@@ -1363,10 +1409,12 @@ async function loadHealth() {
     healthError = "";
     // חותמת שלא הגיעה = "זמן המדידה לא נמסר", לא שעון הדפדפן (עיקרון 5).
     HEALTH_AT = checkedAt ? fmtWhenShort(checkedAt) : "";
+    noteServerHealth(SERVER_CTX || "", HEALTH, null);   // נדב 18/10: אותו נתון — הנקודה של השרת המוצג
     updateAlertBadge();
   } catch (e) {
     HEALTH = null;
     healthError = e.message;
+    noteServerHealth(SERVER_CTX || "", null, e);
     paintServiceStatus();
     toast("טעינת הבריאות נכשלה: " + e.message);
   }
@@ -1428,10 +1476,10 @@ async function loadMonitor() {
   if (current === "monitor") renderCurrent();
 }
 
-/* ‏#1008 (נדב 11/10: השרת המשני הוא v1): במוניטור של הראשי — גם המכונות של כל משני,
-   באותה רשימה ועם שם השרת (‏GET …/storage-nodes/{id}/machines, תמיד מול הראשי). משני שלא
-   ענה — שורה "לא נקרא" עם הסיבה, לא היעלמות; מושבת — "לא נשאל". בהקשר משני (#1179) אין
-   ענפים: זו רשימת המשני עצמו. */
+/* ‏#1008 (נדב 11/10: שרת המשנה הוא v1): במוניטור של הראשי — גם המכונות של כל שרת משנה,
+   באותה רשימה ועם שם השרת (‏GET …/storage-nodes/{id}/machines, תמיד מול הראשי). שרת משנה שלא
+   ענה — שורה "לא נקרא" עם הסיבה, לא היעלמות; מושבת — "לא נשאל". בהקשר שרת משנה (#1179) אין
+   ענפים: זו רשימת שרת המשנה עצמו. */
 async function loadMonitorRemote() {
   const me = PRIMARY_ME || ME;
   if (SERVER_CTX || !(me && me.capabilities && me.capabilities.enroll_secondary)) return [];
@@ -1439,7 +1487,7 @@ async function loadMonitorRemote() {
   try { nodes = await api("/storage-nodes", { primary: true }); }
   catch (e) {
     if (e.status === 403 || e.status === 409) return [];
-    return [{ node: null, label: "השרתים המשניים", connected: false, error: e.message, machines: [] }];
+    return [{ node: null, label: "שרתי המשנה", connected: false, error: e.message, machines: [] }];
   }
   return Promise.all(nodes.map(async (n) => {
     if (n.disabled_at) return { node: n.id, label: n.label, connected: false, error: "השרת מושבת — לא נשאל", machines: [] };
@@ -1450,7 +1498,7 @@ async function loadMonitorRemote() {
     } catch (e) { return { node: n.id, label: n.label, connected: false, error: e.message, machines: [] }; }
   }));
 }
-/* מכונה ברשימת המוניטור: מקומית (מפתח = MAC) או של משני (מפתח = "node|MAC", ‏node = המשני). */
+/* מכונה ברשימת המוניטור: מקומית (מפתח = MAC) או של שרת משנה (מפתח = "node|MAC", ‏node = שרת המשנה). */
 function monitorKey(m) { return m.node ? `${m.node}|${m.mac}` : m.mac; }
 function monitorList() {
   const local = MONITOR ? MONITOR.machines || [] : [];
@@ -1497,11 +1545,6 @@ function sortMachinesBySuffix(list) {
   });
 }
 
-function groupSelectOptions() {
-  return (GROUPS || []).map((g) =>
-    `<option value="${esc(g.id)}">${esc(g.label)}</option>`).join("");
-}
-
 function sidebarChildOpen(tree) {
   const wasOpen = {};
   tree.querySelectorAll(":scope > .inventory-children").forEach((el) => {
@@ -1511,8 +1554,8 @@ function sidebarChildOpen(tree) {
 }
 
 /* ‏#1179: עצי-המשנה (קבוצות ומחשבים, תיקיות ואימג'ים, כרטיסי רשת) — אותן פונקציות.
-   בהקשר משני הם נכתבים לענף של המשני בעץ (‏srv-<id>-…), לא לעץ של הראשי, והלחיצה עליהם
-   נכנסת קודם להקשר של המשני — צומת ישן שנשאר בעץ לא יפעל על שרת אחר. */
+   בהקשר שרת משנה הם נכתבים לענף של שרת המשנה בעץ (‏srv-<id>-…), לא לעץ של הראשי, והלחיצה עליהם
+   נכנסת קודם להקשר של שרת המשנה — צומת ישן שנשאר בעץ לא יפעל על שרת אחר. */
 function sideId(id) { return SERVER_CTX ? `srv-${SERVER_CTX}-${id}` : id; }
 function sideClick(handler) {
   return SERVER_CTX ? `inSecondary('${encodeId(SERVER_CTX)}',()=>{${handler}})` : handler;
@@ -1599,26 +1642,74 @@ function paintServiceStatus() {
   for (const [name, ids] of Object.entries(SERVICE_DOTS)) {
     const el = document.querySelector(`[data-svc="${name}"]`);
     if (!el) continue;
-    const { state, detail } = serviceState(ids);
-    const cls = healthStatusClass(state) || "off";
+    let { state, detail } = serviceState(ids);
+    // משדר שרץ בתוך סבב פתוח הוא מצב תקין ("warn" בשרת רק כדי שהמפעיל ידע שיש שידור) — לא צהוב.
+    const sending = name === "Multicast" && state === "warn" && /סבב פתוח/.test(detail);
+    const cls = sending ? "ok" : healthStatusClass(state) || "off";
     // קידומת svc-: ל-.ok/.err הגלובליים יש כללי טקסט-הודעה (גודל, שוליים) שהזיזו את "API" 6px.
     for (const c of ["ok", "warn", "err", "unk", "off"]) el.classList.toggle("svc-" + c, c === cls);
-    el.setAttribute("title", `${name}: ${healthStatusLabel(state)}${detail ? " — " + detail : ""}`);
+    const what = name === "Multicast" ? "Multicast (משדר udp-sender)" : name;
+    el.setAttribute("title", `${what}: ${sending ? "משדר כעת" : healthStatusLabel(state)}${detail ? " — " + detail : ""}`);
   }
-  const foot = document.getElementById("treeFootStatus");
-  const nameEl = document.getElementById("treeFootName");
-  if (nameEl) nameEl.textContent = serverRootName("שרת אימג'ים") + (healthError ? " · לא מחובר" : " · מחובר");
-  if (!foot) return;
-  let cls = "unk", text = "מצב השירותים לא נבדק";
-  if (Array.isArray(HEALTH)) {
-    const bad = HEALTH.filter((c) => c.state === "bad").length, warn = HEALTH.filter((c) => c.state === "warn").length;
-    if (bad) { cls = "err"; text = `${bad} שירותים בתקלה`; }
-    else if (warn) { cls = "warn"; text = `${warn} אזהרות בבריאות`; }
-    else { cls = "ok"; text = "כל השירותים פעילים"; }
+}
+
+/* נדב 18/10: "למה ליד חיפה יש עיגול ירוק וליד TA אין?" + "אין רשת הפצה בחיפה, והוא מראה ירוק בעץ וכתום
+   בסקירה". נקודה אחת לכל שרת בעץ — TA וכל שרת משנה — מחושבת כאן בלבד (serverDotState), מאותן בדיקות
+   ‏/health שהסקירה של **אותו** שרת מציגה ב"דורש טיפול": ירוק = מחובר וכל הבדיקות תקינות; כתום = מחובר
+   ויש אזהרה (למשל "הגדר את רשת ההפצה"); אדום = תקלה, או שלא ענה; אפור = לא נמדד (עיקרון 5: לא ירוק).
+   הקופסה שהייתה בתחתית העץ ("TA · מחובר / כל השירותים פעילים") יצאה — מה שהיה בה עבר לנקודה ול-title שלה.
+   המקור: מה שכבר נטען (loadHealth של השרת המוצג), ולשאר השרתים קריאה אחת ל-/health לכל היותר
+   פעם ב-SERVER_DOT_TTL (לשרת משנה — דרך ה-relay של הראשי, אותו נתיב שמזין את הסקירה שלו). */
+const SERVER_HEALTH = {};   // "" = הראשי; מזהה שרת משנה → {checks, error, down, at}
+const SERVER_DOT_TTL = 45000;
+let SIDEBAR_NODES = [];
+const SERVER_DOTS_INFLIGHT = new Set();   // מפתחות שבקשת /health שלהם עדיין פתוחה
+function serverDotState(entry) {
+  if (!entry) return { cls: "unk", text: "מצב השירותים לא נבדק" };
+  if (entry.down) return { cls: "err", text: "לא מחובר" + (entry.error ? ": " + entry.error : "") };
+  if (!Array.isArray(entry.checks)) return { cls: "unk", text: "מצב השירותים לא נקרא" + (entry.error ? ": " + entry.error : "") };
+  const line = (c) => (c.label || c.id || "") + (c.detail ? " — " + c.detail : "");
+  const bad = entry.checks.filter((c) => c.state === "bad"), warn = entry.checks.filter((c) => c.state === "warn");
+  if (bad.length) return { cls: "err", text: [`מחובר · ${bad.length} שירותים בתקלה`, ...bad.map(line), ...warn.map(line)].join("\n") };
+  if (warn.length) return { cls: "warn", text: ["מחובר · דורש טיפול", ...warn.map(line)].join("\n") };
+  return { cls: "ok", text: "מחובר · כל השירותים פעילים" };
+}
+function paintServerDot(key) {
+  const st = serverDotState(SERVER_HEALTH[key]);
+  const el = key ? document.querySelector(`[data-secondary-status="${CSS.escape(key)}"]`) : document.getElementById("primaryServerStatus");
+  if (el) { el.className = "status " + st.cls; el.setAttribute("title", st.text); el.setAttribute("aria-label", st.text); }
+  if (!key) paintRailFoot(st.cls, st.text);   // ‏#1300: נורית השירותים בתחתית הפס — של הראשי
+  return st;
+}
+/* ‏err.network = הדפדפן לא הגיע לראשי; ‏502 מה-relay = שרת המשנה לא ענה. שאר הכשלים — "לא נקרא" (אפור). */
+function noteServerHealth(key, checks, err) {
+  const down = !!err && (!!err.network || (!!key && err.status === 502));
+  SERVER_HEALTH[key] = { checks: err ? null : checks, error: err ? String(err.message || "") : "", down, at: Date.now() };
+  const n = key ? SIDEBAR_NODES.find((x) => x.id === key) : null;
+  if (n && (down || !err)) markSecondaryStatus(n, !down, down ? SERVER_HEALTH[key].error : "");
+  else paintServerDot(key);
+}
+async function fetchServerHealth(key) {
+  const url = key ? `/api/console/storage-nodes/${encodeId(key)}/console/health` : "/api/console/health";
+  const response = await apiFetch(url, { credentials: "same-origin" });
+  if (!response.ok) {
+    let detail = "שגיאה " + response.status;
+    try { const b = await response.json(); detail = b.message_he || b.detail || detail; } catch (e) {}
+    const error = new Error(detail); error.status = response.status; throw error;
   }
-  foot.className = "status " + cls;
-  foot.innerHTML = "<i></i>" + text;
-  paintRailFoot(cls, text);   // ‏#1300: נורית השירותים בתחתית הפס
+  return response.json();
+}
+/* TA 18/10 (d8763e5b): נעילה אחת לכל הסבב דילגה על הרענון שאחרי בניית העץ כשהדגימה התקופתית עוד מדדה
+   את TA — וחיפה נשארה אפורה; בלשונית ברקע (document.hidden) הדגימה אינה רצה, ולא היה ניסיון שני.
+   עכשיו "בדרך" הוא לכל שרת: רק שרת שבקשה שלו עדיין פתוחה מדולג. */
+async function refreshServerDots(force = false) {
+  if (!isAdmin()) return;   // ‏/health הוא admin בלבד — אחרים: אפור "לא נבדק"
+  const stale = (k) => !SERVER_DOTS_INFLIGHT.has(k) && (force || !SERVER_HEALTH[k] || Date.now() - SERVER_HEALTH[k].at >= SERVER_DOT_TTL);
+  const keys = [""].concat(SIDEBAR_NODES.filter((n) => !n.disabled_at).map((n) => n.id)).filter(stale);
+  keys.forEach((k) => SERVER_DOTS_INFLIGHT.add(k));
+  await Promise.all(keys.map((k) => fetchServerHealth(k)
+    .then((c) => noteServerHealth(k, c, null), (e) => noteServerHealth(k, null, e))
+    .finally(() => SERVER_DOTS_INFLIGHT.delete(k))));
 }
 
 function updateAlertBadge() {
@@ -1634,6 +1725,8 @@ function updateAlertBadge() {
       if (c.state === "warn" || c.state === "bad") n++;
     }
   }
+  // נדב 18/10: ההתראות על כל השרתים — שרת משנה שנמדד ולא ענה (SECONDARY_STATUS, markSecondaryStatus)
+  for (const st of Object.values(SECONDARY_STATUS || {})) if (st && st.connected === false) n++;
   if (n > 0) {
     badge.textContent = String(n);
     badge.classList.add("has-alerts");
@@ -1645,55 +1738,38 @@ function updateAlertBadge() {
   }
 }
 
-/* ‏#936: שם השרת הראשי בצומת העליון מגיע מ-/me (‏`server_name`: ההגדרה
-   אם המנהל קבע, אחרת שם המארח) — לא מחרוזת דמו ב-HTML ולא localStorage. */
+/* ‏#936: שם השרת הראשי בצומת העליון מגיע מ-/me (‏`server_name` = שם המארח,
+   נדב 17/10) — לא מחרוזת דמו ב-HTML ולא localStorage. */
 function serverRootName(fallback) { return (ME && ME.server_name) || fallback; }
 function applyServerName() {
   const el = document.getElementById("primaryServerName");
-  const me = PRIMARY_ME || ME;   // ‏#1179: הצומת העליון הוא תמיד הראשי, גם בהקשר משני
+  const me = PRIMARY_ME || ME;   // ‏#1179: הצומת העליון הוא תמיד הראשי, גם בהקשר שרת משנה
   if (el && me && me.server_name) el.textContent = me.server_name;
 }
 
+/* לחיצה כפולה על הצומת העליון בעץ — אותו חלון כמו "שינוי שם…" בהגדרות (נדב 17/10: שם אחד, מקום אחד). */
 function renameServer(el) {
   if (!el || !isAdmin()) return;
-  const currentName = el.textContent || "";
-  openModalContent(
-    "שינוי שם שרת",
-    `<div class="form"><div class="field full"><label>שם השרת</label><input id="serverNameInput" autocomplete="off"></div></div>`,
-    "שמור",
-    async () => {
-      const input = document.getElementById("serverNameInput");
-      const name = input ? input.value.trim() : "";
-      if (!name) { toast("שם לא יכול להיות ריק"); return; }
-      try {
-        await api("/settings", { method: "POST", body: JSON.stringify({ server_name: name }), primary: true });
-      } catch (e) { toast("שמירת השם נכשלה: " + e.message); return; }
-      el.textContent = name;
-      if (PRIMARY_ME) PRIMARY_ME.server_name = name;
-      if (ME && !SERVER_CTX) ME.server_name = name;
-      closeModal();
-    }
-  );
-  const input = document.getElementById("serverNameInput");
-  if (input) { input.value = currentName; input.focus(); }
+  hostnameSheet(true);
 }
 
-/* ‏#936: צומת שרת לכל משני מ-GET /storage-nodes, כמו vCenter. הנתיב הוא
-   admin+standalone (deploy → 403, משני → 409): במקרים האלה אין צמתים —
-   לא שגיאה אדומה. מצב החיבור נמדד מול המשני (‏/machines, ‏connected) אחרי
-   שהצמתים כבר על המסך; משני שלא ענה נשאר בעץ עם נקודה אדומה.
+/* ‏#936: צומת שרת לכל שרת משנה מ-GET /storage-nodes, כמו vCenter. הנתיב הוא
+   admin+standalone (deploy → 403, שרת משנה → 409): במקרים האלה אין צמתים —
+   לא שגיאה אדומה. מצב החיבור נמדד מול שרת המשנה (‏/machines, ‏connected) אחרי
+   שהצמתים כבר על המסך; שרת משנה שלא ענה נשאר בעץ עם נקודה אדומה.
 
-   ‏#1179: העץ של משני = אותו עץ של הראשי (‏#srvTA ב-index.html) עד רמת הדף, וכל
-   עלה הוא **אותו עמוד של הראשי** בהקשר המשני (SERVER_CTX, ‏openSecondaryPage):
+   ‏#1179: העץ של שרת משנה = אותו עץ של הראשי (‏#srvTA ב-index.html) עד רמת הדף, וכל
+   עלה הוא **אותו עמוד של הראשי** בהקשר שרת המשנה (SERVER_CTX, ‏openSecondaryPage):
    סקירה כללית · סבב הפצה · מלאי ▸ · תשתית ▸ · ניהול ▸. העמוד, הלשוניות והכרטיסים
-   זהים מעצם המבנה — הנתונים מגיעים מהמשני דרך ה-relay. "העברות" תחת מלאי הן
+   זהים מעצם המבנה — הנתונים מגיעים משרת המשנה דרך ה-relay. "העברות" תחת מלאי הן
    ההעברות בין הראשי לשרת הזה (דף branch, נתוני הראשי) ואין להן מקבילה בראשי.
-   בלי "ארגז כלים" (כבוי ב-v1), "סניפים" (למשני אין ילדים) ו"החשבון שלי" (של
+   בלי "ארגז כלים" (כבוי ב-v1), "שרתי משנה" (לשרת המשנה אין ילדים) ו"החשבון שלי" (של
    המשתמש בראשי, לא של השרת). */
 const BRANCH_TREE = [
   ["home", "סקירה כללית", "t-home"],
   ["deploy", "סבב הפצה", "t-deploy"],
-  { id: "inv", label: "מלאי", icon: "list", open: true, kids: [
+  // נדב 18/10: כמו הראשי בכניסה הראשונה — מלאי, תשתית וניהול מקופלים (index.html)
+  { id: "inv", label: "מלאי", icon: "list", open: false, kids: [
     ["images", "אימג'ים", "t-images"], ["machines", "מחשבים", "t-machines"],
     ["transfers", "העברות", "deploy"]] },
   { id: "infra", label: "תשתית", icon: "t-infra", open: false, kids: [
@@ -1708,14 +1784,14 @@ const BRANCH_VIEWS = BRANCH_TREE.flatMap((x) => Array.isArray(x) ? [x] : x.kids)
 let BRANCH_NODE = null;
 let BRANCH_VIEW = "transfers";
 
-/* צומת שנפתח/נסגר בעץ של משני — אותו מבנה של הצמתים ב-index.html. */
+/* צומת שנפתח/נסגר בעץ של שרת משנה — אותו מבנה של הצמתים ב-index.html. */
 function branchBox(n, wasOpen, key, head, kids, open = false) {
   const boxId = `srv-${n.id}-${key}`;
   const isOpen = boxId in wasOpen ? wasOpen[boxId] : open;
   return `${head(boxId, isOpen)}<div id="${esc(boxId)}" class="inventory-children" role="group"${isOpen ? "" : " hidden"}>${kids}</div>`;
 }
 const branchArrow = (boxId, open) => `<span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span>`;
-/* מתחת לעלה: אימג'ים ← תיקיות (מתמלא מהמשני); מחשבים ← כיתות/בנייה/שיכפול ← קבוצות;
+/* מתחת לעלה: אימג'ים ← תיקיות (מתמלא משרת המשנה); מחשבים ← כיתות/בנייה/שיכפול ← קבוצות;
    רשת ← חיבורים פיזיים (← כרטיסים) · רשת הפצה · פורטים. כמו #invTA/#netTA בראשי. */
 function branchLeafKids(n, page, wasOpen) {
   const idEnc = encodeId(n.id);
@@ -1724,7 +1800,7 @@ function branchLeafKids(n, page, wasOpen) {
     `<div class="inventory-node${cap && !(ME && ME.capabilities && ME.capabilities[cap]) ? " hidden" : ""}"${cap ? ` data-cap="${cap}"` : ""} role="treeitem" tabindex="0" aria-expanded="${open}" onclick="treeNavToggle(this,'${esc(boxId)}',function(){${go(handler)}})">${branchArrow(boxId, open)}<span>${uiIcon(icon)}</span><span>${esc(label)}</span></div>`, "");
   const plain = (label, icon, handler, attrs = "") =>
     `<div class="inventory-node"${attrs} role="treeitem" tabindex="0" onclick="${handler}"><span class="tree-arrow-sp"></span><span>${uiIcon(icon)}</span><span>${esc(label)}</span></div>`;
-  if (page === "images") return "";   // התיקיות עצמן — populateSidebarImages בהקשר המשני
+  if (page === "images") return "";   // התיקיות עצמן — populateSidebarImages בהקשר שרת המשנה
   if (page === "machines") {
     return sub("classesTree", "כיתות", "group", "selectMachinesRole('classroom')", "classrooms")
       + sub("buildTree", "מחשבי בנייה", "build", "selectMachinesRole('build')")
@@ -1761,11 +1837,11 @@ function branchTreeHtml(n, wasOpen) {
   }).join("");
 }
 
-/* ‏#1179: כניסה ויציאה מהקשר משני. המטמונים הגלובליים מתאפסים בכל מעבר — אחרת עמוד
-   של המשני היה מצייר נתון של הראשי שכבר נטען (MACHINES/GROUPS משותפים לכמה עמודים).
-   ‏ME בהקשר משני: אותו משתמש ותפקיד (ההרשאה היא של הראשי), שם השרת = שם המשני,
-   ומה שהוא של השרת ואינו נקרא מהמשני (גרסה, TLS, זמן פעילות, כתובת הפצה) — null,
-   "לא נקרא", לא הערכים של הראשי. בלי "ניהול שרתים משניים" — למשני אין ילדים. */
+/* ‏#1179: כניסה ויציאה מהקשר שרת משנה. המטמונים הגלובליים מתאפסים בכל מעבר — אחרת עמוד
+   של שרת המשנה היה מצייר נתון של הראשי שכבר נטען (MACHINES/GROUPS משותפים לכמה עמודים).
+   ‏ME בהקשר שרת משנה: אותו משתמש ותפקיד (ההרשאה היא של הראשי), שם השרת = שם שרת המשנה,
+   ומה שהוא של השרת ואינו נקרא משרת המשנה (גרסה, TLS, זמן פעילות, כתובת הפצה) — null,
+   "לא נקרא", לא הערכים של הראשי. בלי "ניהול שרתי משנה" — לשרת המשנה אין ילדים. */
 function setServerContext(nid, label) {
   const next = nid || null;
   if (next === SERVER_CTX) return;
@@ -1795,7 +1871,7 @@ function resetServerCaches() {
   CAPTURE_TASKS = []; CAPTURE_TASKS_READ = false; SESSION_MACHINES = { group: null, list: [] };
   HEALTH_UPDATE = null; UPDATE_STATUS = null; UPDATE_CHECK = null; updateError = ""; UPDATE_INFO = {};
   HEALTH_SVC = null; healthSvcError = "";
-  SETTINGS = null; settingsError = ""; SETTINGS_DRAFT = {}; TOOLS = null; toolsError = "";
+  SETTINGS = null; settingsError = ""; TOOLS = null; toolsError = "";
   // הקבצים שנטענים אחרי console.js (בדפדפן כולם קיימים; ב-node רק חלקם).
   if (typeof DRIVERS !== "undefined") { DRIVERS = null; driversError = ""; }
   if (typeof STORAGE !== "undefined") { STORAGE = null; storageError = ""; clearInterval(STORAGE_TIMER); }
@@ -1805,7 +1881,7 @@ function resetServerCaches() {
   if (typeof GS !== "undefined") { GS.items = []; GS.active = 0; GS.failed = []; }   // החיפוש הגלובלי — של השרת הנוכחי
 }
 
-/* עלה של משני בעץ → אותו עמוד של הראשי, בהקשר המשני. */
+/* עלה של שרת משנה בעץ → אותו עמוד של הראשי, בהקשר שרת המשנה. */
 function openSecondaryPage(nid, page, el) {
   try { nid = decodeURIComponent(nid); } catch (e) {}
   setServerContext(nid, secondaryLabel(nid));
@@ -1814,25 +1890,19 @@ function openSecondaryPage(nid, page, el) {
     || document.querySelector(`[data-secondary="${CSS.escape(nid)}"]`), page);
 }
 
-function secondaryDotClass(n, connected) {
-  if (n.disabled_at) return "status";
-  if (connected === true) return "status ok";
-  if (connected === false) return "status err";
-  return "status";
-}
-
 async function populateSidebarSecondaries() {
   const host = document.getElementById("secondaryServers");
   if (!host) return;
-  const me = PRIMARY_ME || ME;   // ‏#1179: הענפים הם של הראשי, גם כשמוצג משני
+  const me = PRIMARY_ME || ME;   // ‏#1179: הענפים הם של הראשי, גם כשמוצג שרת משנה
   const caps = (me && me.capabilities) || {};
-  if (!caps.enroll_secondary) { host.innerHTML = ""; return; }
+  if (!caps.enroll_secondary) { host.innerHTML = ""; SIDEBAR_NODES = []; return; }
   let nodes = [];
   try { nodes = await api("/storage-nodes", { primary: true }); }
   catch (e) {
-    if (e.status === 403 || e.status === 409) { host.innerHTML = ""; return; }
+    if (e.status === 403 || e.status === 409) { host.innerHTML = ""; SIDEBAR_NODES = []; return; }
     throw e;
   }
+  SIDEBAR_NODES = nodes;
   // ‏#1179: גם הקבוצות המקוננות (מלאי/תשתית) שומרות פתוח/סגור בין רינדורים.
   const wasOpen = {};
   host.querySelectorAll(".inventory-children").forEach((el) => {
@@ -1843,8 +1913,8 @@ async function populateSidebarSecondaries() {
     const open = !!wasOpen[boxId];
     const idEnc = encodeId(n.id);
     const kids = branchTreeHtml(n, wasOpen);
-    const title = n.disabled_at ? "מושבת" : "מצב החיבור נבדק…";
-    return `<div class="inventory-node server-node" data-secondary="${esc(n.id)}" data-conn="${n.disabled_at ? "off" : "checking"}" role="treeitem" tabindex="0" aria-expanded="${open}" onclick="treeNavToggle(this,'${esc(boxId)}',function(){openSecondaryPage('${idEnc}','home',this)})"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span>${uiIcon("server")}</span><strong class="server-name">${esc(n.label)}</strong><span class="${secondaryDotClass(n, null)}" data-secondary-status="${esc(n.id)}" title="${esc(title)}" aria-label="${esc(title)}"><i></i></span></div><div id="${esc(boxId)}" class="inventory-children" role="group"${open ? "" : " hidden"}>${kids}</div>`;
+    const dot = n.disabled_at ? { cls: "", text: "מושבת" } : serverDotState(SERVER_HEALTH[n.id]);   // נדב 18/10: אותה נקודה כמו TA
+    return `<div class="inventory-node server-node" data-secondary="${esc(n.id)}" data-conn="${n.disabled_at ? "off" : "checking"}" role="treeitem" tabindex="0" aria-expanded="${open}" onclick="treeNavToggle(this,'${esc(boxId)}',function(){openSecondaryPage('${idEnc}','home',this)})"><span class="tree-arrow" data-open="${open}" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'${esc(boxId)}')">${open ? "▾" : "▸"}</span><span>${uiIcon("server")}</span><strong class="server-name">${esc(n.label)}</strong><span class="status ${dot.cls}" data-secondary-status="${esc(n.id)}" title="${esc(dot.text)}" aria-label="${esc(dot.text)}"><i></i></span></div><div id="${esc(boxId)}" class="inventory-children" role="group"${open ? "" : " hidden"}>${kids}</div>`;
   }).join("");
   await Promise.all(nodes.filter((n) => !n.disabled_at).map((n) =>
     api(`/storage-nodes/${encodeId(n.id)}/machines`, { primary: true })
@@ -1854,22 +1924,21 @@ async function populateSidebarSecondaries() {
 
 function markSecondaryStatus(n, connected, error) {
   SECONDARY_STATUS[n.id] = { connected, error };   // ‏#954: "דורש טיפול" בסקירה קורא מכאן
-  // ‏#1179: הענף כולו אדום כשהמשני לא ענה — לא רק הנקודה (console.css: data-conn).
+  updateAlertBadge();   // נדב 18/10: גם הפעמון — לא רק הסקירה
+  // ‏#1179: הענף כולו אדום כששרת המשנה לא ענה — לא רק הנקודה (console.css: data-conn).
   const row = document.querySelector(`[data-secondary="${CSS.escape(n.id)}"]`);
   if (row) row.setAttribute("data-conn", n.disabled_at ? "off" : (connected ? "ok" : "err"));
-  const dot = document.querySelector(`[data-secondary-status="${CSS.escape(n.id)}"]`);
-  if (!dot) return;
-  dot.className = secondaryDotClass(n, connected);
-  const title = connected ? "מחובר" : ("לא מחובר" + (error ? ": " + error : ""));
-  dot.setAttribute("title", title);
-  dot.setAttribute("aria-label", title);
+  // נדב 18/10: הנקודה — serverDotState, כמו TA: "מחובר" לבדו אינו ירוק; הבריאות של שרת המשנה מכריעה.
+  if (!connected) SERVER_HEALTH[n.id] = { checks: null, error: error || "", down: true, at: Date.now() };
+  else if (SERVER_HEALTH[n.id] && SERVER_HEALTH[n.id].down) delete SERVER_HEALTH[n.id];
+  paintServerDot(n.id);
 }
 
-/* ‏#1179: דף "העברות" של משני (BRANCH_NODE) — דף של הראשי, ולכן מחוץ להקשר המשני.
+/* ‏#1179: דף "העברות" של שרת משנה (BRANCH_NODE) — דף של הראשי, ולכן מחוץ להקשר שרת המשנה.
    בלי el (מעבר מתוך הדף) — העלה בעץ נמצא ומודגש. */
 function openBranchView(nid, view, el) {
   try { nid = decodeURIComponent(nid); } catch (e) {}
-  setServerContext(null);   // ‏#1179: דף "העברות" הוא דף של הראשי על המשני
+  setServerContext(null);   // ‏#1179: דף "העברות" הוא דף של הראשי על שרת המשנה
   BRANCH_NODE = nid;
   BRANCH_VIEW = "transfers";
   selectPage(el || document.querySelector(
@@ -1983,18 +2052,27 @@ function homeKpis() {
 
 /* ‏#1300: כרטיס האחסון (כמו ESXi) — פנוי בגדול, פס, בשימוש וקיבולת. המקור: ‏/overview.storage
    (‏shutil.disk_usage על ספריית האימג'ים — אותו מקור של כרטיס האחסון הקודם בסקירה). ‏storage=null =
-   השרת לא הצליח לקרוא — "לא ידוע", לא 0 ולא ירוק (עיקרון 5). הספים: כתום מ-90%, אדום מ-95%. */
+   השרת לא הצליח לקרוא — "לא ידוע", לא 0 ולא ירוק (עיקרון 5). הספים: כתום מ-90%, אדום מ-95%.
+   ‏#1737: ועוד סף במספרים מול ‏`reserve_bytes` (הרזרבה למערכת — השרת מסרב לכל כתיבת אימג' שתרד
+   מתחתיה): אדום מתחת לפעמיים הרזרבה, כתום מתחת לחמש פעמים. בדיסק גדול האחוז קובע; בדיסק קטן —
+   הרזרבה, שאחרת הייתה נחצית לפני שהכרטיס האדים. ‏reserve_bytes חסר (שרת ישן) = האחוז בלבד. */
 function homeStoragePct(st) {
   return st && st.free_bytes != null && Number(st.total_bytes) > 0
     ? Math.max(0, Math.min(100, Math.round(100 * (st.total_bytes - st.free_bytes) / st.total_bytes))) : null;
 }
-function homeStorageLevel(pct) { return pct >= 95 ? "err" : pct >= 90 ? "warn" : ""; }
+function homeStorageReserve(st) { const r = st ? Number(st.reserve_bytes) : 0; return r > 0 ? r : 0; }
+function homeStorageLevel(pct, st) {
+  const r = homeStorageReserve(st), free = st ? Number(st.free_bytes) : NaN;
+  const byPct = pct >= 95 ? "err" : pct >= 90 ? "warn" : "";
+  const byReserve = r && free < 2 * r ? "err" : r && free < 5 * r ? "warn" : "";
+  return byPct === "err" || byReserve === "err" ? "err" : byPct || byReserve;
+}
 function homeStorageKpi() {
   const st = OVERVIEW ? OVERVIEW.storage : null, pct = homeStoragePct(st);
   const label = `<div class="l">${esc("אחסון אימג'ים")}</div>`;
   if (pct == null) return `<div class="kpi kpi-store "><div class="v">${OVERVIEW ? "לא ידוע" : "—"}</div>${label}`
     + (OVERVIEW ? `<div class="store-nums"><span>השרת לא החזיר נתוני אחסון</span></div>` : "") + `</div>`;
-  const used = Math.max(0, st.total_bytes - st.free_bytes), lvl = homeStorageLevel(pct);
+  const used = Math.max(0, st.total_bytes - st.free_bytes), lvl = homeStorageLevel(pct, st);
   return `<div class="kpi kpi-store ${lvl || "info"}"><div class="v"><bdi dir="ltr">${esc(fmtBytes(st.free_bytes))}</bdi> <small>פנוי</small></div>${label}`
     + `<div class="bar-row"><div class="bar ${lvl}" role="progressbar" aria-label="שימוש באחסון" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="--w:${pct}%"></i></div><span class="pct">${pct}%</span></div>`
     + `<div class="store-nums"><span>בשימוש <bdi dir="ltr">${esc(fmtBytes(used))}</bdi></span><span>קיבולת <bdi dir="ltr">${esc(fmtBytes(st.total_bytes))}</bdi></span></div></div>`;
@@ -2022,22 +2100,37 @@ function homeRoundBlock(name, pct, cls, meta, extra = "") {
     + `<div class="bar ${cls}" role="progressbar" aria-valuemin="0" aria-valuemax="100"${known ? ` aria-valuenow="${w}"` : ""}><i style="--w:${w}%"></i></div>`
     + `<p class="rm">${meta.filter(Boolean).join(" · ")}</p>${extra}</div>`;
 }
+/* נדב 17/10 (room_855f6a13): סבב שיכפול חי הופיע פעמיים — כ-`/overview.room` וגל שלו כ-`.session`
+   ("0% · 1 מחשבים" מול "19% · 1/3 מחשבים"). הגל של הסבב הוא חלק מהסבב, לא סבב נוסף. */
+function overviewSession(o) {
+  const s = o.session;
+  return s && o.room && o.room.wave_session_id && s.id === o.room.wave_session_id ? null : s;
+}
+/* האחוז של סבב השיכפול: בזמן שגל משדר — הבייטים של הגל (כמו wavePct במסך החדר); אחרת דיסקים
+   שנכתבו מתוך היעד. ‏null = לא נמדד. */
+function roomRoundPct(o) {
+  const r = o.room, s = o.session;
+  if (s && r.wave_session_id && s.id === r.wave_session_id && s.state === "running") {
+    const p = sessionProgressPct(s);
+    if (p != null) return p;
+  }
+  return r.target_drives ? Math.round(100 * (r.written_drives || 0) / r.target_drives) : null;
+}
 function homeRoundCard() {
   const o = OVERVIEW || {};
   const blocks = [];
   let acts = "";
   if (o.room) {
     const r = o.room, failed = r.state === "failed";
-    const pct = r.target_drives ? Math.round(100 * (r.written_drives || 0) / r.target_drives) : null;
     const machines = Array.isArray(r.target_slots) ? r.target_slots.length : null;
-    blocks.push(homeRoundBlock(r.image_name || "סבב שיכפול", pct, failed ? "err" : "", [
+    blocks.push(homeRoundBlock(r.image_name || "סבב שיכפול", roomRoundPct(o), failed ? "err" : "", [
       failed ? esc(`נכשל: ${r.failed_reason || "סיבה לא ידועה"}`) : esc(stateLabel(r.wave_state)),
       machines != null ? esc(`${machines} מחשבים`) : "",
       esc(`${r.written_drives || 0}/${r.target_drives || 0} דיסקים נכתבו`),
-      r.throughput_bps != null ? ltr(fmtBytes(r.throughput_bps) + "/s") : ""]));
+      r.rate_bps != null ? ltr(fmtBytes(r.rate_bps) + "/s") : ""]));
     acts = `<button class="btn sm" onclick="selectPageById('deploy')">לחדר המשכפלים</button>`;
   }
-  if (o.session) {
+  if (overviewSession(o)) {
     const s = o.session, failed = s.state === "failed", open = s.state === "open";
     const wait = open && s.starts_in_seconds != null
       ? `מתחיל בעוד ${Math.floor(s.starts_in_seconds / 60)}:${String(s.starts_in_seconds % 60).padStart(2, "0")}` : "";
@@ -2052,11 +2145,11 @@ function homeRoundCard() {
   return UI.card({ title: "סבב פעיל", acts, cls: isAdmin() ? "c6" : "c12", body });
 }
 
-/* שורות "מה קורה עכשיו": סבב, סבב שיכפול, משיכות, קליטות, העברות לסניפים. */
+/* שורות "מה קורה עכשיו": סבב, סבב שיכפול, משיכות, קליטות, העברות לשרתי המשנה. */
 function homeNowRows(all = false) {
   const rows = [];
   const o = OVERVIEW || {};
-  const s = o.session;
+  const s = overviewSession(o);
   if (s) {
     const open = s.state === "open";
     rows.push([UI.name(`סבב הפצה — ${sessionImage(s)}`, `${sessionGroup(s)} · ${sessionStateText(s)}`),
@@ -2065,10 +2158,10 @@ function homeNowRows(all = false) {
       UI.acts(open ? [["התחל עכשיו", "startRound()"], ["פרטים", "openRoundDetail()"]] : [["פרטים", "openRoundDetail()"]])]);
   }
   if (o.room) {
-    const r = o.room;
-    const pct = r.target_drives ? Math.round(100 * (r.written_drives || 0) / r.target_drives) : null;
+    const r = o.room, machines = Array.isArray(r.target_slots) ? r.target_slots.length : null;
     rows.push([UI.name(`סבב שיכפול — ${r.image_name || ""}`, `גל ${r.wave_number || 1} · פתח ${r.opened_by || ""}`),
-      esc(`${r.target_drives || 0} דיסקים`), UI.barRow(pct, "", `${r.written_drives || 0}/${r.target_drives || 0}`),
+      esc(`${machines != null ? machines + " מחשבים · " : ""}${r.target_drives || 0} דיסקים`),
+      UI.barRow(roomRoundPct(o), "", `${r.written_drives || 0}/${r.target_drives || 0}`),
       UI.status(r.wave_state === "running" ? "run" : "warn", stateLabel(r.wave_state)),
       UI.acts([["לחדר המשכפלים", "selectPageById('deploy')"]])]);
   }
@@ -2098,15 +2191,15 @@ function homeNowRows(all = false) {
     const cls = t.state === "failed" ? "err" : t.state === "done" ? "ok" : t.state === "queued" ? "warn" : "run";
     const label = { queued: "ממתין בתור", sending: "שולח", verifying: "מאמת", done: "הושלם", failed: "נכשל" }[t.state] || t.state;
     const primary = ME.server_name || "ראשי";
-    // ‏#1462: קצב/ETA/זמן שעבר — אותה פונקציה של דף הסניפים (branches.js), רק ממה שנמדד.
+    // ‏#1462: קצב/ETA/זמן שעבר — אותה פונקציה של דף שרתי המשנה (branches.js), רק ממה שנמדד.
     const pace = typeof transferPace === "function" ? transferPace(t) : "";
     const title = t.direction === "pull"
       ? `העברה ${t.node_label || t.node_id} → ${primary} — ${t.image_name || t.image_id}`
-      : `העברה לסניף ${t.node_label || t.node_id} — ${t.image_name || t.image_id}`;
+      : `העברה לשרת המשנה ${t.node_label || t.node_id} — ${t.image_name || t.image_id}`;
     rows.push([UI.nameHtml(title, `${ltr(fmtDate(t.created_at) + " " + fmtClock(t.created_at))} · ${esc(t.started_by || "")}`),
       esc(t.node_label || t.node_id || ""), UI.barRow(pct, cls === "err" ? "err" : t.state === "verifying" ? "indeterminate" : ""),
       UI.status(cls, label + (pace ? " · " + pace : "") + (t.error ? " — " + t.error : "")),
-      UI.acts([["לסניפים", "selectPageById('branches')"]])]);
+      UI.acts([["לשרתי המשנה", "selectPageById('branches')"]])]);
   }
   return rows;
 }
@@ -2121,7 +2214,7 @@ function homeNowCard(all = false) {
 }
 
 /* "דורש טיפול" (apple-pending-4 · 4; ‏#1300: פתוח כברירת מחדל): שורה מתחת לכותרת עם מונה כתום, וכפתור פעולה לכל פריט.
-   דיסקים אדומים, דיסקים מכווצים, מכונות לא רשומות, סניפים שלא מגיבים, בדיקות בריאות
+   דיסקים אדומים, דיסקים מכווצים, מכונות לא רשומות, שרתי משנה שלא מגיבים, בדיקות בריאות
    warn/bad. ריק אמיתי ≠ "לא נקרא" (עיקרון 5). טקסט גולמי באנגלית (שגיאת מערכת מהשרת)
    לא מוצג בגוף: הוא עובר ל"פרטים טכניים" בתוך הפריט. */
 let HOME_ATTN_OPEN = true;   // ‏#1300: פתוח כברירת מחדל (console-full.html); סגירה נשמרת בין רענונים
@@ -2150,14 +2243,15 @@ function attnItem(cls, mainHtml, action = null, tech = "") {
 }
 function homeAttention() {
   const items = [];
-  // ‏#1300: אחסון מ-90% — שורה כאן, באותם ספים של כרטיס האחסון (כתום 90%, אדום 95%)
+  // ‏#1300: אחסון מ-90% — שורה כאן, באותם ספים של כרטיס האחסון (כתום 90%, אדום 95%);
+  // ‏#1737: וגם כשהפנוי מתקרב לרזרבה למערכת — אז השורה אומרת מה השרת שומר ולמה.
   const st = OVERVIEW && OVERVIEW.storage, spct = homeStoragePct(st);
-  if (spct != null && spct >= 90) items.push(attnItem(homeStorageLevel(spct), `<b>אחסון האימג'ים כמעט מלא</b> — ${ltr(spct + "%")} בשימוש, נשארו ${ltr(fmtBytes(st.free_bytes))} פנויים.`, ["לאחסון", "selectPageById('storage')"]));
-  for (const f of DISK_FAILURES || []) {
-    const m = findMachine(f.mac);
-    const raw = f.cause && isRawTechnical(f.cause);
-    items.push(attnItem("err", `<b>דיסק אדום</b> — ${esc(machineName(m) || f.mac)} · דיסק ${esc(f.disk_number ?? "?")}${f.serial ? ` (<span class="mono">${esc(f.serial)}</span>)` : ""} נכשל בכתיבה${f.cause && !raw ? ", סיבה: " + esc(f.cause) : ""}.`, ["נקה אחרי החלפה", "selectPageById('machines')"], raw ? f.cause : ""));
-  }
+  const slvl = spct == null ? "" : homeStorageLevel(spct, st), keep = homeStorageReserve(st);
+  const keepNote = keep && st.free_bytes < 5 * keep ? ` השרת שומר ${ltr(fmtBytes(keep))} למערכת (ה-DB, היומנים ועדכוני השרת), ומסרב לכל קליטה, העלאה או העברה של אימג' שתשאיר פחות מזה.` : "";
+  if (slvl) items.push(attnItem(slvl, `<b>אחסון האימג'ים כמעט מלא</b> — ${ltr(spct + "%")} בשימוש, נשארו ${ltr(fmtBytes(st.free_bytes))} פנויים.${keepNote}`, ["לאחסון", "selectPageById('storage')"]));
+  // נדב 18/10: שום מידע על דיסקים כאן — לא כשלי כתיבה (אדום/כתום), לא SMART ולא "נקה אחרי החלפה". הם בדף
+  // "מחשבים" (לשונית "דיסקים אדומים", עם "נקה"), בחלון המכונה ("נקה אחרי החלפה"), במגירות ובמסכי המשכפל;
+  // דף "דיסקים" — #1765.
   for (const r of SHRINK_RECORDS || []) {
     const st = shrinkCaptureState(r);
     if (st === "active") continue;   // ‏#1253: יוחזר בסוף הקליטה — שורה ב"מה קורה עכשיו"
@@ -2174,7 +2268,13 @@ function homeAttention() {
     const st = SECONDARY_STATUS[n.id];
     if (n.disabled_at || !st || st.connected) continue;
     const raw = st.error && isRawTechnical(st.error);
-    items.push(attnItem("err", `<b>סניף ${esc(n.label)} לא מגיב</b>${st.error && !raw ? " — " + esc(st.error) : ""}.`, ["פרטי הסניף", "selectPageById('branches')"], raw ? st.error : ""));
+    items.push(attnItem("err", `<b>שרת משנה ${esc(n.label)} לא מגיב</b>${st.error && !raw ? " — " + esc(st.error) : ""}.`, ["פרטי שרת המשנה", "selectPageById('branches')"], raw ? st.error : ""));
+  }
+  // נדב 18/10: בלי כרטיס "שרתי משנה" בסקירה — רשימה שלא נקראה נאמרת כאן, גם כשיש פריטים אחרים
+  // (עד כאן היא הופיעה רק כשהרשימה ריקה, ובכרטיס). לא נקרא ≠ אין שרתי משנה (עיקרון 5).
+  if (HOME.err.nodes) {
+    const raw = isRawTechnical(HOME.err.nodes);
+    items.push(attnItem("warn", `<b>רשימת שרתי המשנה לא נקראה</b>${raw ? "" : " — " + esc(HOME.err.nodes)} — לא ידוע אם הם עונים.`, ["לשרתי המשנה", "selectPageById('branches')"], raw ? HOME.err.nodes : ""));
   }
   for (const c of Array.isArray(HEALTH) ? HEALTH : []) {
     if (c.state !== "warn" && c.state !== "bad") continue;
@@ -2186,10 +2286,11 @@ function homeAttention() {
   // — מוצגים, אינם עוצרים סבב. רשימה ריקה = לא נמצא במה שנמדד, לא "הכול תקין".
   for (const m of MACHINES || []) {
     for (const v of Array.isArray(m.probe_verdicts) ? m.probe_verdicts : []) {
+      if (String(v.key || "").startsWith("nvme:")) continue;   // נדב 18/10: SMART של דיסק — בחלון המכונה, לא כאן
       items.push(attnItem(v.level === "err" ? "err" : "warn", `<b>${esc(machineName(m) || m.mac)}</b> — ${esc(v.text_he || v.key || "")}.`, ["פרטי המכונה", `openMachineDetail('${encodeId(m.mac)}')`]));
     }
   }
-  const unread = [!Array.isArray(HEALTH) && "בריאות", HOME.err.net && "רשת", HOME.err.nodes && "סניפים"].filter(Boolean);
+  const unread = [!Array.isArray(HEALTH) && "בריאות", HOME.err.net && "רשת"].filter(Boolean);   // שרתי משנה — פריט משלו, למעלה
   if (!items.length) {
     // ריק אמיתי = שורה שקטה שאומרת זאת; "לא נקרא" = הודעה בשם (לא ניתן לומר שאין מה לטפל)
     return unread.length ? `<div class="c12">${UI.note("warn", esc(`לא נקראו: ${unread.join(", ")} — לא ניתן לומר שאין מה לטפל`))}</div>` : `<div class="c12 attn-none">אין פריטים לטיפול</div>`;
@@ -2241,36 +2342,17 @@ function homeServerCard() {
   return UI.card({ title: "שירותים", acts, cls: "c6", body: body + (who ? `<div class="svc-who">${who}</div>` : "") });
 }
 
-/* ‏#1300 (הכרעת נדב 12/10): "סניפים" — רק כשמוגדרים שרתים משניים; בלי סניפים — לא מוצג כלל.
-   כל סניף — אריח כמו אריחי "שירותים": נקודת מצב, נראה לאחרונה, גרסה. המצב מ-SECONDARY_STATUS
-   (נמדד בעץ, markSecondaryStatus); "נראה לאחרונה" — ‏last_seen_at של השרת (#1017). הגרסה —
-   ‏server_version שהראשי רשם מתשובת המשני (‏/ping, ‏/machines); ‏server_version_at=null = "לא נבדקה",
-   נקראה בלי ערך = "לא ידועה" (עיקרון 5).
-   רשימה שלא נקראה ≠ אין סניפים (עיקרון 5). */
-function homeBranchWhen(ts) { return ts ? (isToday(ts) ? fmtClock(ts) : `${fmtDate(ts)} ${fmtClock(ts)}`) : ""; }
-function homeBranchesCard() {
-  const acts = `<button class="btn sm flat" onclick="selectPageById('branches')">לסניפים</button>`;
-  if (HOME.err.nodes) return UI.card({ title: "סניפים", acts, body: UI.note("warn", esc(`רשימת הסניפים לא נקראה — ${HOME.err.nodes}`)) });
-  const nodes = Array.isArray(HOME.nodes) ? HOME.nodes : [];
-  if (!nodes.length) return "";
-  const tiles = nodes.map((n) => {
-    const st = SECONDARY_STATUS[n.id];
-    const [cls, word] = n.disabled_at ? ["", "מושבת"] : !st ? ["", "לא נבדק"] : st.connected ? ["ok", "מחובר"] : ["err", "לא מגיב"];
-    const seen = homeBranchWhen(n.last_seen_at);
-    const ver = !n.server_version_at ? "גרסה לא נבדקה" : n.server_version ? `גרסה ${n.server_version}` : "גרסה לא ידועה";
-    const detail = [word, seen ? `נראה לאחרונה ${seen}` : "לא נראה עדיין", ver].join(" · ");
-    return `<div class="tile" title="${esc(detail + (st && st.error ? " — " + st.error : ""))}"><span class="led ${cls}"></span><div><div class="tt">${esc(n.label || n.id)}</div><small>${esc(detail)}</small></div></div>`;
-  }).join("");
-  return UI.card({ title: "סניפים", acts, body: `<div class="tiles">${tiles}</div>` });
-}
+/* נדב 18/10: כרטיס "שרתי משנה" יצא מהסקירה — "יש בשביל זה את הלשוניות" (צמתי המשנים בעץ).
+   ההתראות נשארות: שרת משנה שלא מגיב או רשימה שלא נקראה — ב"דורש תשומת לב" (homeAttention). */
 
 /* ‏#1300 (הצעה ג'): "מה קורה עכשיו" הוא דוק המשימות — נפתח לבד כשמתחילה פעילות (מעבר מ-0 ליותר),
    ולא נפתח שוב אחרי שהמפעיל סגר אותו באמצע אותה פעילות. הספירה — activityRows של הדוק עצמו. */
-let HOME_DOCK_HAD = false;
+let HOME_DOCK_HAD = null;   // null = עוד לא נדגם אחרי כניסה: פעילות שכבר רצה בכניסה לא פותחת את הדוק (נדב 17/10)
 function homeDockAuto() {
   try {
     const n = activityRows().rows.length;
     const panel = document.getElementById("taskPanel");
+    if (HOME_DOCK_HAD === null) { HOME_DOCK_HAD = n > 0; return; }
     if (n && !HOME_DOCK_HAD && panel && !panel.classList.contains("open")) toggleTaskPanel();
     HOME_DOCK_HAD = n > 0;
   } catch (e) { /* קוסמטי — בלי DOM מלא לא נופלים */ }
@@ -2313,7 +2395,7 @@ function home(tab = 0) {
   if (tab === 1) body = homeNowCard(true);
   else if (tab === 2 && isAdmin()) body = homeEvents(50);
   else if (!o && !overviewError) body = `<div class="c12">${pagePlaceholder()}</div>`;
-  else body = (isAdmin() ? homeAttention() : "") + homeKpis() + homeRoundCard() + (isAdmin() ? homeServerCard() + homeBranchesCard() : "");
+  else body = (isAdmin() ? homeAttention() : "") + homeKpis() + homeRoundCard() + (isAdmin() ? homeServerCard() : "");
   homeDockAuto();
   return `<div class="page aligned">${header}<div class="body">${stale}${body}</div></div>`;
 }
@@ -2322,8 +2404,9 @@ function home(tab = 0) {
    נבנה לפי docs/design/console-redesign/deploy.md (§"המבנה — חדר המשכפלים", מוקאפ
    deploy-room.png שנדב אישר 17/09). v1 = משכפלים בלבד (הכרעת נדב 17/09 10:20): הלשונית
    הראשונה היא החדר; "כיתה" = קוד ה-session הקיים כמו שהוא, עטוף בכרטיס; "היסטוריה" =
-   דורש API. הגריד הוא **אותו גריד** של clonersView (גל 3א) — machineSlots / slotHtml /
-   clonerCardHtml במצב חדר — לא עותק. מקורות: /room (round, machines[].drawer_list,
+   דורש API. ‏18/10 (נדב: "לא לפי המוקאפ"): הלשונית הראשונה בנויה אחד-לאחד לפי
+   docs/design/apple-mockups/console-full.html (P.deploy) — שלושה אריחים, כרטיס "חדר המשכפלים"
+   וכרטיס לכל משכפל (roomMachHtml); בלי סבב — מצב ריק עם "התחל סבב". מקורות: /room (round, machines[].drawer_list,
    stream_stalled, disk_floor #953), /images (min_target_bytes #953), /machines (prompt —
    השאלה למפעיל #906), /disk-failures (אדום), /net (IP). כתיבה — רק ה-endpoints הקיימים:
    POST /room, /room/start, /room/wake, /room/close (חלון אישור, #1270); בלי שינוי שרת.
@@ -2331,7 +2414,7 @@ function home(tab = 0) {
    לעולם לא דילוג בשני המקרים; היא נענית ליד המכונה או מהקונסולה (#989 ס׳ 2, POST /room/answer — הראשונה גוברת);
    קצב הזרם ובלוקים ששודרו שוב — מ-/room.round (#989). מה שאין לו API — מספר הגלים הכולל, היסטוריה, דילוג מרחוק — טקסט,
    לא נתון מומצא (README §8, עיקרון 5). */
-const DEPLOY = { big: false, err: "", roomErr: "", busy: false, form: { image: "", folder: null, src: "library", builder: "", disk: "", target: "", drv: false, drvMap: {}, sel: {} } };
+const DEPLOY = { err: "", roomErr: "", busy: false, form: { image: "", folder: null, src: "library", builder: "", disk: "", target: "", drv: false, drvMap: {}, sel: {} } };
 /* ‏#1269: ‏GET /room/driver-models — ‏null = לא נקרא (≠ [] אין בספרייה דגם עם חבילה) */
 let DRIVER_MODELS = null;
 const WAVE_HE = { open: "ממתין להצטרפות", running: "משדר", failed: "הגל נכשל", closed: "הגל נסגר" };
@@ -2352,6 +2435,13 @@ function roomMachines() {
       disks: Array.isArray(rm.drawer_list) ? rm.drawer_list : (m.disks ?? null), prompt: m.prompt || null,
       disk_probe: rm.disk_probe ?? m.disk_probe ?? null };
   }));
+}
+/* נדב 17/10: במסך הסבב — רק המשכפלים שהסבב כותב אליהם (‏round.target_slots); בלי סבב, או סבב
+   ישן בלי בחירה (null), — כולם, כמו במסך הבחירה. אותו כלל בגואי (guistate.sh). */
+function roundMachines(kids, r) {
+  if (!r || !Array.isArray(r.target_slots)) return kids;
+  const macs = new Set(r.target_slots.map((t) => t.mac));
+  return kids.filter((m) => macs.has(m.mac));
 }
 /* אחוז הגל: ממוצע המגירות שהצטרפו ומדווחות (‏done = 100). ‏null = אין דיווח, לא 0 (עיקרון 5). */
 function wavePct() {
@@ -2393,7 +2483,7 @@ function roomCardState(m) {
   return { cls: "ok", text: "מחובר" };
 }
 /* ‏#953: הסיבה שאימג' אינו נכנס למגירה הקטנה ביותר (‏disk_floor מ-GET /room) — **אותה
-   מחרוזת בדיוק** ש-`room.fit_refusal` בשרת מחזיר ב-409, כדי שהמפעיל יראה סיבה אחת משני
+   מחרוזת בדיוק** ש-`room.fit_refusal` בשרת מחזיר ב-409, כדי שהמפעיל יראה סיבה אחת שרת משנה
    הצדדים. null = נכנס, או אין רצפה/דרישה ידועה. GB עשרוני כמו על מדבקת הכונן. */
 function imageFitReason(img, floor) {
   const need = Number(img.min_target_bytes);
@@ -2418,57 +2508,54 @@ function roomImageLabel(r) {
 }
 
 function deploy(tab = 0) {
-  const tabs = deployTabs(), r = roomRound(), kids = roomMachines(), st = roomStats(kids), pct = wavePct();
+  const tabs = deployTabs(), r = roomRound(), kids = roundMachines(roomMachines(), r), st = roomStats(kids), pct = wavePct();
   const stalled = !!(ROOM && ROOM.stream_stalled), op = roomOperator();
   const classTab = classroomsOn() ? 1 : -1, histTab = classroomsOn() ? 2 : 1;
-  let name, sub, pill;
+  /* מוקאפ console-full.html (P.deploy): "סבב הפצה" + תגית; שורת משנה "גל N · אימג' · N מחשבים". אין לסבב מספר
+     סידורי ב-API (‏room_rounds.id הוא room_xxxx) — לכן הגל, לא "סבב 12". בורר מצב-הדוגמה ומתג השינויים שבראש המוקאפ
+     הם כלי המוקאפ בלבד, לא המוצר. */
+  let sub, pill;
   if (r) {
-    name = `חדר המשכפלים — גל ${r.wave_number || 1}`;
-    sub = [roomImageLabel(r), `יעד: ${r.target_drives || 0} דיסקים`, `נכתבו ${r.written_drives || 0}`, `נשארו ${r.remaining_drives != null ? r.remaining_drives : "?"}`, r.opened_by ? `פתח ${esc(r.opened_by)}` : ""].filter(Boolean).join(" · ");
-    pill = r.state === "failed" ? UI.pill("err", `נכשל: ${r.failed_reason || "סיבה לא ידועה"}`)
-      : stalled ? UI.pill("warn", "הזרם עצר") : r.wave_state === "running" ? UI.pill("info", "משדר")
+    const what = r.source && r.source.kind === "build_disk" ? roomImageLabel(r) : esc(r.image_name || r.image_id || "—");
+    // ‏#1331 (מוקאפ 2): סבב עם דרייברים אומר זאת בשורת המשנה, אחרי האימג'
+    sub = [`גל ${r.wave_number || 1}`, what, roomAnyDrivers(kids, r) ? "חבילת דרייברים לפי דגם המגירה" : "", `${kids.length} ${kids.length === 1 ? "מחשב" : "מחשבים"}`].filter(Boolean).join(" · ");
+    pill = r.state === "failed" ? UI.pill("err", `נכשל: ${r.failed_reason || "סיבה לא ידועה"}`) : stalled ? UI.pill("warn", "הזרם עצר")
+      : r.wave_state === "running" ? UI.pill("info", "פעיל")
       : r.wave_state === "open" ? UI.pill("info", `ממתין להצטרפות · ${r.ready_drives || 0} מוכנים`) : UI.pill("", WAVE_HE[r.wave_state] || r.wave_state || "—");
   } else {
-    name = "חדר המשכפלים";
-    sub = ROOM == null ? "החדר לא נקרא" : [`${kids.length} ${kids.length === 1 ? "משכפל" : "משכפלים"}`, `${st.slots} חריצים`, `${st.awake} מחוברים`, `${st.filled} דיסקים בחריצים`].join(" · ");
-    pill = ROOM == null ? UI.pill("", "החדר לא נקרא") : UI.pill("", "אין סבב");
+    sub = ROOM == null ? "החדר לא נקרא" : "אין סבב פעיל";
+    pill = UI.pill("", ROOM == null ? "החדר לא נקרא" : "פנוי");
   }
-  const actions = (tab === 0 && ROOM ? (op && !r ? `<button class="btn primary" onclick="openRoomRound()">פתח סבב</button>` : "")
+  const actions = tab === 0 && ROOM ? (op && !r ? `<button class="btn primary" onclick="openRoomRound()">${uiIcon("plus")} התחל סבב</button>` : "")
     + (op && r && r.state === "failed" ? `<button class="btn primary" onclick="reopenRoom()">פתח מחדש</button>` : "")
     + (op && r && r.state !== "failed" && r.wave_state === "open" ? `<button class="btn primary" onclick="startWave()">התחל גל (${r.ready_drives || 0} מוכנים)</button>` : "")
-    + (op ? `<button class="btn danger" onclick="poweroffRoom('${encodeId("grp_CLONERS")}')">כיבוי כל המשכפלים…</button>` : "")
-    + (op ? `<button class="btn" onclick="wakeRoom()">הער משכפלים (WoL)</button>` : "")
-    + (op && r ? `<button class="btn danger" onclick="stopRoom()">עצור סבב</button>` : "")
-    + `<button class="btn" onclick="toggleRoomBig()">${DEPLOY.big ? "חזרה לתצוגה המלאה" : "תצוגה גדולה"}</button>` : "")
-    + `<button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>`;
+    + (op && r ? `<button class="btn danger" onclick="stopRoom()">עצירת הסבב…</button>` : "") : "";
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "סבב הפצה" }], icon: "t-deploy",
-    name: tab === 0 ? name : tab === classTab ? "סבב כיתה" : "היסטוריית סבבים", sub: tab === 0 ? sub : tab === classTab ? "מחשבי כיתה — v2 (הכרעת נדב 17/09); מוצג כפי שקיים היום" : "סבבים קודמים", pill: tab === 0 ? pill : "", actions, tabs, tab, compact: true });
+    name: tab === 0 ? "סבב הפצה" : tab === classTab ? "סבב כיתה" : "היסטוריית סבבים", sub: tab === 0 ? sub : tab === classTab ? "מחשבי כיתה — v2 (הכרעת נדב 17/09); מוצג כפי שקיים היום" : "סבבים קודמים", pill: tab === 0 ? pill : "", actions, tabs, tab, compact: true });
   const stale = overviewError ? `<div class="c12">${UI.note("warn", esc(overviewError))}</div>` : "";
   let body;
   if (tab === classTab) body = deployClassView();
   else if (tab === histTab) body = UI.card({ title: "היסטוריית סבבים", small: "סבבי החדר שהסתיימו", cls: "c12", body: roomHistoryHtml()
     + (classroomsOn() ? UI.note("info", `סבבים קודמים בכיתות — <b title="אין endpoint לסבבי כיתה סגורים">דורש API</b>. היום רק ${isAdmin() ? UI.link("ביומן", "selectPageById('logs')") : "ביומן (מנהל)"}.`) : "") });
   else if (ROOM == null) body = `<div class="c12">${UI.note("warn", `החדר לא נקרא${DEPLOY.roomErr ? ": " + esc(DEPLOY.roomErr) : ""} — הגריד והסבב לא ידועים.`)}</div>`;
-  else if (DEPLOY.big) body = roomGridCard(kids, st, true);
-  else if (r) body = (r.state === "failed" ? `<div class="c12">${UI.note("err", `נכשל: ${esc(r.failed_reason || "סיבה לא ידועה")}`)}</div>` : "") + `<div class="c12 room-wave-line">${roomWaveProgress(r)}</div>` + `<div class="c12 kpis">${roomKpis(r, st, pct)}</div>` + roomGridCard(kids, st, false) + roomNotes(kids, st, roomWaveHint(r, false)) + roomDriversResults(kids);
-  else body = roomGridCard(kids, st, false) + roomNotes(kids, st);
+  else if (r) {
+    /* מה שאינו במוקאפ ונשען על נתון: הגל, היעד, הזמן והקצב — שורות שקטות בתחתית כרטיס החדר (roomFootHtml);
+       מה שדורש פעולה — שאלות, אדום/כתום, גל שהסתיים — בהערות מתחת לכרטיס, רק כשיש מה לומר */
+    body = (r.state === "failed" ? `<div class="c12">${UI.note("err", `נכשל: ${esc(r.failed_reason || "סיבה לא ידועה")}`)}</div>` : "")
+      + `<div class="c12 kpis">${roomKpis(r, pct)}</div>` + roomGridCard(kids)
+      + roomNotes(kids, st, roomWaveHint(r)) + roomDriversResults(kids);
+  } else body = roomGridCard(kids) + roomNotes(kids, st);
   return `<div class="page">${header}<div class="body">${stale}${body}</div></div>`;
 }
 
-/* ‏#989: קצב הזרם ובלוקים ששודרו שוב — מה ש-udp-sender של השרת מדפיס (/room.round).
-   ‏null = לא נמדד (השרת אינו המשדר, דגימה ראשונה, לוג שלא נקרא) — לא 0 (עיקרון 5). */
-function roomStream(r) {
-  const unmeasured = (what, why) => `${what} — <b title="${esc(why)}">לא נמדד</b>`;
-  const rate = r.throughput_bps != null ? `קצב הזרם ${ltr(fmtBytes(r.throughput_bps) + "/s")}`
-    : unmeasured("קצב הזרם", "‏/room.round.throughput_bps הוא null: אין עדיין שתי שורות מ-udp-sender של השרת, או שהמשדר אינו השרת");
-  const loss = r.loss_blocks != null ? `${r.loss_blocks} בלוקים שודרו שוב`
-    : unmeasured("שידור חוזר", "‏/room.round.loss_blocks הוא null: הלוג של udp-sender לא נקרא, או שהמשדר אינו השרת");
-  return `${rate} · ${loss}`;
-}
+
 /* ‏#447 + קצב אוטומטי (11/10): באיזה קצב הגל יוצא, ולמה (/room.round.wave_rate). השרת
    מחליט לבד, לעולם לא מעל IMAGECTL_MAX_BITRATE (בלעדיו 900m). ‏null = לא ידוע (מחשב בנייה,
    גל בלי בחירה) — לא מוצג. ‏no_ceiling — רק בגלים שנבחרו לפני הקצב האוטומטי. */
-const WAVE_RATE_WHY = { start: "קצב פתיחה — מחשב שיכפול בלי גל קודם", up: "עלה — הגל הקודם נקי",
+/* #1758: climb/peak/back — הקצב נבחר לפי goodput (בייטים שנכתבו לשנייה), לא לפי האבדן */
+const WAVE_RATE_WHY = { start: "קצב פתיחה — מחשב שיכפול בלי גל קודם",
+  climb: "עלה — בקצב הגבוה ביותר שנוסה הגל היה הכי מהיר", peak: "נשאר — הקצב שבו הגל היה הכי מהיר",
+  back: "ירד — הזרם לא רץ בקצב שלו", up: "עלה — הגל הקודם נקי",
   down: "ירד — שידורים חוזרים", held: "נשאר — הגל הקודם לא הוכיח שאפשר לעלות",
   unmeasured: "נשאר — הגל הקודם לא נמדד", ceiling: "בתקרה — לא עולים מעליה",
   disabled: "הקצב האוטומטי כבוי — קצב קבוע", no_ceiling: "לא הוגדרה תקרה",
@@ -2512,21 +2599,18 @@ function roomWaveLink(w) {
   }
   return l || (c && w.cap_by === "cloner") ? `${out} · תקרת שידור: ${ltr(bitrateBytesText(w.ceiling))}` : "";
 }
-function roomKpis(r, st, pct) {
-  const stalled = !!ROOM.stream_stalled, open = r.wave_state === "open";
-  const k1 = UI.kpi({ cls: stalled ? "warn" : "info", label: "הגל הנוכחי", value: `גל ${r.wave_number || 1}`, bar: pct,
-    sub: (open ? `${r.ready_drives || 0} מגירות מוכנות · הגל טרם התחיל` : pct == null ? "עוד אין דיווח כתיבה" : `${pct}% בממוצע על המגירות שהצטרפו`)
-      + (stalled ? " · <b>הזרם עצר</b>" : "") + " · " + roomStream(r) + roomWaveRate(r) });
-  const k2 = UI.kpi({ cls: r.written_drives ? "ok" : "", label: "נכתבו ואומתו", value: r.written_drives || 0, unit: `/ ${r.target_drives || 0}`,
-    sub: r.remaining_drives === 0 ? "היעד לסבב הושלם" : `${r.remaining_drives != null ? r.remaining_drives : "?"} נשארו · מכל הגלים` });
-  const k3 = UI.kpi({ cls: st.writing.length ? "info" : "", label: "כותבים עכשיו", value: st.writing.length,
-    sub: st.writing.length ? esc(whereList(st.writing)) : open ? "הגל טרם התחיל" : "אף מגירה לא כותבת כרגע" });
-  const care = st.prompts.length + st.red.length + (stalled ? 1 : 0);
-  const careSub = [...st.prompts.map((m) => `${esc(machineName(m))} ממתין לתשובה`), st.red.length ? `${esc(whereList(st.red))} אדום — מדלג` : "", stalled ? "הזרם עצר" : ""].filter(Boolean).join(" · ");
-  const k4 = UI.kpi({ cls: st.red.length ? "err" : care ? "warn" : "", label: "דורש מפעיל", value: care, sub: careSub || "אין שאלות פתוחות ואין אדומים" });
-  const k5 = UI.kpi({ cls: "", label: "ריקים / לא מחוברים", value: st.empty.length + st.off.length,
-    sub: [st.off.length ? `${esc(st.off.map(machineName).join(", "))} ${st.off.length === 1 ? "לא מחובר" : "לא מחוברים"}` : "כל המשכפלים מחוברים", `${st.empty.length} חריצים פנויים`].join(" · ") });
-  return k1 + k2 + k3 + k4 + k5;
+/* שלושת אריחי המוקאפ (P.deploy ‏.kpis): התקדמות כוללת (ממוצע המגירות שהצטרפו — wavePct), קצב זרם ובלוקים
+   ששודרו שוב — מה ש-udp-sender של השרת מדפיס (/room.round, #989). ‏null = "—" + "לא נמדד" עם הסיבה, לא 0
+   (עיקרון 5); 0 הוא מדידה. הזרם שעצר — כתום על אריח הקצב. */
+function roomKpis(r, pct) {
+  const stalled = !!ROOM.stream_stalled;
+  const tile = (cls, label, value, why, extra = "") => UI.kpi({ cls, label, value: value == null ? "—" : value,
+    sub: [value == null ? `<b title="${esc(why)}">לא נמדד</b>` : "", extra].filter(Boolean).join(" · ") });
+  return tile("info", "התקדמות כוללת", pct == null ? null : `${pct}%`, r.wave_state === "open" ? "הגל טרם התחיל" : "עוד אין דיווח כתיבה מהמגירות שהצטרפו")
+    + tile(stalled ? "warn" : "info", "קצב זרם", r.throughput_bps != null ? `${fmtBytes(r.throughput_bps)}/s` : null,
+      "‏/room.round.throughput_bps הוא null: אין עדיין שתי שורות מ-udp-sender של השרת, או שהמשדר אינו השרת", stalled ? "<b>הזרם עצר</b>" : "")
+    + tile("info", "בלוקים שודרו שוב", r.loss_blocks != null ? String(r.loss_blocks) : null,
+      "‏/room.round.loss_blocks הוא null: הלוג של udp-sender לא נקרא, או שהמשדר אינו השרת");
 }
 /* שורת ההסבר של הגל — אותה שורה שבגואי (screens_room.c, renderLive): גל פתוח = כמה מוכנות וכמה חסרות;
    גל רץ = עבר / קצב / נותרו, **רק מה שנמדד** (קצב null ≠ 0, עיקרון 5). */
@@ -2537,14 +2621,24 @@ function roomWaveProgress(r) {
   const left = r.remaining_drives, ready = r.ready_drives || 0;
   if (left == null || left <= 0) return "";
   const est = ready > 0 ? `משוער: עוד ${Math.ceil(left / ready)} גלים` : "ממתין לדיסקים חדשים";
-  let out = UI.note("info", `גל ${r.wave_number || 1} · נכתבו ${r.written_drives || 0} מתוך ${r.target_drives || 0} · נשארו ${left} · ${est}`);
-  if (r.wave_state === "open" && (r.wave_number || 1) > 1)       // גל קודם נגמר ויש עוד מה לכתוב
-    out += UI.note("warn", `הגל הסתיים — החליפו דיסקים והעירו את מחשבי השיכפול כדי להמשיך` + (roomOperator() ? ` <button class="btn" onclick="wakeRoom()">הער את מחשבי השיכפול</button>` : ""));
-  return out;
+  return `גל ${r.wave_number || 1} · נכתבו ${r.written_drives || 0} מתוך ${r.target_drives || 0} · נשארו ${left} · ${est}`;
 }
-function roomWaveHint(r, includeProgress = true) {
+/* גל קודם נגמר ויש עוד מה לכתוב — דורש פעולה, ולכן הערה ולא שורה בתחתית הכרטיס */
+function roomWaveEnded(r) {
+  const left = r.remaining_drives;
+  if (left == null || left <= 0 || r.wave_state !== "open" || (r.wave_number || 1) <= 1) return "";
+  return UI.note("warn", `הגל הסתיים — החליפו דיסקים והעירו את מחשבי השיכפול כדי להמשיך` + (roomOperator() ? ` <button class="btn" onclick="wakeRoom()">הער את מחשבי השיכפול</button>` : ""));
+}
+function roomWaveHint(r) {
   if (!r || r.state === "failed") return "";
-  return (includeProgress ? roomWaveProgress(r) : "") + roomWaveHint1(r) + roomPrecheckHtml(r) + roomMissingHtml(r);
+  return roomWaveEnded(r) + roomWaveHint1(r) + roomPrecheckHtml(r) + roomMissingHtml(r);
+}
+/* 18/10 (מוקאפ P.deploy): כרטיס "חדר המשכפלים" במוקאפ הוא רק הגריד. מה שאינו בו ואינו דורש פעולה — הגל
+   והיעד, הזמן והקצב, הקצב שנבחר לגל — שורות קטנות ומושתקות בתחתית הכרטיס, לא באנרים כחולים ברוחב הדף. */
+function roomFootHtml(r) {
+  if (!r || r.state === "failed") return "";
+  const lines = [roomWaveProgress(r), roomWaveRunning(r), roomWaveRate(r).replace(/^ · /, "")].filter(Boolean);
+  return lines.length ? `<div class="room-foot">${lines.map((x) => `<p>${x}</p>`).join("")}</div>` : "";
 }
 /* ‏#432: לפני "התחל" — מגירה שהגל יכתוב שהתחברה מתחת למהירות הפורט, או שה-CRC שלה עלה מאז
    הסבב הקודם שלה (/room.round.precheck, טקסט מהשרת — אותו טקסט בגואי). כתום: אזהרה, לא חסימה. */
@@ -2591,46 +2685,141 @@ function roomWaveHint1(r) {
     const ready = r.ready_drives || 0, need = Math.max(0, (r.remaining_drives || 0) - ready);
     return UI.note("info", `הגל ממתין: ${ready} מגירות מוכנות, צריך עוד ${need} — או "התחל גל". החלפתם מגירות? הדליקו את המכונות והן יצטרפו.`);
   }
+  return "";
+}
+function roomWaveRunning(r) {
   if (r.wave_state !== "running") return "";
   const parts = [];
   if (r.elapsed_s != null) parts.push(`עבר ${hmsClock(r.elapsed_s)}`);
   if (r.rate_bps != null && r.rate_bps > 0) parts.push(ltr(`${fmtBytes(r.rate_bps)}/שנ'`));
   if (r.eta_s != null && r.rate_bps != null && r.rate_bps > 0) parts.push(`נותרו ~${hmsClock(r.eta_s)}`);
   else if (parts.length) parts.push("סיום לא נמדד");
-  return UI.note("info", `הגל משדר — ${parts.length ? parts.join(" · ") : "זמן וקצב טרם נמדדו"}. מכונה שסיימה — מכבים, מחליפים מגירות, מדליקים.`);
+  return `הגל משדר — ${parts.length ? parts.join(" · ") : "זמן וקצב טרם נמדדו"}. מכונה שסיימה — מכבים, מחליפים מגירות, מדליקים.`;
 }
-/* ‏#1269: מה קרה לדרייברים של כל מגירה (drawer_list[].drivers) — שורה למגירה, כמו room_drv_results_make בגואי.
-   "לא הונחו" = השחזור עצמו הושלם — כתום, לא אדום (#856). בלי תוצאה (null) — אין שורה. */
+/* ‏#1269: מה קרה לדרייברים של כל מגירה (drawer_list[].drivers). ‏#1331 (מוקאפ 17/10, גרסה 2): השורה
+   של כל דיסק יושבת עכשיו מתחת לפס שלו (roundDskHtml); כאן — סיכום אחד, ומתחתיו הערה לכל דיסק שדורש
+   יד: אדום = דרייבר האחסון לא הוגדר (עלול לא לעלות), כתום = לא הונחו (#856: השחזור הושלם). */
 function roomDriversResults(kids) {
-  const lines = [];
-  let failed = false;
+  const r = roomRound(), out = [];
+  let staged = 0, failed = 0, noModel = 0;
   for (const m of kids) {
-    const rm = roomMachine(m.mac);
-    for (const d of (rm && rm.drawer_list) || []) {
-      const o = d.drivers;
+    for (const s of r ? roundSlots(m, r) : []) {
+      const o = s.live && s.disk.drivers;
       if (!o || !o.state) continue;
-      const word = o.state === "staged" ? "הונחו" : o.state === "failed" ? "לא הונחו" : "דולגו";
-      const why = o.state === "staged" ? (o.packages || []).join(", ") : o.state === "failed" ? (o.error || "סיבה לא ידועה")
-        : (o.reason === "not_windows" ? "האימג' אינו Windows" : o.reason === "no_model" ? "לא נבחר דגם לדיסק הזה" : (o.reason || ""));
-      if (o.state === "failed") failed = true;
-      lines.push(`דרייברים · ${esc(machineName(m))} · דיסק ${d.port}: ${word}${why ? " — " + esc(why) : ""}`);
+      const where = `<b>${esc(machineName(m))} · ${esc(slotLabel(m, s.n, s.disk))}</b>`;
+      if (o.state === "staged") staged++;
+      else if (o.state === "failed") failed++;
+      else if (o.reason === "no_model") noModel++;
+      if (driversTone(o) === "bad") out.push(UI.note("err", `<span>${where} — ${esc(bootStorageText(o.boot))}. <b>${BOOT_RISK_HE}.</b></span>`));
+      else if (o.state === "failed") out.push(UI.note("warn", `<span>${where} — דרייברים לא הונחו — ${esc(o.error || "סיבה לא ידועה")}. המחשב יעלה בלי הדרייברים של הדגם; השחזור עצמו הושלם.</span>`));
     }
   }
-  return lines.length ? `<div class="c12 rnotes">${UI.note(failed ? "warn" : "info", lines.join("<br>"))}</div>` : "";
+  const counts = [staged ? `${staged} ${staged === 1 ? "מגירה הונחה" : "מגירות הונחו"}` : "", failed ? `${failed} ${failed === 1 ? "לא הונחה" : "לא הונחו"}` : "",
+    noModel ? `${noModel} בלי דגם` : ""].filter(Boolean).join(", ");
+  if (!counts && !out.length) return "";
+  const over = r && r.wave_state && !["open", "running"].includes(r.wave_state)
+    ? `גל ${r.wave_number} הסתיים — נכתבו ${r.written_drives || 0} מתוך ${r.target_drives || 0}. ` : "";
+  return `<div class="c12 rnotes">${counts ? UI.note("info", `${over}דרייברים: ${counts}.`) : ""}${out.join("")}</div>`;
 }
-function roomGridCard(kids, st, big) {
-  const r = roomRound(), admin = isAdmin();
-  const small = r ? "בסבב — מצב כל מגירה מ-/room" : "אין סבב — הדיסקים לפי הדיווח האחרון ב-hello";
-  const body = kids.length ? `<div class="mgrid${big ? " big" : ""}">${kids.map((m) => clonerCardHtml(m, admin, true)).join("")}</div>`
-    : UI.empty("אין מחשבי שיכפול רשומים — הוסיפו אותם במחשבים (MAC + שם) לפני שפותחים סבב.", admin ? `<button class="btn primary" onclick="openClass('grp_CLONERS')">למחשבי השיכפול</button>` : "");
-  return UI.card({ title: "המחשבים והדיסקים", small, acts: clonerLegend(), cls: "c12", body });
+/* #1376 (נדב 17/10, גרסה ב׳ — אותה צורה כמו מסך השיכפול בגואי ודף "מחשבי שיכפול"): כרטיס לכל מחשב שבסבב,
+   שורה לכל מגירה שנבחרה — "דיסק N", פס, מצב ואחוז. רק מה ש-round.target_slots (‏{mac, ports}) מנה;
+   בלי בחירה (סבב ישן, null) — כל המגירות של המחשב. סיבת כשל נאמרת על המגירה, לא רק ב-tooltip. */
+function roundSlots(m, r) {
+  const t = r && Array.isArray(r.target_slots) ? r.target_slots.find((x) => x.mac === m.mac) : null;
+  const ports = t && Array.isArray(t.ports) ? new Set(t.ports) : null;
+  const slots = machineSlots(m).slots;
+  return ports ? slots.filter((s) => s.disk && ports.has(s.disk.port)) : slots;
+}
+/* שורת דיסק בכרטיס המשכפל — המוקאפ (P.deploy, ‏.dsk): "דיסק N" · פס · אחוז. הכול מ-drawer_list של /room:
+   אחוז = bytes_written/bytes_total (‏done = 100); אין דיווח = "—", לא 0% (עיקרון 5); נכשל = "נכשל" בפס אדום
+   מלא; אדום שלא נכתב בסבב (SMART, #1732) = "דולג". המצב המילולי והסיבה הגולמית — בריחוף (diskTitle).
+   ‏#1386: "בטל…" על שורה שכותבת, למפעיל סבבים — מופיע בריחוף/פוקוס מעל האחוז (בלי ריחוף — תמיד). ‏#1331: שורת
+   הדרייברים מתחת לשורה, רק כשהדיסק דיווח. */
+function roundDskHtml(m, s) {
+  const d = s.disk, label = s.n != null ? slotLabel(m, s.n, d) : rowLabel(m, s);
+  const live = !!(d && s.live && d.state), red = !!d && slotClass(s) === "err";
+  const gone = live && d.state === "cancelled", going = live && d.state === "writing" && !!d.cancel;
+  let pct = 0, bar = "", text, rc = "";
+  if (!d) { text = "ריק"; rc = " vacant"; }
+  else if (!live) { text = red ? "דולג" : "—"; bar = red ? "err" : ""; rc = red ? " bad" : ""; }
+  else if (gone) { text = "בוטל"; rc = " cancelled"; }
+  else if (going) { text = "מבטל…"; bar = "warn"; rc = " cancelling"; }
+  else if (d.state === "failed") { text = "נכשל"; bar = "err"; pct = 100; rc = " bad"; }
+  else {
+    pct = d.bytes_total > 0 ? Math.round(100 * (d.bytes_written || 0) / d.bytes_total) : d.state === "done" ? 100 : 0;
+    bar = d.state === "done" ? "ok" : slotClass(s) === "warn" ? "warn" : ""; text = `${pct}%`;
+  }
+  const meter = live && !gone && !going && d.state !== "failed" ? ` role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"` : "";
+  const act = live && d.state === "writing" && !going && d.dev && roomOperator()
+    ? `<button type="button" class="btn sm danger dx" onclick="cancelDrawer('${encodeId(m.mac)}',${Number(s.n)})" aria-label="בטל את הכתיבה ל${esc(label)}">בטל…</button>` : "";
+  const drv = live && d.drivers && d.drivers.state ? `<span class="dline ${driversTone(d.drivers)}">${esc(driversOutcomeText(d.drivers))}</span>` : "";
+  return `<div class="dsk${rc}" data-slot="${s.n ?? ""}"${d ? ` title="${esc(diskTitle(m, s, d))}"` : ""}><span>${esc(label)}</span><div class="bar ${bar}"${meter}><i style="--w:${pct}%"></i></div><b>${esc(text)}</b>${act}${drv}</div>`;
+}
+/* כרטיס משכפל — המוקאפ: שם + תגית ("מחובר" / "לא מחובר" / "דיסק אדום"), שורת משנה (IP; לא מחובר — "לא הצטרף
+   לסבב"; אדום — איזה דיסק ולמה, ומה כן נכתב), ושורה לכל דיסק שהסבב כותב אליו (round.target_slots). אדום = רקע
+   אדום, לא מחובר = מקווקו. WoL למשכפל כבוי (#984) — בריחוף/פוקוס. ה-MAC בריחוף על הכרטיס. */
+function roomMachHtml(m, r) {
+  const st = roomCardState(m), rm = roomMachine(m.mac), slots = roundSlots(m, r), net = netFor(m.mac);
+  const failed = slots.filter((s) => s.disk && slotClass(s) === "err");
+  const done = slots.filter((s) => s.live && s.disk.state === "done");
+  const gone = slots.filter((s) => s.live && s.live.state === "cancelled");   // #1386
+  const bootRisk = slots.filter((s) => s.live && s.disk.drivers && driversTone(s.disk.drivers) === "bad");   // ‏#1331: הדיסק עלול לא לעלות
+  const red = failed.length > 0 || bootRisk.length > 0;
+  const name = (s) => slotLabel(m, s.n, s.disk);
+  const why = (s) => s.disk.state === "failed" ? drawerErrorText(s.disk.error) : s.fail ? failureCauseText(s.fail) : "SMART נכשל";
+  let sub;
+  if (failed.length) sub = esc(failed.map((s) => `${name(s)} אדום — ${why(s)}`).join("; ")) + (done.length ? `; ${esc(done.map(name).join(", "))} ${done.length === 1 ? "משוחזר" : "משוחזרים"}` : "");
+  else if (st.off) sub = "לא מחובר — לא הצטרף לסבב";
+  else sub = (net && net.ip ? `<bdi dir="ltr">${esc(net.ip)}</bdi>` : "כתובת לא ידועה") + (rm && rm.awake && !rm.joined && r.wave_state === "running" ? " · לא הצטרף לגל" : "");
+  const pill = red ? UI.pill("err", "דיסק אדום") : UI.pill(st.cls, st.text);
+  const wol = st.off && roomOperator() ? `<button class="btn sm wx" onclick="wakeMachine('${encodeId(m.mac)}')" title="WoL למכונה הזו בלבד (#984)">WoL</button>` : "";
+  const notes = bootRisk.map((s) => `<div class="mach-note err">${esc(name(s))} — ${BOOT_RISK_HE}</div>`).join("")   // ‏#1331
+    + gone.map((s) => `<div class="mach-note">${esc(rowLabel(m, s))} — <bdi>${esc((s.live.cancel && s.live.cancel.text_he) || "בוטל")}</bdi> · ${esc(s.live.error || "טבלת המחיצות נמחקה, הדיסק יוצג ריק")}</div>`).join("");
+  return `<div class="mach${red ? " err" : st.off ? " off" : ""}" data-mac="${esc(m.mac)}" title="${esc(m.mac)}"><div class="mt"><span>${esc(machineName(m) || m.mac)}</span>${pill}${wol}</div><div class="ms">${sub}</div><div class="dsks">${slots.map((s) => roundDskHtml(m, s)).join("")}</div>${notes}</div>`;
+}
+/* #1386 (נדב 17/10): "בטל דיסק זה" — חלון ה-danger הרגיל של הקונסולה (sheet + impactList), כמו בשאר הדפים.
+   היציאה היא "המשך לכתוב" ולא "ביטול" — בחלון שכל עניינו ביטול, "ביטול" ליד "בטל" הוא תאונה. האישור הוא הכפתור האדום בלבד (#1270). */
+function cancelDrawer(macEnc, n) {
+  if (!roomOperator()) return;
+  const mac = decodeURIComponent(macEnc), m = findMachine(mac) || { mac };
+  const s = machineSlots(m).slots.find((x) => x.n === n && x.disk && x.disk.dev);
+  if (!s) { toast("המגירה לא נמצאה בסבב — רעננו את המסך", 6000); return; }
+  const d = s.disk, dev = d.dev, label = slotLabel(m, s.n, d);
+  const pct = d.bytes_total > 0 ? Math.round(100 * (d.bytes_written || 0) / d.bytes_total) : null;
+  const sub = [machineName(m) || mac, `מגירה ${s.n}`, d.model || "", d.size_bytes ? fmtBytes(d.size_bytes) : "",
+    pct != null ? `עכשיו ב-${pct}%` : ""].filter(Boolean).join(" · ");
+  sheet({ title: `לבטל את הכתיבה ל${label}?`, sub, danger: true,
+    note: impactList([["b", "<b>הכתיבה לדיסק הזה נעצרת מיד.</b> מה שכבר נכתב — נזרק."],
+      ["b", "<b>טבלת המחיצות שלו נמחקת</b> והוא יוצג ריק, בלי מערכת. הפעולה אינה הפיכה."],
+      ["ok", "<b>שאר המגירות ממשיכות</b> באותו זרם, בלי עצירה."],
+      ["ok", "בסבב הבא הדיסק ייבחר ככתיבה רגילה (ירוק). לא נחשב כשל."]]),
+    hint: `יירשם ביומן: בוטל על ידי ${ME ? ME.username : ""}`,
+    cancelLabel: "המשך לכתוב", submitLabel: `בטל את ${label}`,
+    onSubmit: async () => { await post("/room/drawer/cancel", { mac, dev }); toast(`${label} — מבטל; שאר הדיסקים ממשיכים`); await loadDeploy(); } });
+}
+/* ‏#1331: מגירה כלשהי בסבב דיווחה מה קרה לדרייברים שלה — כמו dv_any בגואי הנייטיבי. */
+function roomAnyDrivers(kids, r) {
+  return kids.some((m) => roundSlots(m, r).some((s) => s.live && s.disk.drivers && s.disk.drivers.state));
+}
+/* מוקאפ console-full.html (P.deploy), אחד-לאחד: כרטיס "חדר המשכפלים" — בסבב, כרטיס לכל משכפל שבסבב;
+   בלי סבב, מצב ריק עם "התחל סבב" (הגריד המלא של החדר מוצג בחלון פתיחת הסבב). "כיבוי כל המשכפלים…"
+   בפעולות הכרטיס — למנהל בלבד (‏poweroffRoom), ובזמן סבב פעיל השרת מסרב והחלון אומר זאת. */
+function roomGridCard(kids) {
+  const r = roomRound(), admin = isAdmin(), op = roomOperator();
+  const acts = admin ? `<button class="btn sm danger" onclick="poweroffRoom('${encodeId("grp_CLONERS")}')">כיבוי כל המשכפלים…</button>` : "";
+  const legend = r && roomAnyDrivers(kids, r) ? `<div class="drv-legend">מתחת לכל דיסק — מה קרה לדרייברים שלו: אפור = הונחו או אין חבילה · כתום = לא הונחו (המחשב יעלה בלעדיהם) · אדום = דרייבר האחסון לא הוגדר (הדיסק עלול לא לעלות)</div>` : "";
+  const body = !kids.length
+    ? UI.empty("אין מחשבי שיכפול רשומים — הוסיפו אותם במחשבים (MAC + שם) לפני שפותחים סבב.", admin ? `<button class="btn primary" onclick="openClass('grp_CLONERS')">למחשבי השיכפול</button>` : "")
+    : r ? `${legend}<div class="rgrid round">${kids.map((m) => roomMachHtml(m, r)).join("")}</div>${roomFootHtml(r)}`
+    : `<div class="empty"><span class="eic">${uiIcon("t-deploy")}</span><b class="et">אין סבב פעיל</b><p>בחרו אימג' ומחשבי יעד כדי להתחיל. מחשבים כבויים יידלקו דרך WoL.</p>${op ? `<button class="btn primary" onclick="openRoomRound()">התחל סבב</button>` : ""}</div>`;
+  return UI.card({ title: "חדר המשכפלים", small: r ? "כשל במחשב אחד לא עוצר את השאר" : "", acts, cls: "c12", body });
 }
 /* השאלה הפתוחה למפעיל — בדף, לא במודאל. הצבע = מה קורה בלי תשובה (הכרעת נדב 16/09):
    כתום ממשיך לכתוב, אדום מדלג. הפעולות: מוניטור (לענות ליד המסך), "נקה" על רשומת אדום
    (אחרי החלפת דיסק/כבל); תשובה מהקונסולה — roomAskNote. */
 function roomNotes(kids, st, hint = "") {
   const admin = isAdmin(), out = hint ? [hint] : [], asked = new Set([...st.prompts, ...kids.filter((m) => (roomMachine(m.mac) || {}).ask)].map((m) => m.mac));
-  const clears = (items) => admin ? items.filter((x) => x.s.fail).map((x) => UI.link(`נקה אדום — ${machineName(x.m)} · דיסק ${x.s.n}`, `clearDiskFailure(${Number(x.s.fail.id)})`)) : [];
+  const clears = (items) => admin ? items.filter((x) => x.s.fail).map((x) => UI.link(`נקה כשל קודם — ${machineName(x.m)} · דיסק ${x.s.n}`, `clearDiskFailure(${Number(x.s.fail.id)})`)) : [];
   const askOf = (m) => (roomMachine(m.mac) || {}).ask || null;
   for (const m of kids) { const a = askOf(m); if (a) out.push(roomAskNote(m, a)); }   // ‏#989 ס׳ 2: שאלה שאפשר לענות עליה מכאן
   for (const m of st.prompts.filter((x) => !askOf(x))) {
@@ -2638,39 +2827,44 @@ function roomNotes(kids, st, hint = "") {
     const fate = red.length ? `<b>אדום — בלי תשובה הסוכן מדלג</b> על ${esc(whereList(red))}` : warn.length ? `<b>כתום — בלי תשובה הסוכן ממשיך לכתוב</b> על ${esc(whereList(warn))}` : "<b>ממתין לתשובה ליד המכונה</b>";
     const acts = [admin ? UI.link("לענות ליד המסך — דף המוניטור", `selectPageById('monitor')`) : "", ...clears(red),
       `תשובה מהקונסולה אינה זמינה לשאלה הזאת — עונים ליד המכונה (תפריט טקסט, או סוכן ישן שאינו מציע אותה)`].filter(Boolean).join(" · ");
-    out.push(UI.note(red.length ? "err" : "warn", `<b>${esc(machineName(m))}</b> ממתין למפעיל: <span dir="ltr">${esc(PROMPT_HE[m.prompt] || m.prompt)}</span>. ${fate}. ${acts}. השאלה חייבת תשובה מאדם — שיכפול תמיד עם מישהו ליד המחשבים.`));
+    out.push(UI.note(red.length ? "err" : "warn", `<b>${esc(machineName(m))}</b> ממתין למפעיל: <span dir="${/[א-ת]/.test(promptHe(m.prompt)) ? "rtl" : "ltr"}">${esc(promptHe(m.prompt))}</span>. ${fate}. ${acts}. השאלה חייבת תשובה מאדם — שיכפול תמיד עם מישהו ליד המחשבים.`));
   }
   if (roomRound()) {
     const warn = st.warn.filter((x) => !asked.has(x.m.mac)), red = st.red.filter((x) => !asked.has(x.m.mac));
-    if (warn.length) out.push(UI.note("warn", `<b>${esc(whereList(warn))}</b> — SMART אזהרה / CRC / קישור איטי: <b>הסוכן ממשיך לכתוב</b> (כתום = כותב), והדיסק ייבדק שוב באימות. דילוג מרחוק — <b title="אין endpoint לדילוג על מגירה">דורש API</b>.`));
-    if (red.length) out.push(UI.note("err", `<b>${esc(whereList(red))}</b> — אדום: <b>הסוכן מדלג</b> (אדום = מדלג). ${[...clears(red), "החלפת דיסק או כבל — ליד המכונה"].join(" · ")}.`));
+    if (warn.length) out.push(UI.note("warn", `<b>${esc(whereList(warn))}</b> — SMART אזהרה / CRC / קישור איטי: <b>הסוכן ממשיך לכתוב</b> (כתום = כותב), והדיסק ייבדק שוב באימות. דילוג מרחוק — <b title="אין endpoint לדילוג על מגירה">דורש API</b>.${clears(warn).length ? " " + clears(warn).join(" · ") : ""}`));
+    if (red.length) out.push(UI.note("err", `<b>${esc(whereList(red))}</b> — אדום: <b>${esc(SMART_RED_HE)}</b> (#1732: מדולג בגלוי, בלי שאלה). ${[...clears(red), "החלפת דיסק או כבל — ליד המכונה"].join(" · ")}.`));
   }
   return out.length ? `<div class="c12 rnotes">${out.join("")}</div>` : "";
 }
-/* ‏#989 ס׳ 2: שאלת ה-SMART של משכפל, ותשובה ממנה — אותם שלושה צעדים של התפריט ליד המכונה
-   (החלף / כתוב בכל זאת / דלג). אדום (failed_last) בלי "כתוב בכל זאת", ו"דלג" נקרא "המשך בלעדיו"
-   כמו שם. התשובה הראשונה גוברת: אחרי שנענתה — מי ענה ומה, בלי כפתורים; 409 מוצג כפי שהוא. */
+/* ‏#989 ס׳ 2: שאלת ה-SMART של משכפל, ותשובה ממנה — אותם צעדים של התפריט ליד המכונה. ‏#1732 (נדב
+   18/10, מחליף את "כתוב בכל זאת" של #1580): אדום = SMART תקול (fail) — לעולם אינו יעד: הסוכן אינו
+   שואל עליו והשרת דוחה כל "כתוב" עליו, ולכן אין לו כפתור כתיבה כאן; כתום = נכשל בשיכפול הקודם
+   (failed_last) — "נסה שוב" כותב; warn — "כתוב בכל זאת". התשובה הראשונה גוברת: אחרי שנענתה — מי ענה
+   ומה, בלי כפתורים; 409 מוצג כפי שהוא. */
+const SMART_RED_HE = "SMART נכשל — לא כותבים על הדיסק הזה; אפשר להעתיק ממנו או לחלץ לשרת";
 const ASK_VERDICT_HE = { warn: "SMART אזהרה", fail: "SMART תקלה", failed_last: "נכשל בשיכפול הקודם" };
 const ASK_ANSWER_HE = { replace: "החלף דיסק", rescue: "כתוב בכל זאת", skip: "דלג" };
+function askAnswerHe(a) { return a.answer === "rescue" && a.verdict === "failed_last" ? "נסה שוב" : ASK_ANSWER_HE[a.answer] || a.answer; }
 function roomAskNote(m, a) {
-  const red = a.verdict === "failed_last", name = esc(machineName(m));
+  const red = a.verdict === "fail", name = esc(machineName(m));
   const what = a.verdict === "fail" ? `דיסק ${a.port} — ${esc(smartF1Text(a.reason))}`   // #1366
     : `דיסק ${a.port} — ${ASK_VERDICT_HE[a.verdict] || esc(a.verdict)}${a.reason ? ` (<span dir="ltr">${esc(a.reason)}</span>)` : ""}`;
-  if (a.answer) return UI.note("info", `<b>${name}</b> · ${what}: נענתה ע&quot;י ${esc(a.answered_by || "גורם לא ידוע")}: ${esc(ASK_ANSWER_HE[a.answer] || a.answer)}.`);
-  const fate = red ? "<b>אדום — בלי תשובה הסוכן מדלג</b>" : "<b>כתום — בלי תשובה הסוכן ממשיך לכתוב</b>";
-  const btn = (ans, label, cls = "") => `<button type="button" class="btn sm${cls}" onclick="answerSmart('${esc(m.mac)}','${esc(a.nonce)}','${ans}')">${label}</button>`;
-  const acts = roomOperator() ? `<div class="acts">${btn("replace", "החלף דיסק (כיבוי)")}${red ? "" : btn("rescue", "כתוב בכל זאת")}${btn("skip", red ? "המשך בלעדיו" : "דלג על הדיסק")}</div>` : "";
+  if (a.answer) return UI.note("info", `<b>${name}</b> · ${what}: נענתה ע&quot;י ${esc(a.answered_by || "גורם לא ידוע")}: ${esc(askAnswerHe(a))}.`);
+  const fate = red ? `<b>${esc(SMART_RED_HE)}</b>` : "<b>כתום — בלי תשובה הסוכן ממשיך לכתוב</b>";
+  const btn = (ans, label, cls = "") => `<button type="button" class="btn sm${cls}" onclick="answerSmart('${esc(m.mac)}','${esc(a.nonce)}','${ans}','${esc(a.verdict)}')">${label}</button>`;
+  const acts = roomOperator() ? `<div class="acts">${btn("replace", "החלף דיסק (כיבוי)")}${red ? "" : btn("rescue", a.verdict === "failed_last" ? "נסה שוב" : "כתוב בכל זאת")}${btn("skip", "דלג על הדיסק")}</div>` : "";   // #1732: no write on red
   return UI.note(red ? "err" : "warn", `<b>${name}</b> שואל: ${what}. ${fate}. התשובה הראשונה גוברת — גם ליד המכונה.${acts}`);
 }
-async function answerSmart(mac, nonce, answer) {
+async function answerSmart(mac, nonce, answer, verdict) {
   if (!roomOperator()) return;
+  if (verdict === "fail" && answer === "rescue") return toast(SMART_RED_HE, 6000);   // #1732: the server refuses it too
   const send = async () => {
     try { await post("/room/answer", { mac, nonce, answer }); toast("התשובה נשלחה — המכונה תקבל אותה בתוך כמה שניות"); }
     catch (e) { toast(e.message, 6000); }       // ‏409: כבר נענה ע"י … / השאלה התחלפה — מוצג כפי שהשרת אמר
     await loadDeploy();
   };
-  if (answer !== "replace") return send();
   const m = findMachine(mac), name = machineName(m || { mac });
+  if (answer !== "replace") return send();
   sheet({ title: "להחליף את הדיסק?", sub: `${name} תיכבה כדי שיחליפו את הדיסק`, danger: true, submitLabel: "כיבוי והחלפה",
     note: impactList([["b", `${esc(name)} יכבה — כל המכונה, לא רק הדיסק`], ["w", "היא כבויה לפני כתיבה: אף מגירה שלה לא נכתבת בגל הזה"], ["w", "אדם צריך להחליף את הדיסק ליד המכונה ולהדליק אותה"], ["w", "שאר המכונות ממשיכות"]]),
     onSubmit: send });
@@ -2725,6 +2919,7 @@ function roomPickClearAll() { roomPickSet(roomPickSlots(roomMachines()), false);
 function roomPickWarning(d) {
   const why = [];
   if (d.smart === "fail") why.push(smartF1Text(d.smart_reason)); else if (d.smart === "warn") why.push("SMART אזהרה");
+  else if (d.smart === "failed_last") why.push("נכשל בשיכפול הקודם — \"נסה שוב\" כותב");   // #1580: orange
   if (d.crc_suspect === true) why.push(`כבל או מגירה חשודים — ${d.crc} שגיאות`);
   else if ((d.crc_delta || 0) > 0) why.push(`CRC +${d.crc_delta}`); else if ((d.crc_rise || 0) > 0) why.push(`CRC +${d.crc_rise}`);
   if (linkSlow(d)) why.push(linkText(d));
@@ -2870,7 +3065,6 @@ function roomRoundRender() {
   const body = document.getElementById("modalBody");
   if (body && body.querySelector && body.querySelector(".rnew")) openRoomRound();
 }
-function toggleRoomBig() { DEPLOY.big = !DEPLOY.big; renderCurrent(); }
 async function openRoomRoundSubmit() {
   if (!roomOperator() || DEPLOY.busy) return;
   const f = DEPLOY.form; DEPLOY.err = "";
@@ -3882,9 +4076,9 @@ function disksCell(m) {
   if (!m.disks.length) return UI.status("warn", zeroDisksText(m));
   const sizes = [...new Set(m.disks.map((d) => marketedDiskSize(d.size_bytes)))].map(ltr).join(" / ");
   const red = [...new Set(machineDiskFailures(m).map((f) => failureSlot(m, f)).filter((n) => n != null))].sort();
-  return `${m.disks.length} · ${sizes}${red.map((n) => " " + UI.pill("err", `דיסק ${n} אדום`)).join("")}`;
+  return `${m.disks.length} · ${sizes}${red.map((n) => " " + UI.pill("warn", `דיסק ${n} נכשל בשיכפול הקודם`)).join("")}`;   // #1580: orange
 }
-function waitingText(m) { return "ממתין למפעיל: " + (PROMPT_HE[m.prompt] || m.prompt); }
+function waitingText(m) { return "ממתין למפעיל: " + promptHe(m.prompt); }
 /* המצב: נקודה צבעונית + מילים. ירוק רק על ראיה חיובית (השרת אמר "מחובר",
    הסבב הושלם); "לא נבדק"/"לא נקרא" אפורים. */
 function machineState(m) {
@@ -4044,7 +4238,7 @@ function machinesBar(scoped) {
   const scopeSelects = scoped ? "" :
     `<select aria-label="תפקיד" onchange="mchFilter('role',this.value)">${opt("", "כל התפקידים", MCH.role)}${(classroomsOn() ? ["classroom", "build", "cloner"] : ["build", "cloner"]).map((r) => opt(r, ROLE_GROUP_HE[r], MCH.role)).join("")}</select>`
     + `<select aria-label="קבוצה" onchange="mchFilter('group',this.value)">${opt("", "כל הקבוצות", MCH.group)}${machineGroupsInOrder().map((g) => opt(g.id, g.label, MCH.group)).join("")}</select>`;
-  const states = [["", "כל המצבים"], ["ok", "מחובר עכשיו"], ["warn", "ממתין למפעיל"], ["err", "דיסק אדום"], ["stale", "לא נראה 30 יום"]];
+  const states = [["", "כל המצבים"], ["ok", "מחובר עכשיו"], ["warn", "ממתין למפעיל"], ["err", "נכשל בשיכפול הקודם"], ["stale", "לא נראה 30 יום"]];
   return `<div class="dg-bar"><input type="search" aria-label="חיפוש מחשב" placeholder="חיפוש: שם, MAC, IP…" value="${esc(MCH.q)}" oninput="mchFilter('q',this.value)" style="width:220px">${scopeSelects}<select aria-label="מצב" onchange="mchFilter('state',this.value)">${states.map(([v, l]) => opt(v, l, MCH.state)).join("")}</select><span class="sp"></span><span class="n" id="mch-count">${esc(machinesCountText())}</span></div>`;
 }
 /* הכרטיס עם הטבלה — בדף "מחשבים" (קבוצות) ובאובייקט הקבוצה (שטוח). */
@@ -4095,7 +4289,7 @@ function machines(tab = 0) {
     sub.push(`${NET.filter((d) => d.registered && isToday(d.last_seen) && (!MACHINES_ROLE || macs.has(d.mac))).length} נראו ברשת היום`);
   }
   const red = (DISK_FAILURES || []).length, unreg = NET ? NET.filter((d) => !d.registered).length : 0;
-  const pill = (red ? UI.pill("err", `${red} ${red === 1 ? "דיסק אדום" : "דיסקים אדומים"}`) : "")
+  const pill = (red ? UI.pill("warn", `${red} ${red === 1 ? "דיסק נכשל בשיכפול הקודם" : "דיסקים נכשלו בשיכפול הקודם"}`) : "")   // #1580: orange
     + (unreg ? UI.pill("warn", `${unreg} ${unreg === 1 ? "לא רשום" : "לא רשומים"}`) : "");
   const addRole = MACHINES_ROLE === "build" || MACHINES_ROLE === "cloner" ? `role:'${MACHINES_ROLE}'` : "";
   const actions = (isAdmin()
@@ -4177,13 +4371,6 @@ function roomRoundResult(h) {
   if (h.target_drives > 0 && h.written_drives >= h.target_drives) return UI.pill("ok", "הצליח");
   return UI.pill("warn", `${h.written_drives} מתוך ${h.target_drives}`);
 }
-function roomHistoryHtmlLegacy() {
-  if (ROOM_HISTORY == null) return UI.note("warn", "היסטוריית הסבבים לא נקראה");
-  if (!ROOM_HISTORY.length) return UI.note("info", "אין סבבים קודמים בחדר");
-  return UI.datagrid({ opt: [4, 5], columns: ["אימג'", "נכתבו", "משך", "תוצאה", "נפתח ע\"י", "תאריך"],
-    rows: ROOM_HISTORY.map((h) => [esc(h.image_name || h.image_id || ""), `${h.written_drives}/${h.target_drives}`, esc(roomRoundMinutes(h)), roomRoundResult(h),
-      esc(h.opened_by || "—"), `<span class="mono">${esc(h.created_at ? (isToday(h.created_at) ? fmtClock(h.created_at) : fmtDate(h.created_at)) : "—")}</span>`]) });
-}
 function roomHistoryHtml() {
   if (ROOM_HISTORY == null) return UI.note("warn", "היסטוריית הסבבים לא נקראה");
   const active = roomRound();
@@ -4259,18 +4446,86 @@ let ROOM = null;                          // ‏GET /room — null = לא נקר
 let ROOM_HISTORY = null;                  // ‏GET /room/history (#980 §3) — null = לא נקרא (≠ [] אין סבבים קודמים)
 let ROOM_KEY = "";                        // חתימת התשובה האחרונה — רינדור מחדש רק על שינוי
 let CAPTURE_TASKS_READ = false;           // ‏/tasks נקרא לפחות פעם אחת (‏[] ריק ≠ לא נקרא)
-const DRAWER_STATE_HE = { writing: "כותב", done: "נכתב", failed: "נכשל", verifying: "מאמת", waiting: "ממתין" };
+/* נדב 17/10: אין אנגלית על המסך. ‏`error` של מגירה מגיע מהסוכן כמחרוזת גולמית, והגולמי נשאר ב-tooltip (diskTitle).
+   רוב הסיבות כבר בעברית; האנגלית שנשארה היא (א) הסיבות של `fanout.c` — ‏`fail_target` ו-`t->reason` — שעוטפות
+   `_write_fail` (verdict.sh: "partition N: … (fanout: <סיבה>; partclone rc=N; <שורת partclone>)") ו-lc_judge (lccopy.sh);
+   (ב) שגיאות מערכת-הפעלה שמגיעות כמות שהן מ-dd (writecheck.sh) ומשורת היומן האחרונה של partclone; (ג) שברי lcsnap.sh.
+   הרשימה המלאה ומקורותיה: tests/drawer_error_he.test.cjs (שנופל אם נוספה סיבה ל-fanout.c בלי מיפוי).
+   ‏DRAWER_ERROR_HE = ביטוי באנגלית (בגבולות מילה) → עברית; ‏DRAWER_ERROR_RE = סיבות עם מספר או שם בתוכן. שני הניסוחים שחופפים
+   ל-`fail_reason_he` של מסך הכשל בסוכן (#1605) — שגיאת I/O ומקום בדיסק — זהים לו. מה שלא מופה — נחתך, ולא מוצג באנגלית. */
+const DRAWER_ERROR_HE = {
+  "queue overflow: target lost bytes": "הדיסק לא עמד בקצב — אבדו בייטים",
+  "write error": "שגיאת כתיבה לדיסק",
+  "stalled with no write progress": "הדיסק לא עמד בקצב — הכתיבה נתקעה והוא הוצא מהסבב",
+  "timed out waiting for the writer pipeline": "פג הזמן — צינור הכתיבה של המגירה לא נפתח",
+  "could not open": "לא ניתן לפתוח את המגירה לכתיבה",
+  "internal error (queue capacity invariant)": "תקלה פנימית בסוכן (תור הכתיבה) — לא תקלת דיסק",
+  "empty stream": "הזרם ריק — לא התקבל אף בייט",
+  "fsync failed": "שטיפת המאגר לדיסק נכשלה — ייתכן שחלק מהנתונים לא נשמר",
+  "close failed": "סגירת הדיסק נכשלה — ייתכן שהבייטים האחרונים אבדו",
+  "unknown": "סיבה לא ידועה",
+  "dmsetup ls failed -- the views could not be checked": "לא ניתן היה לבדוק את העותקים בזיכרון",
+  "rmmod brd failed": "פריקת דיסק הזיכרון נכשלה",
+  "brd is still loaded": "דיסק הזיכרון עדיין טעון",
+  "Input/output error": "שגיאת קריאה/כתיבה בדיסק",
+  "No space left on device": "אין מספיק מקום בדיסק",
+  "No such file or directory": "ההתקן לא נמצא",
+  "Read-only file system": "הדיסק במצב קריאה בלבד",
+  "Permission denied": "אין הרשאה לכתוב להתקן",
+  "Device or resource busy": "ההתקן תפוס",
+  "Invalid argument": "פרמטר לא תקין",
+};
+/* הארוך קודם: "internal error (…)" לפני כל שבר שהוא מכיל. גבול מילה לפני ואחרי — "ok" לא נתפס בתוך מילה. */
+const DRAWER_ERROR_KEYS = Object.keys(DRAWER_ERROR_HE).sort((a, b) => b.length - a.length)
+  .map((k) => [new RegExp("\\b" + k.replace(/[.*+?^$()|[\]\\/]/g, "\\$&") + "(?![A-Za-z])", "g"), DRAWER_ERROR_HE[k]]);
+const DRAWER_ERROR_RE = [
+  [/\b(short|long) stream \(got (\d+) of (\d+)\)/g, (_, k, a, b) => `הזרם ${k === "short" ? "קצר" : "ארוך"} מהצפוי — התקבלו ${a} מתוך ${b} בייט`],
+  [/\bdmsetup remove \S+ failed/g, () => "הסרת עותק מהזיכרון נכשלה"],
+  [/\b\S+ is still listed/g, () => "עותק בזיכרון עדיין קיים"],
+  [/\bfanout: ok(?![A-Za-z])/g, () => "ההפצה הסתיימה בהצלחה, אך הכתיבה לדיסק נכשלה"],   // verdict.sh: fanout אמר ok, ו-partclone/zstd לא
+  [/\bfanout: /g, () => ""],
+  [/\b(?:dd|sgdisk|partclone): (?=[A-Za-z])/g, () => ""],   // שם הכלי שפותח הודעה באנגלית ("dd: error writing …")
+  [/\bpartition (\d+)/g, (_, n) => `מחיצה ${n}`],
+];
+/* שמות כלים וקיצורים שהסוכן עצמו כותב בתוך משפט עברי (מאז #1503) — לא "אנגלית". */
+const DRAWER_TECH = /\b(?:partclone|zstd|sgdisk|fanout|mkswap|mkfifo|ntfsresize|ntfsfix|ntfs|btrfs|xfs|dd|cmp|umount|blockdev|efibootmgr|openssl|swap|rc|dirty|gpt|esp|guid|smart|uefi|bios|secure boot|windows|linux|mib|gib|gb|mb|udp-sender|dsend|dfanout|dzstd|dpcl)\b/gi;
+/* אנגלית = מילה לטינית (2+ אותיות) שאינה כלי מהרשימה ואינה מזהה (מזהה = יש בו ספרה, נקודה, קו נטוי או קו תחתון, או גיבוב הקסדצימלי). */
+function drawerEnglish(piece) {
+  return /[A-Za-z]{2,}/.test(piece.replace(/[A-Za-z0-9_./-]*[0-9_./][A-Za-z0-9_./-]*|\b[0-9a-f]{8,}\b/gi, " ").replace(DRAWER_TECH, " "));
+}
+function drawerErrorText(raw) {
+  if (!raw) return "נכשל בכתיבה";
+  let t = String(raw);
+  for (const [re, he] of DRAWER_ERROR_KEYS) t = t.replace(re, he);
+  for (const [re, fn] of DRAWER_ERROR_RE) t = t.replace(re, fn);
+  /* מה שנשאר: חותכים כל קטע (בין מפרידים) שיש בו אנגלית, ואת המפריד שלפניו; סוגריים שנשארו לא מאוזנים — מתוקנים. */
+  const bits = t.split(/(\s·\s|;\s|:\s|\s—\s|[()])/);
+  let out = "", dropped = false;
+  for (let i = 0; i < bits.length; i += 2) {
+    if (drawerEnglish(bits[i])) { dropped = true; continue; }
+    out += (out ? bits[i - 1] : "") + bits[i];   // המפריד שלפני קטע שנחתך (או לפני הראשון שנשאר) לא נשאר תלוי
+  }
+  let d = 0, bal = "";
+  for (const c of out) { if (c === ")" && !d) continue; d += c === "(" ? 1 : c === ")" ? -1 : 0; bal += c; }
+  out = (bal + ")".repeat(d)).replace(/\(\s*\)/g, "").replace(/\s+/g, " ").trim();
+  if (!/[א-ת]/.test(out)) return "הכתיבה נכשלה — הפרטים בריחוף על הדיסק";
+  return dropped ? `${out} — הפרטים בריחוף על הדיסק` : out;
+}
+const DRAWER_STATE_HE = { writing: "כותב", done: "נכתב", failed: "נכשל", verifying: "מאמת", waiting: "ממתין", cancelled: "בוטל" };   // #1386
 
 function roomRound() { return ROOM && ROOM.round ? ROOM.round : null; }
 function roomMachine(mac) { return ROOM && Array.isArray(ROOM.machines) ? ROOM.machines.find((x) => x.mac === mac) || null : null; }
 /* ‏#1366 (נדב 13/10): `fail` = מה שעוצר BIOS של HP על "SMART error, press F1" — שורת הבריאות
-   FAILED, או 198/197 מעל 0. **כתום, לא אדום**: משוכפל (כמו Clonezilla במכללה), בלי תשובה כותב. */
+   FAILED, או 198/197 מעל 0. ‏#1580 (נדב 17/10): **אדום** — נכתב רק באישור מפורש, בלי תשובה מדלג. */
 const SMART_REASON_HE = { health_failed: "בדיקת הבריאות נכשלה", pending_sectors: "סקטורים ממתינים (197)", uncorrectable: "סקטורים שלא ניתנים לתיקון (198)" };
-function smartF1Text(reason) { return `ה-BIOS יעצור ב-F1 — SMART: ${SMART_REASON_HE[reason] || reason || "תקלה"}`; }
+function smartF1Text(reason) {
+  if (reason === "readonly") return FAILURE_CAUSE_HE.readonly;   // #1742: red like SMART fail, but no F1 and no SMART
+  return `ה-BIOS יעצור ב-F1 — SMART: ${SMART_REASON_HE[reason] || reason || "תקלה"}`;
+}
 function smartText(d) {
   if (d.smart === "ok") return "SMART תקין";
   if (d.smart === "warn") return "SMART אזהרה";
-  if (d.smart === "fail") return smartF1Text(d.smart_reason);   // #1366: orange, the F1 stop
+  if (d.smart === "fail") return smartF1Text(d.smart_reason);   // #1580: red, never written
   if (d.smart === "failed_last") return "נכשל בשיכפול הקודם";
   return "SMART לא נבדק";
 }
@@ -4299,13 +4554,13 @@ function machineSlots(m) {
   const slots = driveRows(mm, src).map((r) => ({ ...r, live: live && r.disk ? r.disk : null, fail: r.optical ? null : rowFailure(m, r, fails) }));
   return { slots, live, declared: true };
 }
-/* צבע החריץ: אדום (נכשל בעבר / נכשל בסבב) > כתום (SMART fail = F1 (#1366), אזהרה, CRC עלה/חשוד)
+/* צבע החריץ (#1580): אדום (SMART תקול / נכשל בסבב) > כתום (נכשל בשיכפול הקודם, אזהרה, CRC עלה/חשוד)
    > כחול (כותב/מאמת) > ירוק (SMART תקין / נכתב) > אפור (לא נבדק) · מקווקו = ריק. */
 function slotClass(s) {
   if (!s.disk) return "empty";
   const d = s.disk;
-  if (s.fail || d.state === "failed" || d.smart === "failed_last") return "err";
-  if (d.smart === "warn" || d.smart === "fail" || (d.crc_delta != null && d.crc_delta > 0) || linkSlow(d) || d.crc_rise > 0 || d.crc_suspect === true) return "warn";   // #1366: crc_suspect
+  if (d.state === "failed" || d.smart === "fail" || (s.fail && s.fail.cause === "readonly")) return "err";   // #1580: SMART fail red; failed last orange; #1742: read-only red
+  if (s.fail || d.smart === "failed_last" || d.smart === "warn" || (d.crc_delta != null && d.crc_delta > 0) || linkSlow(d) || d.crc_rise > 0 || d.crc_suspect === true) return "warn";   // #1366: crc_suspect
   if (d.state === "writing" || d.state === "verifying") return "run";
   if (d.smart === "ok" || d.state === "done") return "ok";
   return "";
@@ -4329,7 +4584,7 @@ function diskTitle(m, s, d) {
   if (!d) return `דיסק ${s.n} · ${rowConn(s)} · ${m.disks == null ? "לא דווח" : "ריק"}`;
   /* ‏#704: מלבן עם שם — ה-tooltip פותח ב"דיסק N", כדי שהמספר לא ייעלם. */
   const parts = [s.n != null && slotName(m, s.n, d) ? `דיסק ${s.n}` : "", s.n != null ? rowConn(s) : `${rowConn(s)} — לא ממופה לאף דיסק`, d.model || "", d.serial || ""].filter(Boolean);
-  if (s.fail) parts.push(`אדום ${fmtDate(s.fail.at)} · ${failureCauseText(s.fail)}`);
+  if (s.fail) parts.push(`נכשל בשיכפול הקודם ${fmtDate(s.fail.at)} · ${failureCauseText(s.fail)}`);   // #1580: orange
   else if (d.state === "failed") parts.push(`נכשל בסבב${d.error ? " — " + d.error : ""}`);
   if (s.live && d.state && d.state !== "failed") parts.push(DRAWER_STATE_HE[d.state] || d.state);
   if (d.crc_delta != null && d.crc_delta > 0) parts.push(`CRC +${d.crc_delta} · לבדוק כבל`);
@@ -4342,12 +4597,55 @@ function diskTitle(m, s, d) {
   if (!s.fail) parts.push(smartText(d));
   return parts.join(" · ");
 }
-/* ‏#1269: drawer_list[].drivers — הונחו / לא הונחו (השחזור עצמו הושלם) / דולגו */
+/* ‏#1269: drawer_list[].drivers — הונחו / לא הונחו (השחזור עצמו הושלם) / דולגו. ‏#1331 (מוקאפ
+   מאושר 17/10, גרסה 2): אותן מילים מתחת לכל דיסק בדף החדר (roundDskHtml) וב-tooltip. */
+/* ‏#1331 T8 — לינוקס: ‏`drivers.linux` (docs/interfaces.md סעיף 4/17) — מה בדיקת ה-initramfs מצאה ביעד לינוקס.
+   רק ‏generic הוא ראיה שהדיסק יעלה על בקר אחר (אפור); ‏hostonly / unsupported / failed = כתום ("לא נבדק" אינו
+   "תקין", עיקרון 5); ‏skipped עם unknown_bus נאמר בגלוי. אותן מילים כמו lc_bay_linux ב-lcbay.c
+   (tests/test_linux_drivers_line_1331.py שומר שהן לא נסחפות). השורה מחליפה את "האימג' אינו Windows". */
+function linuxDriversText(l) {
+  const why = l.error || l.reason || "סיבה לא ידועה", mod = l.module ? ` (${l.module})` : "";
+  if (l.state === "generic") return `לינוקס: קובץ האתחול כולל את מודול הדיסק${mod} — נבדק, הדיסק אמור לעלות גם על בקר אחר`;
+  if (l.state === "hostonly") return "לינוקס: קובץ האתחול כולל רק את בקר הדיסק של המחשב המקורי — עלול לא לעלות כאן";
+  if (l.state === "unsupported") return `לינוקס: קובץ האתחול לא נבדק (${why}) — לא ידוע אם הדיסק יעלה כאן`;
+  if (l.state === "failed") return `לינוקס: בדיקת קובץ האתחול נכשלה — ${why} · לא ידוע אם הדיסק יעלה כאן`;
+  if (l.state === "skipped" && l.reason === "unknown_bus") return "לינוקס: סוג החיבור של הדיסק לא מוכר — קובץ האתחול לא נבדק";
+  return `לינוקס: בדיקת קובץ האתחול דולגה — ${why}`;
+}
+const LINUX_STATES = ["generic", "hostonly", "unsupported", "failed", "skipped"];
+const hasLinuxDrivers = (o) => !!(o && o.linux && LINUX_STATES.includes(o.linux.state));   // ‏linux פגום נזנח לבדו
 function driversOutcomeText(o) {
-  if (o.state === "staged") return `דרייברים הונחו: ${(o.packages || []).join(", ")}`;
+  if (hasLinuxDrivers(o)) return linuxDriversText(o.linux);
+  const boot = bootStorageText(o.boot);
+  if (o.state === "staged") return `${driversStagedText(o.packages)}${boot ? " · " + boot : ""}`;
   if (o.state === "failed") return `דרייברים לא הונחו — ${o.error || "סיבה לא ידועה"}`;
-  const why = o.reason === "not_windows" ? "האימג' אינו Windows" : o.reason === "no_model" ? "לא נבחר דגם לדיסק הזה" : (o.reason || "");
+  if (o.state === "no_match") return "דרייברים: אין חבילה תואמת לחומרה";
+  if (o.reason === "no_model") return "דרייברים: לא נבחר דגם למגירה — לא הונחו";
+  const why = o.reason === "not_windows" ? "האימג' אינו Windows" : (o.reason || "");
   return `דרייברים דולגו${why ? " — " + why : ""}`;
+}
+/* ‏#1331: הצבע של שורת הדרייברים — אדום = דרייבר האחסון לא הוגדר (הדיסק עלול לא לעלות),
+   כתום = לא הונחו (המחשב יעלה בלעדיהם, #856), אפור = הונחו או אין חבילה. */
+function driversTone(o) {
+  if (hasLinuxDrivers(o)) return ["generic", "skipped"].includes(o.linux.state) ? "muted" : "warn";   // ‏T8
+  if (o.state === "staged" && o.boot && o.boot.state === "failed") return "bad";
+  return o.state === "failed" ? "warn" : "muted";
+}
+function driversStagedText(packages) {
+  const p = packages || [];
+  return `דרייברים הונחו (${p.length === 1 ? "חבילה אחת" : `${p.length} חבילות`}): ${p.join(", ")}`;
+}
+const BOOT_RISK_HE = "הדיסק עלול לא לעלות (0x7B) — לבדוק לפני שמחזירים לכיתה";
+/* ‏#1331: drivers.boot — מה bootstorage.sh עשה לדרייבר האחסון ה-in-box של הדיסק
+   שנכתב. ‏enabled = הוגדר לעלייה (ראיה חיובית); ‏failed = הדיסק עלול לא לעלות
+   (0x7B) — עד כאן זה היה שורת יומן בלבד, ועכשיו גם ליד המכונה (עיקרון 5);
+   ‏already / skipped / חסר = אין מה להגיד. טקסט חשוף — המתקשר מבצע esc. */
+function bootStorageText(b) {
+  if (!b) return "";
+  const svc = b.service ? " " + b.service : "";
+  if (b.state === "enabled") return `דרייבר האחסון${svc} הוגדר לעלייה`;
+  if (b.state === "failed") return `דרייבר האחסון${svc} לא הוגדר לעלייה — ${b.error || "סיבה לא ידועה"}`;
+  return "";
 }
 function slotHtml(m, s, admin) {
   const cls = slotClass(s), d = s.disk, title = esc(diskTitle(m, s, d));
@@ -4403,12 +4701,15 @@ function clonerLegend() {
 const MACH_PILL = { ok: "ok", warn: "warn", err: "err", run: "info" };
 function dskRowHtml(m, s) {
   const d = s.disk, title = esc(diskTitle(m, s, d));
-  const row = (label, bar, status, cls = "") => `<div class="dsk${cls ? " " + cls : ""}" data-slot="${s.n ?? ""}" title="${title}"><span>${esc(label)}</span>${bar}<b>${esc(status)}</b></div>`;
+  const row = (label, bar, status, cls = "", act = "") => `<div class="dsk${cls ? " " + cls : ""}" data-slot="${s.n ?? ""}" title="${title}"><span>${esc(label)}</span>${bar}<b>${esc(status)}</b>${act}</div>`;
   const full = (cls) => `<div class="bar ${cls}"><i style="--w:100%"></i></div>`, none = `<div class="bar"><i style="--w:0%"></i></div>`;
   if (s.optical) return row("CD/DVD", none, rowConn(s), "opt");
   if (s.n == null) return row(rowLabel(m, s).replace(/ \(לא ממופה\)$/, ""), none, "לא ממופה", "unmapped");
   if (!d) return row(slotLabel(m, s.n, null), none, m.disks == null ? "לא דווח" : "ריק", "vacant");
   const cls = slotClass(s);
+  // #1386: "בטל דיסק זה" — בוטל: אפור, פס ריק (הדיסק ריק עכשיו, לא "41%"); ביקשו ועוד לא בוצע: "מבטל…".
+  if (s.live && d.state === "cancelled") return row(slotLabel(m, s.n, d), none, "בוטל", "cancelled");
+  if (s.live && d.state === "writing" && d.cancel) return row(slotLabel(m, s.n, d), `<div class="bar warn"><i style="--w:0%"></i></div>`, "מבטל…", "cancelling");
   if (s.live && d.state) {
     const pct = d.bytes_total > 0 ? Math.round(100 * (d.bytes_written || 0) / d.bytes_total) : d.state === "done" ? 100 : 0;
     const status = d.state === "failed" ? "נכשל" : d.state === "done" ? "נכתב" : d.state === "verifying" ? "מאמת" : `${pct}%`;
@@ -4459,7 +4760,7 @@ function clonerStats(kids) {
 function clonersView(g, kids) {
   const gidEnc = encodeId(g.id), admin = isAdmin(), r = roomRound(), st = clonerStats(kids), fails = groupFailures(kids);
   const sub = [`${kids.length} ${kids.length === 1 ? "מחשב" : "מחשבים"}`, st.on == null ? "מחוברים: לא נקרא" : `${st.on} מחוברים`,
-    DISK_FAILURES ? (fails.length === 1 ? "דיסק אדום אחד" : `${fails.length} דיסקים אדומים`) : "אדומים: לא נקרא"].join(" · ");
+    DISK_FAILURES ? (fails.length === 1 ? "דיסק אחד נכשל בשיכפול הקודם" : `${fails.length} נכשלו בשיכפול הקודם`) : "כשלים קודמים: לא נקרא"].join(" · ");   // #1580
   const pill = r ? UI.pill(ROOM.stream_stalled ? "warn" : "info", `סבב פעיל — גל ${r.wave_number || 1}, ${r.written_drives || 0}/${r.target_drives || 0}${ROOM.stream_stalled ? " · הזרם עצר" : ""}`)
     : ROOM == null ? UI.pill("", "החדר לא נקרא") : "";
   const actions = admin ? `<button class="btn" onclick="openAddMachine({group:'${gidEnc}'})">+ מחשב שיכפול</button><button class="btn danger" onclick="poweroffRoom('${gidEnc}')">כיבוי כולם…</button>` : "";
@@ -4568,7 +4869,7 @@ function beforeCaptureHtml(m) {
     : `בשימוש ${ltr(fmtBytes(lc.used_bytes))} <span class="cap">(מהקליטה האחרונה, ${esc(fmtDate(lc.at))})</span>`;
   const ntfs = probeCell(m.probe && m.probe.ntfs, (list) => {
     if (!Array.isArray(list) || !list.length) return `<span class="muted">אין מחיצת NTFS</span>`;
-    if (list.some((p) => p && p.state === "hibernated")) return UI.status("warn", "NTFS מהובר — כבו את Windows כיבוי מלא");
+    if (list.some((p) => p && p.state === "hibernated")) return UI.status("warn", "NTFS נעול ב-Fast Startup — כיבוי רגיל לא משחרר; powercfg /h off כמנהל");
     if (list.some((p) => p && p.state === "dirty")) return UI.status("warn", "NTFS dirty — chkdsk ב-Windows");
     const bad = list.find((p) => !p || p.state !== "clean");
     return bad ? UI.status("warn", `NTFS: לא הצלחנו לבדוק ${(bad && bad.node) || ""}`.trim()) : UI.status("ok", "NTFS נקי");
@@ -4669,7 +4970,7 @@ function seenDevicesCard() {
 /* #874: דיסקים אדומים — זיכרון כשלי הכתיבה בשרת, במקום הסימון על הדיסק
    (#845). הסיווג הוא של השרת (ata_cause.py); "נקה" = הדיסק הוחלף / הכבל
    תוקן, והרשומה מפסיקה לצבוע. אדום לפי סידורי **וגם** לפי מכונה+חריץ. */
-const FAILURE_CAUSE_HE = { cable: "כבל/חריץ", disk: "הדיסק", unclassified: "לא סווג" };
+const FAILURE_CAUSE_HE = { readonly: "הדיסק במצב קריאה בלבד", cable: "כבל/חריץ", disk: "הדיסק", removed: "המגירה נשלפה", unclassified: "לא סווג" };
 /* ‏`only` (גל 3א): רק הכשלים של המכונות האלה (לפי MAC או סידורי) — לאובייקט המשכפלים. */
 function diskFailuresCard(only = null, cls = "c12") {
   const rows = (only ? groupFailures(only) : DISK_FAILURES || []).map((f) => {
@@ -4730,9 +5031,9 @@ function diskBoxesHtml(m) {
   const boxes = m.disks.map((d, i) => {
     const n = d.port != null ? Number(d.port) : i + 1;   // תחנת כיתה: בלי מיפוי (#1485 — משכפל/בנייה בלבד)
     const red = fails.find((f) => (f.mac === m.mac && f.port != null ? Number(f.port) === n : f.serial && f.serial === d.serial));
-    const cls = red ? "err" : d.smart === "ok" ? "ok" : d.smart === "warn" || d.smart === "fail" ? "warn" : "";   // #1366: fail = F1, orange
+    const cls = d.smart === "fail" ? "err" : red || d.smart === "warn" || d.smart === "failed_last" ? "warn" : d.smart === "ok" ? "ok" : "";   // #1580: SMART fail red, failed last orange
     const smart = d.smart === "fail" ? smartF1Text(d.smart_reason) : d.smart ? `SMART ${SMART_HE[d.smart] || d.smart}` : "SMART לא נבדק";
-    return `<div class="disk ${cls}"><b>${esc(slotLabel(m, n, d))}</b><span>SATA ${n - 1}</span><span>${ltr(marketedDiskSize(d.size_bytes))}</span><span class="cap">${esc(d.model || "—")}${d.serial ? ` · <span class="mono">${esc(d.serial)}</span>` : ""}</span><span class="cap">${red ? `אדום — ${esc(failureCauseText(red))}` : esc(smart)}</span></div>`;
+    return `<div class="disk ${cls}"><b>${esc(slotLabel(m, n, d))}</b><span>SATA ${n - 1}</span><span>${ltr(marketedDiskSize(d.size_bytes))}</span><span class="cap">${esc(d.model || "—")}${d.serial ? ` · <span class="mono">${esc(d.serial)}</span>` : ""}</span><span class="cap">${red && d.smart !== "fail" ? `נכשל בשיכפול הקודם — ${esc(failureCauseText(red))}` : esc(smart)}</span></div>`;
   }).join("");
   return `<div class="disks">${boxes}</div>`;
 }
@@ -4892,7 +5193,7 @@ function machineDrawerHtml(m) {
   const chipCls = { ok: "", warn: "w", err: "d" };
   const chips = `<span class="n-meta"><span class="n-chip ${chipCls[st.cls] ?? "n"}">${esc(st.text)}</span>`
     + (disks != null ? `<span class="n-chip n">${esc(disks === 1 ? "דיסק אחד" : `${disks} דיסקים`)}</span>` : "")
-    + (redN ? `<span class="n-chip d">${esc(redN === 1 ? "דיסק אדום" : `${redN} דיסקים אדומים`)}</span>` : "") + `</span>`;
+    + (redN ? `<span class="n-chip w">${esc(redN === 1 ? "דיסק נכשל בשיכפול הקודם" : `${redN} נכשלו בשיכפול הקודם`)}</span>` : "") + `</span>`;   // #1580: orange
   const sub = [esc(ROLE_HE[role] || role), net && net.ip ? `<span class="mono">${esc(net.ip)}</span>` : "", `<span class="mono">${esc(m.mac)}</span>`].filter(Boolean).join(" · ");
   const red = machineDiskFailures(m).map((f) => {
     const n = failureSlot(m, f), log = f.ata_log || [];
@@ -5026,12 +5327,17 @@ function connOptions(m, slots) {
 /* תג SMART כמו במוקאפ (‏pill → ‏.n-chip: ירוק / w כתום / d אדום / n אפור — "לא נבדק" אינו ירוק). */
 function smartPill(d, fail) {
   const chip = (cls, text) => `<span class="n-chip${cls ? " " + cls : ""}">${esc(text)}</span>`;
-  if (fail) return chip("d", "נכשל");
+  if (d.smart === "fail") return chip("d", d.smart_reason === "readonly" ? "קריאה בלבד" : "SMART תקול");     // #1580: red, never written; #1742
+  if (fail || d.smart === "failed_last") return chip("w", "נכשל בשיכפול הקודם");
   if (d.smart === "ok") return chip("", "תקין");
-  if (d.smart === "warn" || d.smart === "fail") return chip("w", d.smart === "fail" ? "F1" : "אזהרה");
-  if (d.smart === "failed_last") return chip("d", "נכשל בשיכפול הקודם");
+  if (d.smart === "warn") return chip("w", "אזהרה");
   return chip("n", "לא נבדק");
 }
+/* ‏#1375 (נדב 17/10): בלשונית "דיסקים" חיבור נקרא במספר המגירה — "דיסק 1", לא "SATA 0" — כמו "דיסק 1/2/3"
+   בשאר המוצר (המוסכמה: מגירה k = SATA k-1). NVMe נשאר בכתובתו. כונן מחוץ למיפוי וכונן CD/DVD נשארים
+   "SATA n" (‏rowConn) — לעולם לא מספר מגירה מנוחש (#1485). ‏connText (‏"SATA n") נשאר ב-title. חיבור של דיסק
+   אחר — "· תפוס" (הבחירה מחליפה ביניהם); "דיסק 2 · דיסק 1" היה מבלבל, ומרחיב את הבורר עד שהטבלה נשברת. */
+function tabConnText(key) { const s = /^sata:(\d+)$/.exec(key || ""); return s ? `דיסק ${Number(s[1])}` : connText(key); }
 function diskMapHtml(m, admin) {
   const macEnc = encodeId(m.mac), edit = slotEditOf(m), slots = edit || drawerSlots(m), cloner = machineRole(m) === "cloner";
   const mm = { ...m, drawer_slots: slots }, rows = driveRows(mm, m.disks), fails = machineDiskFailures(m);
@@ -5039,8 +5345,8 @@ function diskMapHtml(m, admin) {
   const body = rows.map((r) => {
     const d = r.disk, fail = r.optical ? null : rowFailure(m, r, fails);
     const conn = admin && r.n != null
-      ? `<select class="n-in conn-sel" aria-label="${esc(`החיבור של דיסק ${r.n}`)}" onchange="slotEditSet('${macEnc}',${r.n - 1},this.value)">${opts.map((k) => { const at = slots.indexOf(k); return `<option value="${esc(k)}"${k === r.key ? " selected" : ""}>${esc(connText(k))}${at >= 0 && k !== r.key ? ` · דיסק ${at + 1}` : ""}</option>`; }).join("")}</select>`
-      : `<span class="mono">${esc(rowConn(r))}</span>`;
+      ? `<select class="n-in conn-sel" aria-label="${esc(`החיבור של דיסק ${r.n}`)}" onchange="slotEditSet('${macEnc}',${r.n - 1},this.value)">${opts.map((k) => { const at = slots.indexOf(k); return `<option value="${esc(k)}"${/^sata:/.test(k) ? ` title="${esc(connText(k))}"` : ""}${k === r.key ? " selected" : ""}>${esc(tabConnText(k))}${at >= 0 && k !== r.key ? " · תפוס" : ""}</option>`; }).join("")}</select>`
+      : `<span class="mono">${esc(r.n != null && r.key ? tabConnText(r.key) : rowConn(r))}</span>`;
     const size = r.optical ? `<span class="muted">${esc(r.optical.model || "כונן אופטי")}</span>`
       : d ? `<span class="mono">${ltr(marketedDiskSize(d.size_bytes))}</span> <span class="cap">${esc(diskBrand(d.model))}</span>`
       : `<span class="muted">${m.disks == null ? "לא דווח" : "ריק"}</span>`;
@@ -5062,7 +5368,7 @@ function diskMapHtml(m, admin) {
     + (dirty ? `<button class="btn sm" type="button" onclick="slotEditCancel('${macEnc}')">ביטול</button><button class="btn sm primary" type="button" onclick="slotEditSave('${macEnc}')">שמירת החיבורים</button>`
       : m.drawer_slots_custom ? `<button class="btn sm" type="button" onclick="slotEditReset('${macEnc}')">חזרה לברירת המחדל</button>` : "")
     + `</div><p class="error n-formerr" id="slot-err" role="alert"></p>`;
-  return table + tools + `<p class="map-help">לכל דיסק — לאיזה חיבור במחשב הוא מחובר. ברירת המחדל: דיסק 1 = SATA 0, דיסק 2 = SATA 1. בחירת חיבור של דיסק אחר מחליפה ביניהם. כונן CD/DVD אינו חריץ דיסק ולעולם אינו מקור קליטה או יעד.</p>`;
+  return table + tools + `<p class="map-help">לכל דיסק — לאיזה חיבור במחשב הוא מחובר. החיבור נקרא במספר המגירה: חיבור "דיסק 1" הוא SATA 0, "דיסק 2" הוא SATA 1; ברירת המחדל — כל דיסק בחיבור שלו. בחירת חיבור של דיסק אחר מחליפה ביניהם. כונן CD/DVD אינו חריץ דיסק ולעולם אינו מקור קליטה או יעד.</p>`;
 }
 function slotEditRedraw(m) { setDrawerBody(machineDrawerHtml(m)); }
 function slotEditStart(mac) {
@@ -5376,44 +5682,33 @@ function updateLastCheckHtml(u) {
     : main;
 }
 
-function updateCard(prefix = "") {
-  let body;
-  if (updateError) body = UI.note("err", `‏/update לא נקרא: ${esc(updateError)}`);
-  else if (!HEALTH_UPDATE) body = UI.empty("‏/update לא נקרא עדיין");
-  else {
-    const u = HEALTH_UPDATE;
-    const st = updateStatusHtml(UPDATE_STATUS);
-    const canApply = UPDATE_CHECK && UPDATE_CHECK.available && UPDATE_CHECK.latest;
-    // ‏#1273: עדכון שרץ (ועוד לא אומת) — אין החלה/חזרה נוספת; השרת גם מחזיר 409.
-    const busy = UPDATE_STATUS && UPDATE_STATUS.state === "running" && !UPDATE_STATUS.verified
-      ? ` disabled title="עדכון ל-${esc(UPDATE_STATUS.tag || "")} רץ — ממתינים לאתחול השרת"` : "";
-    // ‏#1277: תג שנבדק ואינו חתום — השרת יסרב לו (server-upgrade.sh); "לא נבדק" נשאר לחיץ, והשרת מכריע.
-    const unsigned = canApply && UPDATE_CHECK.signature && UPDATE_CHECK.signature.state === "unsigned"
-      ? ` disabled title="התג ${esc(UPDATE_CHECK.latest)} אינו חתום במפתח השחרור — השרת יסרב לעדכן אליו"` : "";
-    const btns = !u.enabled ? "" : [
-      `<button class="btn" onclick="healthUpdateCheck()">בדוק עדכון</button>`,
-      canApply ? `<button class="btn primary"${unsigned || busy} onclick="confirmUpdateApply(UPDATE_INFO.latest)">החל עדכון ${esc(UPDATE_CHECK.latest)}</button>` : "",
-      u.previous ? `<button class="btn danger"${busy} onclick="confirmUpdateRevert(UPDATE_INFO.previous)">חזור ל-${esc(u.previous)}</button>` : "",
-    ].join("");
-    // ‏#1300 (console-full.html P.settings "עדכונים"): הודעת מידע אחת — מה מותקן ומה מצאה הבדיקה האחרונה — ושורת כפתורים.
-    // ‏#1277: גם כאן — חתימת התג החדש (חתום / לא חתום / לא נבדק) וטביעת החותם כשורה משנית.
-    const sig = canApply ? UPDATE_CHECK.signature : null;
-    const found = canApply
-      ? `קיימת גרסה חדשה: <b class="mono">${esc(UPDATE_CHECK.latest)}</b>${UPDATE_CHECK.at ? ` · נבדק ${esc(fmtWhenShort(UPDATE_CHECK.at))}` : ""} · חתימה: ${esc(signatureText(sig))}`
-        + (sig && sig.detail ? `<small class="muted" style="display:block;margin-top:3px">${esc(sig.detail)}</small>` : "")
-      : `בדיקה אחרונה: ${updateLastCheckHtml(u)}`;
-    const installed = u.current ? `מותקן <b class="mono">${esc(u.current)}</b>` : "הגרסה המותקנת לא ידועה (אין תגית git על העץ)";
-    body = `<div class="mupd">${UI.note("info", `${installed} · ${found}`)}${st ? `<div class="mupd-st">${st}</div>` : ""}${btns ? `<div class="macts">${btns}</div>` : ""}</div>`;
-  }
-  // ‏#1301: "מעודכן" — רק כשהעדכון האחרון אומת **וגם** הבדיקה האחרונה לא מצאה גרסה חדשה ממנו.
-  const s = UPDATE_STATUS, lc = HEALTH_UPDATE && HEALTH_UPDATE.last_check;
-  const upToDate = s && s.state === "done" && s.verified && s.stage === "done" && lc && lc.latest === s.tag;
-  // ‏#1300: המתג "עדכון גרסה מהקונסולה" יושב בכרטיס הזה עצמו (prefix) — לא "למעלה" בכרטיס אחר.
-  return UI.card({ title: "עדכונים", acts: upToDate ? UI.pill("ok", "✓ מעודכן") : "", body: prefix + body });
+/* ‏#1300/#1301 (סידור 17/10): מתחת לשורות של "עדכונים ותחזוקה" — הודעה על גרסה חדשה (עם החתימה), תוצאת העדכון
+   האחרון, וכפתורי החלה/חזרה. רק כשיש מה להציג; "גרסה מותקנת" ו"בדיקה אחרונה" הן שורות. */
+function updateActionsHtml() {
+  if (updateError || !HEALTH_UPDATE || !HEALTH_UPDATE.enabled) return "";
+  const u = HEALTH_UPDATE;
+  const st = updateStatusHtml(UPDATE_STATUS);
+  const canApply = UPDATE_CHECK && UPDATE_CHECK.available && UPDATE_CHECK.latest;
+  // ‏#1273: עדכון שרץ (ועוד לא אומת) — אין החלה/חזרה נוספת; השרת גם מחזיר 409.
+  const busy = UPDATE_STATUS && UPDATE_STATUS.state === "running" && !UPDATE_STATUS.verified
+    ? ` disabled title="עדכון ל-${esc(UPDATE_STATUS.tag || "")} רץ — ממתינים לאתחול השרת"` : "";
+  // ‏#1277: תג שנבדק ואינו חתום — השרת יסרב לו (server-upgrade.sh); "לא נבדק" נשאר לחיץ, והשרת מכריע.
+  const unsigned = canApply && UPDATE_CHECK.signature && UPDATE_CHECK.signature.state === "unsigned"
+    ? ` disabled title="התג ${esc(UPDATE_CHECK.latest)} אינו חתום במפתח השחרור — השרת יסרב לעדכן אליו"` : "";
+  const btns = [
+    canApply ? `<button class="btn primary"${unsigned || busy} onclick="confirmUpdateApply(UPDATE_INFO.latest)">החל עדכון ${esc(UPDATE_CHECK.latest)}</button>` : "",
+    u.previous ? `<button class="btn danger"${busy} onclick="confirmUpdateRevert(UPDATE_INFO.previous)">חזור ל-${esc(u.previous)}</button>` : "",
+  ].join("");
+  const sig = canApply ? UPDATE_CHECK.signature : null;
+  const found = canApply ? UI.note("info", `קיימת גרסה חדשה: <b class="mono">${esc(UPDATE_CHECK.latest)}</b>${UPDATE_CHECK.at ? ` · נבדק ${esc(fmtWhenShort(UPDATE_CHECK.at))}` : ""} · חתימה: ${esc(signatureText(sig))}`
+    + (sig && sig.detail ? `<small class="muted" style="display:block;margin-top:3px">${esc(sig.detail)}</small>` : "")) : "";
+  if (!found && !st && !btns) return "";
+  return `<div class="mupd">${found}${st ? `<div class="mupd-st">${st}</div>` : ""}${btns ? `<div class="macts">${btns}</div>` : ""}</div>`;
 }
-/* ‏#1128: גיבוי ההגדרות אינו תלוי במתג העדכון — הוא זמין תמיד למנהל (כרטיס משלו, כמו במוקאפ). */
-function backupCard() {
-  return UI.card({ title: "גיבוי", body: `<p class="mcap">קובץ עם הגדרות השרת, לשחזור אחרי התקנה מחדש.</p><button class="btn" onclick="confirmSettingsBackup()">${uiIcon("up")} הורד גיבוי הגדרות</button>` });
+/* ‏#1301: "מעודכן" — רק כשהעדכון האחרון אומת **וגם** הבדיקה האחרונה לא מצאה גרסה חדשה ממנו. */
+function updateUpToDate() {
+  const s = UPDATE_STATUS, lc = HEALTH_UPDATE && HEALTH_UPDATE.last_check;
+  return !!(s && s.state === "done" && s.verified && s.stage === "done" && lc && lc.latest === s.tag);
 }
 
 /* ‏#1128: "הורד גיבוי הגדרות" — tar.gz של ה-DB (עותק עקבי) ושאר תיקיית
@@ -5531,12 +5826,6 @@ async function healthSvcStart(idEnc) {
   try { await healthSvcSend(p, true); } catch (e) { toast(`ההפעלה נכשלה: ${e.message}`); }
 }
 
-function roleLabel(role) {
-  if (role === "admin") return "מנהל";
-  if (role === "deploy") return "מפעיל הפצה";
-  return role || "—";
-}
-
 function fmtWhen(ts) {
   const s = String(ts || "");
   if (!s) return "—";
@@ -5571,7 +5860,7 @@ const ROLE_MATRIX = [
   ["דרייברים: צפייה, ייבוא ומחיקה", ["ok", "כן"], ["", "לא"], "GET /drivers, POST /drivers/upload, /drivers/{name}/delete — קונסולה בלבד"],
   ["רשת, פורטים, DHCP, בריאות, עדכון", ["ok", "כן"], ["", "לא"], "/net/config, PUT /net/interfaces/{n}, /health, /update — admin_only"],
   ["הרשאות, הגדרות, יומן", ["ok", "כן"], ["", "לא"], "/users, /settings, /journal — admin_only"],
-  ["סניפים (שרתים משניים)", ["ok", "כן"], ["", "לא"], "/storage-nodes… — require_standalone (admin_only)"],
+  ["שרתי משנה", ["ok", "כן"], ["", "לא"], "/storage-nodes… — require_standalone (admin_only)"],
 ];
 
 function findUser(name) {
@@ -5590,9 +5879,10 @@ function userMfaLabel(u) {
    מנהל עם MFA — "פעיל"; מנהל בלי — "כבוי" (אזהרה); משתמש הפצה אינו נכנס לקונסולה, ולכן "—" ולא "כבוי". */
 function userMfaPill(u) {
   if (u.is_builtin) return UI.pill("info", "מקומי · ללא MFA");
-  if (u.mfa_enabled) return UI.pill("ok", "פעיל");
-  if (u.role === "deploy") return "—";
-  return UI.pill("warn", "כבוי");
+  if (u.mfa_enabled) return UI.pill("ok", "פעיל") + (u.mfa_required ? " " + UI.pill("", "דרוש") : "");
+  if (u.role === "deploy") return u.mfa_required ? UI.pill("", "דרוש") : "—";
+  // נדב 18/10: מסומן "דרוש" ועוד לא נרשם — יירשם בכניסה הבאה
+  return u.mfa_required ? UI.pill("warn", "דרוש · יירשם בכניסה") : UI.pill("warn", "כבוי");
 }
 function userRowHtml(u) {
   const enc = encodeId(u.username), self = !!ME && u.username === ME.username;
@@ -5608,7 +5898,8 @@ function userRowHtml(u) {
   if (!self && !locked) items.push(["שנה תפקיד…", `userRoleSheet('${enc}')`]);
   if (!self) items.push(["איפוס סיסמה…", `userResetPassword('${enc}')`]);
   if (!self && !locked) items.push([u.disabled ? "הפעל משתמש" : "השבת משתמש…", `userDisable('${enc}', ${u.disabled ? "false" : "true"})`]);
-  if (!self && !u.is_builtin && u.mfa_enabled) items.push(["אפס MFA…", `userMfaDisable('${enc}')`]);
+  if (!self && !u.is_builtin) items.push([u.mfa_required ? "הסר את דרישת האימות הדו-שלבי…" : "דרוש אימות דו-שלבי…", `userMfaRequiredSheet('${enc}')`]);   // נדב 18/10
+  if (!self && !u.is_builtin && u.mfa_enabled) items.push(["איפוס אימות דו-שלבי…", `userMfaDisable('${enc}')`]);
   if (!self) items.push(["נתק את כל ההפעלות…", `userRevokeSessions('${enc}')`]);
   if (!self && !locked) items.push(["מחק משתמש…", `userDeleteSheet('${enc}')`, "danger"]);
   if (self) items.push(["שנה סיסמה (החשבון שלי)", "openAccountPage()"]);   // ‏#1268: הסיסמה שלך — רק ב"החשבון שלי"
@@ -5708,12 +5999,28 @@ function userDeleteSheet(name) {
     danger: true, submitLabel: "מחיקת המשתמש",
     onSubmit: async () => { await del(`/users/${encodeId(u.username)}`); toast(`המשתמש ${u.username} נמחק`); await loadUsersData(); } });
 }
+/* נדב 18/10: "איפוס אימות דו-שלבי" — כפתור אדום, בלי הקלדת מילה (#1270). השרת מוחק את הסוד וקודי
+   הגיבוי ומנתק את כל ההפעלות של המשתמש; בכניסה הבאה — רישום מחדש אם האימות חובה לו, אחרת סיסמה בלבד. */
 function userMfaDisable(name) {
   const u = findUser(name); if (!u || !isAdmin()) return;
-  confirmSheet("לאפס את ה-MFA?", u.username,
-    "איפוס MFA",
-    async () => { await post(`/users/${encodeId(u.username)}/mfa/disable`); toast("MFA נוטרל"); await loadUsersData(); },
-    [["w", "המשתמש יידרש להגדיר אימות דו-שלבי מחדש בכניסה הבאה"]]);
+  confirmSheet("לאפס את האימות הדו-שלבי?", u.username,
+    "איפוס אימות דו-שלבי",
+    async () => { await post(`/users/${encodeId(u.username)}/mfa/disable`); toast("האימות הדו-שלבי אופס — נרשם ביומן"); await loadUsersData(); },
+    [["b", "האפליקציה וקודי הגיבוי שלו יפסיקו לעבוד"], ["w", "כל ההפעלות שלו ינותקו מיד"],
+     ["w", u.mfa_required ? "בכניסה הבאה יידרש לרשום אימות דו-שלבי מחדש (מסומן לו \"דרוש\")"
+                          : "בכניסה הבאה ייכנס בסיסמה בלבד — אלא אם החיוב למנהלים דלוק בהגדרות"]]);
+}
+/* נדב 18/10: "דרוש אימות דו-שלבי" למשתמש — מנהל כזה יירשם ל-MFA בכניסה הבאה גם כשהחיוב הכללי כבוי. */
+function userMfaRequiredSheet(name) {
+  const u = findUser(name); if (!u || !isAdmin()) return;
+  sheet({ title: "אימות דו-שלבי", sub: u.username,
+    fields: [{ id: "mfa_required", label: "דרוש אימות דו-שלבי", type: "checkbox", value: !!u.mfa_required,
+      help: "מסומן: המשתמש חייב לרשום אימות דו-שלבי בכניסה, ולא יוכל לבטל אותו בעצמו. חל על מנהלים." }],
+    onSubmit: async (v) => {
+      await put(`/users/${encodeId(u.username)}`, { mfa_required: !!v.mfa_required });
+      toast(v.mfa_required ? "אימות דו-שלבי נדרש — נרשם ביומן" : "הדרישה הוסרה — נרשם ביומן");
+      await loadUsersData();
+    } });
 }
 function userRevokeSessions(name) {
   const u = findUser(name); if (!u || !isAdmin()) return;
@@ -5878,7 +6185,7 @@ function openLogDetail(i) {
    מקורות (docs/interfaces.md, לא ממציאים שדות): /net/interfaces (net.js:
    loadNet → NICS), /net/config (NETCFG), /net (NET — מי נראה ברשת), /ports
    (bind — "מה מותר על כל וילן" עד מודל וילן, #705), /monitor/machines (משכפלים/בנייה, online), /storage-nodes
-   (+ …/machines.connected — סניפים), /net/interfaces/{n}/probe (מי עוד עונה),
+   (+ …/machines.connected — שרתי משנה), /net/interfaces/{n}/probe (מי עוד עונה),
    /sessions (מי מחובר לקונסולה, #1039), /net/interfaces/{n}/leases (חכירות dnsmasq של כרטיס ההפצה, #1039).
    כל מקור נכשל בנפרד (NETW.err) ומוצג "לא נקרא" — לא "אין" (עיקרון 5).
    וילן = הכרטיס (1:1, "לפי הגדרה") — מודל וילן אמיתי דורש API (#705).
@@ -5927,7 +6234,7 @@ async function loadNetwork() {
   if (current === "network") renderCurrent();
 }
 
-/* סניפים: /storage-nodes (403/409 = אין סניפים, לא שגיאה — כמו העץ) + מצב חיבור נמדד לכל אחד. */
+/* שרתי משנה: /storage-nodes (403/409 = אין שרתי משנה, לא שגיאה — כמו העץ) + מצב חיבור נמדד לכל אחד. */
 async function loadNetworkNodes() {
   if (!(ME && ME.capabilities && ME.capabilities.enroll_secondary)) return [];
   let nodes;
@@ -6135,14 +6442,14 @@ function netDiagramModel() {
     sub: ses === null ? `session פעיל · מי מחובר — לא נקרא${NETW.err.sessions ? `: ${NETW.err.sessions}` : ""}` : `${ses.length} מחוברים: ${who || "—"}`,
     tip: ses === null ? undefined : ses.map((x) => `${x.user} · ${bidi(x.ip || "—")} · נכנס ${ago(x.since)} · נראה ${ago(x.last_seen)}`).join(" · ") || undefined }, null,
     () => laneOf(["mgmt", "trunk", "inter", "none", "proxy", "deploy"]));
-  // סניפים — /storage-nodes + connected נמדד. המשני יושב מאחורי FW משלו (interfaces.md §18, נדב 18/09): הראשי יוזם,
+  // שרתי משנה — /storage-nodes + connected נמדד. שרת המשנה יושב מאחורי FW משלו (interfaces.md §18, נדב 18/09): הראשי יוזם,
   // ורק 8443 פתוח ביניהם — ולכן הקו מקווקו (מעבר ל-FW, לא לקוח על הוילן), והתיבה נשארת לפי connected.
   for (const n of NETW.nodes || []) {
     const off = !!n.disabled_at;
     const state = off ? "מושבת" : n.connected ? "מחובר" : `לא ענה${n.error ? `: ${n.error}` : ""}`;
-    place({ kind: "branch", row: { name: n.label, ip: urlHost(n.base_url), kind: "branch", ok: off ? false : !!n.connected }, title: `${n.label} — שרת משני`, led: off ? "" : n.connected ? "ok" : "err", dashed: off, viaFw: true,
+    place({ kind: "branch", row: { name: n.label, ip: urlHost(n.base_url), kind: "branch", ok: off ? false : !!n.connected }, title: `${n.label} — שרת משנה`, led: off ? "" : n.connected ? "ok" : "err", dashed: off, viaFw: true,
       sub: `דרך FW · 8443 בלבד · ${bidi(n.base_url || "")} · ${state}`,
-      tip: `המשני מאחורי FW משלו; הראשי יוזם, רק 8443 · ${bidi(n.base_url || "")} · ${state}` },
+      tip: `שרת המשנה מאחורי FW משלו; הראשי יוזם, רק 8443 · ${bidi(n.base_url || "")} · ${state}` },
       urlHost(n.base_url), () => laneOf(["inter", "mgmt", "trunk", "none"]));
   }
   // לא רשומים — /net registered=false, לפי הכתובת שקיבלו
@@ -6234,7 +6541,7 @@ function netLaneOpen(nameEnc) {
 }
 function netLaneDrawerHtml(lane) {
   const n = lane.nic, cfg = netCfgRow(n.name), up = lane.led === "ok", bad = lane.led === "off";
-  const kindOf = { cloner: "משכפל", build: "בנייה", unreg: "לא רשום", branch: "שרת משני" };
+  const kindOf = { cloner: "משכפל", build: "בנייה", unreg: "לא רשום", branch: "שרת משנה" };
   const note = bad ? UI.note("err", `הכרטיס ${esc(n.name)} מנותק. מחשבים בוילן לא יראו את השרת עד שהקישור יחזור.`) : lane.led === "warn" ? UI.note("warn", "מצב הקישור לא נקרא — לא ידוע אם הכרטיס מחובר.") : "";
   const card = UI.kv([["שם", `<span class="mono">${esc(n.name)}</span>`], ["MAC", `<span class="mono">${esc(n.mac || "—")}</span>`],
     ["מהירות", typeof n.speed_mbps === "number" && n.speed_mbps > 0 ? ltr(`${n.speed_mbps} Mbps`) : "—"], ["קישור", netLinkStatus(n)]]);
@@ -6265,7 +6572,7 @@ function netUnreadNotes() {
   if (e.sessions) out.push(T("warn", "‏/sessions לא נקרא", e.sessions, " — מי מחובר לקונסולה אינו ידוע"));
   if (e.leases) out.push(T("warn", "חכירות dnsmasq לא נקראו", e.leases, " — מכונה שקיבלה כתובת ולא דיברה עם השרת אינה נראית"));
   if (e.monitor) out.push(T("warn", "‏/monitor/machines לא נקרא", e.monitor, " — משכפלים ובנייה אינם בתרשים"));
-  if (e.nodes) out.push(T("warn", "‏/storage-nodes לא נקרא", e.nodes, " — סניפים אינם בתרשים"));
+  if (e.nodes) out.push(T("warn", "‏/storage-nodes לא נקרא", e.nodes, " — שרתי משנה אינם בתרשים"));
   const rb = NETCFG && NETCFG.rollback && typeof rollbackBanner === "function" ? rollbackBanner(NETCFG.rollback) : "";
   return (rb ? `<div class="c12">${rb}</div>` : "") + out.map((h) => `<div class="c12">${h}</div>`).join("");
 }
@@ -6442,7 +6749,7 @@ function netDeployCardsCard(focus) {
     const [cls, label] = BOND_STATE_HE[bond.state] || BOND_STATE_HE.unchecked;
     acts = UI.pill(cls, label);
     note = bond.checked
-      ? UI.note("info", `שני הכרטיסים עובדים יחד על הכתובת <span class="mono">${esc(focus.server_ip || "")}</span> (${esc(bond.name)}, ‏balance-alb) — התעבורה מתחלקת ביניהם, ואם אחד מתנתק השני ממשיך בלי הפסקה. לא נדרשת הגדרה בסוויץ'.`)
+      ? UI.note("info", `שני הכרטיסים עובדים יחד על הכתובת <span class="mono">${esc(focus.server_ip || "")}</span> (${esc(bond.name)}, ‏balance-alb) — תעבורה למחשבים שונים מתחלקת ביניהם, אבל סבב שיכפול יוצא בכרטיס אחד בכל רגע. אם כרטיס מתנתק השני ממשיך: סבב שרץ נעצר לשניות ספורות ומסתיים כרגיל. לא נדרשת הגדרה בסוויץ'.`)
       : UI.note("warn", `מצב ${esc(bond.name)} לא נקרא (${esc(bond.reason || "")}) — לא ידוע אם שני הכרטיסים פעילים`);
   } else {
     const st = focus.state === "up" ? ["ok", "פעיל"] : focus.state === "down" ? ["err", "מנותק"] : ["warn", "לא נקרא"];
@@ -6463,15 +6770,36 @@ function netLeaseText(v) {
   const n = Number(m[1]), u = { s: ["שנייה", "שניות"], m: ["דקה", "דקות"], h: ["שעה", "שעות"], d: ["יום", "ימים"] }[m[2]];
   return n === 1 ? u[0] : `${n} ${u[1]}`;
 }
+/* ‏#1263: כרטיס הניהול אינו יכול להיות רשת ההפצה. */
+function deployCandidates() { return (NETW.nics || []).filter((n) => n.present && !n.trunk && !isMgmtNic(n.name)); }
+/* ‏#1556: ברירת המחדל אינה גם הכרטיס שהקונסולה מחוברת דרכו (בשרת חיפה כרטיס
+   הניהול לא היה ידוע, והראשון — eth0 של הקונסולה — נבחר). כששניהם לא ידועים
+   אין ברירת מחדל: מי שלא יודע דרך מה הוא מחובר חייב להניח שזה כל כרטיס. */
+function deployDefaultNic(candidates) {
+  const via = NETCFG && NETCFG.console_interface;
+  if (!via && !(NETCFG && NETCFG.management_interface)) return null;
+  return candidates.find((n) => n.name !== via) || null;
+}
+function netPickDeploy() {
+  const via = NETCFG && NETCFG.console_interface;
+  sheet({ title: "הגדר כרשת הפצה", sub: "על איזה כרטיס ירוץ ה-DHCP למחשבי השיכפול והבנייה", submitLabel: "המשך",
+    fields: [{ id: "nic", label: "כרטיס", type: "select", value: "",
+      options: [{ value: "", label: "— בחרו כרטיס —" },
+        ...deployCandidates().map((n) => ({ value: n.name, label: n.name + (n.name === via ? " — הקונסולה מחוברת דרכו" : "") }))] }],
+    onSubmit: async (v) => {
+      if (!v.nic) throw new Error("בחרו כרטיס");
+      return () => editDeployNet(v.nic);
+    } });
+}
 function networkDeployTab() {
   const nics = NETW.nics, focus = netDeployNic();
-  // ‏#1263: כרטיס הניהול אינו יכול להיות רשת ההפצה
-  const candidate = (nics || []).find((n) => n.present && !n.trunk && !isMgmtNic(n.name));
+  const candidates = deployCandidates(), candidate = deployDefaultNic(candidates);
   const header = netHeader(2);
   let body;
   if (nics === null) body = `<div class="c12">${UI.note("err", `לא הצלחתי לקרוא את כרטיסי הרשת: ${esc(NETW.err.interfaces || "")}`)}</div>`;
   else if (!focus) {
-    const act = candidate ? `<button class="btn primary" onclick="netEditDeploy('${encodeId(candidate.name)}')">הגדר כרשת הפצה</button>` : "";
+    const act = candidate ? `<button class="btn primary" onclick="netEditDeploy('${encodeId(candidate.name)}')">הגדר כרשת הפצה</button>`
+      : candidates.length ? `<button class="btn primary" onclick="netPickDeploy()">הגדר כרשת הפצה</button>` : "";
     body = netUnreadNotes() + UI.card({ title: "רשת ההפצה", cls: "c12",
       body: UI.empty("אין כרטיס מוגדר כרשת הפצה — \"הגדר כרשת הפצה\" על אחד הכרטיסים. DHCP הוא ההגדרה המסוכנת ביותר במערכת (#53): השרת בודק לפני ההדלקה מי כבר עונה.", act) });
   } else {
@@ -6707,7 +7035,7 @@ function ports() {
    חלון 90ש'), "נראה" מ-/net (loadMachines), "מה על המסך" מ-prompt.
    זה המקום היחיד לכפתור המוניטור (נדב 17/09); monitor.html/.js — לא נגענו. */
 /* ‏console-full.html P.monitor: רשימה + מציג בכרטיס בתוך הדף. המציג הוא monitor.html ב-iframe (אותו לקוח RFB, בלי שכתוב);
-   "פתח בחלון נפרד" נשאר קישור משני. בלי מכונה נבחרת / מתג כבוי / מכונה לא מחוברת — הסבר, לא iframe ריק. */
+   "פתח בחלון נפרד" נשאר קישור שרת משנה. בלי מכונה נבחרת / מתג כבוי / מכונה לא מחוברת — הסבר, לא iframe ריק. */
 let MON_SEL = "";
 function monitorSelect(macEnc) {
   try { MON_SEL = decodeURIComponent(macEnc); } catch (e) { MON_SEL = macEnc; }
@@ -6722,7 +7050,7 @@ function monitorViewerHtml(list, enabled) {
   else if (!m) body = say(["בחר מחשב לצפייה", "המסך של התחנה יוצג כאן. אפשר לשלוח מקשים בלבד כשהתחנה מחוברת לסוכן."]);
   else if (!m.online) body = say([`${m.name || m.mac} אינה מחוברת`, "אין למה להתחבר: התחנה לא נראתה ב-90 השניות האחרונות. אפשר להעיר אותה (WoL) מהרשימה."]);
   else {
-    // ‏#1179/#1008: מכונה של משני — המציג עובר דרך המשני (#1129, ‏monitor.js ‏node=).
+    // ‏#1179/#1008: מכונה של שרת משנה — המציג עובר דרך שרת המשנה (#1129, ‏monitor.js ‏node=).
     const node = m.node || SERVER_CTX;
     const q = `monitor.html?mac=${encodeId(m.mac)}&name=${encodeId(m.name || m.mac)}${node ? `&node=${encodeId(node)}` : ""}`;
     body = `<div class="mon-bar"><strong>${esc(m.name || m.mac)}</strong><span class="mono">${esc(m.ip || "")}</span><span class="sp"></span>`
@@ -6744,17 +7072,17 @@ function monitorRowHtml(m) {
 function monitorOffRowHtml(m) {
   const macEnc = encodeId(monitorKey(m)), net = m.node ? null : netFor(m.mac);
   let seen;
-  if (m.node) seen = "לא מחובר";   // "נראה" של המשני אינו נקרא כאן
+  if (m.node) seen = "לא מחובר";   // "נראה" של שרת המשנה אינו נקרא כאן
   else if (NET == null) seen = "לא מחובר · נראה: לא נקרא";
   else if (net && net.last_seen) seen = `לא מחובר · נראה ${ago(net.last_seen)}`;
   else seen = "מעולם לא נראה";
-  // WoL של מכונת משני אינו עובר ב-relay — רק מקומית.
+  // WoL של מכונת שרת משנה אינו עובר ב-relay — רק מקומית.
   const wol = m.node ? "" : `<button class="btn sm" onclick="wakeMachine('${macEnc}')">WoL</button>`;
   return `<div class="mon-off" data-mac="${esc(m.mac)}"${m.node ? ` data-node="${esc(m.node)}"` : ""}><span class="mn">${esc(m.name || m.mac)}${m.server ? ` <span data-server>· ${esc(m.server)}</span>` : ""}</span>${UI.status("", seen)}${wol}</div>`;
 }
-/* משני שלא נקרא — שורה משלו ברשימה, לא היעלמות של המכונות שלו (עיקרון 5). */
+/* שרת משנה שלא נקרא — שורה משלו ברשימה, לא היעלמות של המכונות שלו (עיקרון 5). */
 function monitorUnreadRow(r) {
-  return `<div class="mon-off" data-node="${esc(r.node || "")}" data-unread><span class="mn">${esc(r.label)} <span class="muted">· שרת משני</span></span>${UI.status("unk", "לא נקרא")}<span class="sub">${esc(r.error || "בלי סיבה בתשובה")}</span></div>`;
+  return `<div class="mon-off" data-node="${esc(r.node || "")}" data-unread><span class="mn">${esc(r.label)} <span class="muted">· שרת משנה</span></span>${UI.status("unk", "לא נקרא")}<span class="sub">${esc(r.error || "בלי סיבה בתשובה")}</span></div>`;
 }
 function monitorPage() {
   if (!MONITOR && !monitorError) return pagePlaceholder();
@@ -6782,52 +7110,57 @@ function monitorPage() {
 }
 
 /* ---------- #954 גל 6: הגדרות ----------
-   נבנה לפי docs/design/console-redesign/settings.md: עברית, שורה לכל הגדרה
-   (שם + מה זה אומר | שליטה), שמור/בטל בכותרת — מנוטרלים עד שינוי, שורה
-   שהשתנתה מסומנת. ‏POST /settings עם המפתחות ששונו בלבד. כרטיס העדכון
-   עצמו — בבריאות (גל 5); כאן המתג וקישור. מתג זהות המכונה (#855) נשאר. */
-let SETTINGS = null, settingsError = "", SETTINGS_DRAFT = {};
-/* ‏#1300 (console-full.html P.settings, הכרעת נדב 12/10 — "בדיוק כמו המוקאפ"): כרטיסים פשוטים. ערך = שורה אחת
-   של `dl.kv` (התווית, הערך, ופעולה קטנה כקישור — "TA  שינוי שם"); מתג = ‏`label.sw` (המתג בראש השורה, הטקסט
-   אחריו, בצבע הפעולה הכחול). ערך נשמר מיד מחלון קטן; מתגים מסומנים כטיוטה ונשמרים ב"שמירה" שבכותרת.
-   ההסבר המלא של כל הגדרה — ב-title של השורה (ריחוף), לא שורת משנה. */
+   סידור מחדש (נדב 17/10, המוקאפ C:\ImageCtl-Lab\evening-1015\settings-redesign, apple-design §16): חמש קבוצות
+   לפי נושא — כללי · שיכפול והפצה · אבטחה · עדכונים ותחזוקה. כל הגדרה שורה אחת של `dl.mkv`: התווית בתחילת
+   השורה, השליטה (ערך + "שינוי…", מתג או כפתור) בסופה, באותו טור בכל השורות. ההסבר — הערת קבוצה גלויה מתחת
+   לכרטיס, לא רק title בריחוף. **כל שינוי נשמר מיד** (ערך מחלון קטן, מתג בלחיצה) ונרשם ביומן; מתג שכיבויו
+   מסוכן פותח קודם חלון אישור עם כפתור אדום, בלי הקלדת מילה (#1270). אין "שמירה"/"ביטול" בכותרת.
+   שם השרת = שם המארח (שם אחד, ‏POST /hostname); "מראה" עבר ל"החשבון שלי". */
+let SETTINGS = null, settingsError = "";
+const SETTING_GROUPS = [
+  { card: "general", title: "כללי", foot: "השם מופיע בעץ, בכותרת, במסכי התחנות וברשת (hostname). שינוי השם מפעיל את השרת מחדש." },
+  { card: "deploy", title: "שיכפול והפצה", foot: "סבב מתחיל לבד כשעבר הזמן הזה בלי מצטרף חדש. קצב אוטומטי כבוי = תמיד התקרה הקבועה; השינוי חל מהגל הבא. יעד שיישאר עם פחות מקום יוצג כ\"לא נכנס\"." },
+  { card: "security", title: "אבטחה", foot: "מי שעומד ליד מחשב ומשחזר אליו אימג' מהשרת, כשאין סבב פתוח, מתבקש להיכנס עם משתמש וסיסמה של הקונסולה; בסבב פתוח לא מתבקשת כניסה. השרת מקבל פנייה ממחשב רק אם כתובת ה-IP שלו היא זו שהשרת נתן ל-MAC שלו — כך מחשב אחד לא יכול להתחזות לאחר. כיבוי של כל אחד מהמתגים נרשם ביומן." },
+  { card: "update", title: "עדכונים ותחזוקה", foot: "החיבור היוצא לריפו הציבורי נפתח רק בזמן בדיקה או עדכון. ההפעלה מחדש נדחית כשיש עבודה פעילה. קובץ הגיבוי מכיל סודות — לשמור אותו כמו סיסמה." },
+];
+/* שורה: key = מפתח /settings, או שורה מיוחדת (type: name/tls/version/lastcheck/reboot/backup) שהערך שלה בא ממקור אחר.
+   ‏more — ההסבר המלא (title). ‏confirmOff — מתג שכיבויו מסוכן: חלון אישור לפני השמירה. */
 const SETTING_ROWS = [
-  { key: "server_name", card: "general", label: "שם השרת", type: "text", action: "שינוי שם", more: "מופיע בעץ, בכותרת ובמסכי התחנה" },
-  { key: "session_wait_seconds", card: "general", label: "המתנה מהמצטרף האחרון", type: "number", min: 30, more: "סבב מתחיל לבד כשעברו כך וכך שניות בלי מצטרף חדש" },
+  { key: "server_name", card: "general", label: "שם השרת", type: "name", more: "שם אחד: בעץ, בכותרת, במסכי התחנות וברשת (hostname)" },
+  // ‏#1447 (נדב 17/10): לא ב-/settings — ‏GET/POST /timezone (‏timedatectl וההגדרה יחד); ‏timezoneRow.
+  { key: "timezone", card: "general", label: "אזור זמן", type: "timezone", action: "שינוי", more: "השעה המקומית במסך השרת, במסכי התחנות ובהפעלה מחדש האוטומטית. השרת שומר זמנים ב-UTC — רק התצוגה מקומית" },
+  { key: "session_wait_seconds", card: "deploy", label: "המתנה מהמצטרף האחרון", type: "number", min: 30, more: "סבב מתחיל לבד כשעברו כך וכך שניות בלי מצטרף חדש" },
   // ‏#1303 (נדב 12/10): הקצב הנלמד של המולטיקאסט (‏drive_rates); ‏"false" בלבד מכבה — חסר = אוטומטי.
-  { key: "learned_rate_enabled", card: "general", label: "קצב שידור אוטומטי לפי הכוננים בחדר", more: "כבוי = תמיד התקרה הקבועה (IMAGECTL_MAX_BITRATE). השינוי חל מהגל הבא", type: "switch", defaultOn: true },
-  // ‏#1366 (נדב 13/10): מגירה שמונה ה-CRC שלה מעל זה — כתומה: "כבל או מגירה חשודים". 0 = כבוי, ברירת המחדל (המונים לא עלו בגל — היסטוריה). הסוכן מקבל ב-hello.
-  { key: "crc_warn_threshold", card: "general", label: "סף שגיאות CRC לאזהרה", type: "number", min: 0, max: 1000000, unit: "שגיאות", more: "מגירה שמונה ה-CRC שלה מעל זה מסומנת כתום — כבל או מגירה חשודים. 0 = כבוי (ברירת המחדל); האזהרה העיקרית היא עליית המונה מאז הסבב הקודם" },
+  { key: "learned_rate_enabled", card: "deploy", label: "קצב שידור אוטומטי לפי הכוננים בחדר", more: "כבוי = תמיד התקרה הקבועה (IMAGECTL_MAX_BITRATE). השינוי חל מהגל הבא", type: "switch", defaultOn: true },
   // ‏#1354 (נדב 13/10): יעד שיישארו בו פחות מזה במחיצת המערכת — "לא נכנס". הסוכן מקבל ב-hello.
-  { key: "min_free_gb", card: "general", label: "מינימום מקום פנוי אחרי שחזור (GB)", type: "number", min: 0, max: 500, unit: "GB", more: "יעד שיישאר עם פחות מזה יוצג כ'לא נכנס'" },
-  { key: "auto_reboot", card: "general", label: "הפעלה מחדש אוטומטית", type: "reboot", action: "שינוי", more: "כבוי / כל יום / פעם בשבוע; בזמן עבודה ההפעלה נדחית" },
-  { key: "auto_reboot_time", card: "general", label: "שעה", type: "reboot", action: "שינוי" },
-  { key: "auto_reboot_weekday", card: "general", label: "יום", type: "reboot", action: "שינוי" },
-  { key: "class_deploy_enabled", card: "general", label: "הפצה לכיתה ממסך התחנה", more: "כבוי במהדורת השיכפול — הכרטיס יורד מהתפריט והשרת מסרב לסבב כיתה", type: "switch" },
-  { key: "console_idle_seconds", card: "security", label: "ניתוק הפעלות לא פעילות", type: "number", min: 60, more: "קונסולה פתוחה בלי מגע (עכבר/מקלדת) — מתנתקת; תקף מיד לסשן הזה" },
-  { key: "recovery_require_login", card: "security", label: "שחזור תחנה בודדת דורש כניסה", more: "מומלץ דלוק; כיבוי רק להדגמה", type: "switch" },
-  { key: "identity_check", card: "security", label: "בדיקת זהות מכונה לפי חכירת ה-DHCP", more: "כתובת המקור של hello/דיווח חייבת להתאים לחכירת ה-DHCP של ה-MAC. דלוק כברירת מחדל; לכבות רק כשה-DHCP של וילן ההפצה אינו השרת הזה — הכיבוי נרשם ביומן", type: "switch", defaultOn: true },
+  { key: "min_free_gb", card: "deploy", label: "מקום פנוי מינימלי אחרי שחזור", type: "number", min: 0, max: 500, unit: "GB", more: "יעד שיישאר עם פחות מזה יוצג כ'לא נכנס'" },
+  // ‏#1366 (נדב 13/10): מגירה שמונה ה-CRC שלה מעל זה — כתומה: "כבל או מגירה חשודים". 0 = כבוי, ברירת המחדל. הסוכן מקבל ב-hello.
+  { key: "crc_warn_threshold", card: "deploy", label: "אזהרת CRC למגירה", type: "number", min: 0, max: 1000000, unit: "שגיאות", zeroText: "כבויה", more: "מגירה שמונה ה-CRC שלה מעל זה מסומנת כתום — כבל או מגירה חשודים. 0 = כבוי (ברירת המחדל); האזהרה העיקרית היא עליית המונה מאז הסבב הקודם" },
+  { key: "class_deploy_enabled", card: "deploy", label: "הפצה לכיתה ממסך התחנה", more: "כבוי במהדורת השיכפול — הכרטיס יורד מהתפריט והשרת מסרב לסבב כיתה", type: "switch" },
+  // נדב 18/10: מתג + "אחרי N דקות" (1–1440). ‏console_idle_seconds נשאר בשניות בשרת, 0 = כבוי.
+  { key: "console_idle_seconds", card: "security", label: "ניתוק אוטומטי בחוסר פעילות", type: "idleswitch",
+    more: "קונסולה פתוחה בלי מגע (עכבר/מקלדת) — מתנתקת אחרי הזמן שנקבע; תקף מיד לסשן הזה. כבוי — אין ניתוק בחוסר פעילות" },
+  { key: "console_idle_seconds", card: "security", label: "אחרי", type: "idleminutes" },
+  // נדב 18/10: "תכלס לא צריך לזה MFA. אם בנוי, אפשר להפעיל או לא" — כבוי כברירת מחדל.
+  { key: "mfa_required_for_admins", card: "security", label: "חיוב אימות דו-שלבי למנהלים", type: "switch",
+    more: "דלוק: כל מנהל (חוץ מהמקומי שנוצר בהתקנה) חייב לרשום MFA בכניסה הבאה. כבוי (ברירת המחדל): אין חיוב — מי שהפעיל MFA ממשיך להתבקש לקוד, ואפשר להפעיל או לבטל מ\"החשבון שלי\"." },
+  { key: "recovery_require_login", card: "security", label: "שחזור מהשרת בלי סבב דורש כניסה", type: "switch", confirmOff: true,
+    more: "מי שעומד ליד מחשב ומשחזר אליו אימג' מהשרת, כשאין סבב פתוח, מתבקש להיכנס עם משתמש וסיסמה של הקונסולה. בסבב פתוח לא מתבקשת כניסה. מומלץ דלוק." },
+  { key: "identity_check", card: "security", label: "אימות מחשבים לפי כתובת ה-DHCP", type: "switch", defaultOn: true, confirmOff: true,
+    more: "השרת מקבל פנייה ממחשב רק אם כתובת ה-IP שלו היא זו שהשרת נתן ל-MAC שלו. כך מחשב אחד לא יכול להתחזות לאחר. לכבות רק כשה-DHCP ברשת ההפצה אינו השרת הזה. הכיבוי נרשם ביומן." },
+  { key: "tls", card: "security", label: "תעודת TLS", type: "tls" },
+  { key: "version", card: "update", label: "גרסה מותקנת", type: "version" },
   { key: "update_enabled", card: "update", label: "עדכון גרסה מהקונסולה", more: "כבוי כברירת מחדל; החיבור היוצא לריפו הציבורי נפתח רק בזמן בדיקה/עדכון", type: "switch" },
+  { key: "last_check", card: "update", label: "בדיקה אחרונה", type: "lastcheck" },
+  { key: "auto_reboot", card: "update", label: "הפעלה מחדש אוטומטית", type: "reboot", more: "כבוי / כל יום / פעם בשבוע; בזמן עבודה ההפעלה נדחית" },
+  { key: "backup", card: "update", label: "גיבוי הגדרות", type: "backup", more: "קובץ עם הגדרות השרת, לשחזור אחרי התקנה מחדש" },
 ];
 function settingRow(key) { return SETTING_ROWS.find((r) => r.key === key); }
 /* הערך כפי שהשרת החזיר, מנורמל: מתג → boolean (#855: חסר = דלוק), השאר מחרוזת. */
 function settingCurrent(key) {
   const r = settingRow(key), v = SETTINGS ? SETTINGS[key] : undefined;
-  if (r.type === "switch") return r.defaultOn ? v !== "false" : v === "true";
+  if (r && r.type === "switch") return r.defaultOn ? v !== "false" : v === "true";
   return v == null ? "" : String(v);
-}
-function settingValue(key) { return key in SETTINGS_DRAFT ? SETTINGS_DRAFT[key] : settingCurrent(key); }
-function settingsDirty() { return Object.keys(SETTINGS_DRAFT).length > 0; }
-function settingsSet(key, value) {
-  if (value === settingCurrent(key)) delete SETTINGS_DRAFT[key]; else SETTINGS_DRAFT[key] = value;
-  settingsMarkDirty();
-}
-/* מתג (label.sw): ה-checkbox הוא המצב — בלי לצבוע את הדף מחדש. */
-function settingsSwitch(key, input) { settingsSet(key, !!(input && input.checked)); }
-function settingsMarkDirty() {
-  const dirty = settingsDirty();
-  for (const id of ["set-save", "set-cancel"]) { const b = document.getElementById(id); if (b) b.disabled = !dirty; }
-  for (const r of SETTING_ROWS) { const el = document.getElementById("srow-" + r.key); if (el) el.classList.toggle("changed", r.key in SETTINGS_DRAFT); }
 }
 /* שניות → מה שאדם קורא: ‏600 → "10 דקות". */
 function settingSecondsText(v) {
@@ -6838,117 +7171,210 @@ function settingSecondsText(v) {
 function ghostBtn(label, fn) { return `<button class="btn sm flat" type="button" onclick="${fn}">${esc(label)}</button>`; }
 /* ‏dl.kv של המוקאפ: [dt, dd(html)] */
 function settingsKv(rows) { return `<dl class="mkv">${rows.map(([dt, dd, attrs]) => `<dt${attrs || ""}>${esc(dt)}</dt><dd${attrs || ""}>${dd}</dd>`).join("")}</dl>`; }
-function settingValueRow(r) {
-  const v = settingCurrent(r.key);
-  const rebootShown = r.key === "auto_reboot" ? ({off:"כבוי", daily:"כל יום", weekly:"פעם בשבוע"}[v] || v)
-    : r.key === "auto_reboot_weekday" ? (["יום שני", "יום שלישי", "יום רביעי", "יום חמישי", "יום שישי", "שבת", "יום ראשון"][Number(v)] || v) : v;
-  const shown = r.type === "number" ? (r.unit ? (v === "" ? "לא נקבע" : ltr(`${v} ${r.unit}`)) : esc(settingSecondsText(v))) : (v ? esc(rebootShown) : `<span class="muted">לא נקבע</span>`);
-  const action = r.type === "reboot" ? "autoRebootSheet()" : `settingsValueSheet('${r.key}')`;
-  return [r.label, `${shown} ${ghostBtn(r.action || "שינוי", action)}`, r.more ? ` title="${esc(r.more)}"` : ""];
+/* ‏#1676: "לא נקרא" נשאר גלוי (עיקרון 5), אבל שגיאת מערכת גולמית (נתיב, Errno) — מאחורי "פרטים טכניים",
+   כמו UI.noteTech; משפט עברי מהשרת נשאר בשורה. */
+function settingUnreadHtml(err) {
+  const raw = err == null ? "" : String(err);
+  if (raw && isRawTechnical(raw)) return `<span class="muted">לא נקרא</span><details class="tech"><summary>פרטים טכניים</summary><code dir="ltr">${esc(raw)}</code></details>`;
+  return `<span class="muted">לא נקרא${raw ? ": " + esc(raw) : ""}</span>`;
+}
+/* ‏#1675: יחידה עברית אינה עטופה ב-ltr ("שגיאות 0"); ‏0 עם zeroText = כבוי. */
+function settingNumberText(r, v) {
+  if (v === "") return `<span class="muted">לא נקבע</span>`;
+  if (r.zeroText && Number(v) === 0) return `<span class="muted">${esc(r.zeroText)}</span>`;
+  const text = r.unit ? `${v} ${r.unit}` : settingSecondsText(v);
+  return `<bdi>${esc(r.prefix ? `${r.prefix} ${text}` : text)}</bdi>`;
+}
+const REBOOT_DAYS = ["יום שני", "יום שלישי", "יום רביעי", "יום חמישי", "יום שישי", "שבת", "יום ראשון"];
+/* שורה אחת: "כבוי" / "כל יום ב-03:00" / "כל יום שני ב-03:00". */
+function autoRebootText() {
+  const mode = settingCurrent("auto_reboot"), at = settingCurrent("auto_reboot_time");
+  if (mode === "off" || mode === "") return "כבוי";
+  if (mode === "daily") return `כל יום ב-${at}`;
+  if (mode === "weekly") return `כל ${REBOOT_DAYS[Number(settingCurrent("auto_reboot_weekday"))] || "שבוע"} ב-${at}`;
+  return mode;
 }
 function settingSwitchHtml(r) {
-  const v = settingValue(r.key);
-  return `<label class="msw${r.key in SETTINGS_DRAFT ? " changed" : ""}" id="srow-${r.key}"${r.more ? ` title="${esc(r.more)}"` : ""}><input type="checkbox" role="switch" aria-label="${esc(r.label)}"${v ? " checked" : ""} onchange="settingsSwitch('${r.key}', this)"><span class="track"></span><span>${esc(r.label)}</span></label>`;
+  const off = secondaryReadOnlyRow(r) ? " disabled" : "";
+  return `<label class="msw solo" id="srow-${r.key}"><input type="checkbox" role="switch" aria-label="${esc(r.label)}"${settingCurrent(r.key) ? " checked" : ""}${off} onchange="settingsSwitch('${r.key}', this)"><span class="track"></span></label>`;
 }
-/* גוף כרטיס: שורות הערך (dl.kv), ואחריהן המתגים (כמו כרטיס "אבטחה" במוקאפ). */
-function settingsCardBody(card) {
-  const rows = SETTING_ROWS.filter((r) => r.card === card && (r.key !== "class_deploy_enabled" || classroomsOn()));
-  const vals = rows.filter((r) => r.type !== "switch"), sws = rows.filter((r) => r.type === "switch");
-  return (vals.length ? settingsKv(vals.map(settingValueRow)) : "") + (sws.length ? `<div class="msws">${sws.map(settingSwitchHtml).join("")}</div>` : "");
+/* שינוי שם בהקשר של שרת משנה: ‏/hostname אינו בערוץ בין השרתים (מפעיל את שרת המשנה מחדש) — משנים מהקונסולה שלו. */
+function secondaryReadOnlyRow(r) { return r.type === "name" && !!SERVER_CTX; }
+function tlsRowHtml() {
+  if (!TLS_STATUS) return settingUnreadHtml(tlsError || "לא נטען");
+  if (!TLS_STATUS.enabled) return `<span class="muted">בלי TLS (loopback בלבד)</span>`;
+  const c = TLS_STATUS.on_disk;
+  const warn = (TLS_STATUS.pending_restart ? ` ${UI.pill("warn", "ממתינה לאתחול")}` : "")
+    + (TLS_STATUS.covers_hostname ? "" : ` ${UI.pill("warn", "השם אינו בתעודה")}`);
+  return `<span class="sv">${esc(c.self_signed ? "תעודה עצמית" : "תעודה חתומה")} <span class="muted">· בתוקף עד</span> ${tlsExpiryHtml(c.not_after)}</span>${warn} ${ghostBtn("פרטים…", "tlsDetailsSheet()")}`;
 }
-/* ערך (שם / שניות) — חלון קטן שנשמר מיד (W.renameServer במוקאפ), לא שדה פתוח בדף. */
+/* נדב 18/10: ניתוק בחוסר פעילות — בדקות בממשק, בשניות בשרת (0 = כבוי). */
+const IDLE_MAX_MINUTES = 1440, IDLE_DEFAULT_SECONDS = 600;
+function idleSecondsNow() {
+  const n = Number(SETTINGS && SETTINGS.console_idle_seconds);
+  return Number.isFinite(n) ? n : IDLE_DEFAULT_SECONDS;
+}
+function idleMinutesText(seconds) {
+  const m = Math.max(1, Math.round(seconds / 60));
+  return m === 1 ? "דקה אחת" : `${m} דקות`;
+}
+async function idleSave(seconds) {
+  await post("/settings", { console_idle_seconds: String(seconds) });
+  if (ME) { ME.idle_seconds = seconds; startIdleWatch(); }   // תקף מיד, בלי כניסה מחדש
+  toast(seconds ? `ניתוק אוטומטי: אחרי ${idleMinutesText(seconds)} — נרשם ביומן` : "ניתוק אוטומטי כבוי — נרשם ביומן");
+  await loadSettingsData();
+}
+function idleSwitch(input) {
+  if (!isAdmin()) return;
+  const want = !!(input && input.checked);
+  input.disabled = true;
+  idleSave(want ? IDLE_DEFAULT_SECONDS : 0).catch((e) => { input.checked = !want; input.disabled = false; toast(e.message); });
+}
+function idleMinutesSheet() {
+  if (!isAdmin()) return;
+  sheet({ title: "ניתוק אוטומטי בחוסר פעילות", sub: "אחרי כמה דקות בלי מגע הקונסולה מתנתקת.",
+    fields: [{ id: "v", label: `דקות (1–${IDLE_MAX_MINUTES})`, value: String(Math.max(1, Math.round(idleSecondsNow() / 60))), dir: "ltr" }],
+    onSubmit: async (v) => {
+      const value = String(v.v == null ? "" : v.v).trim(), n = Number(value);
+      if (value === "" || !Number.isInteger(n) || n < 1 || n > IDLE_MAX_MINUTES)
+        throw new Error(`מספר שלם של דקות, 1–${IDLE_MAX_MINUTES}`);
+      await idleSave(n * 60);
+    } });
+}
+
+function settingDd(r) {
+  if (r.type === "switch") return settingSwitchHtml(r);
+  if (r.type === "idleswitch")
+    return `<label class="msw solo" id="srow-idle"><input type="checkbox" role="switch" aria-label="${esc(r.label)}"${idleSecondsNow() > 0 ? " checked" : ""} onchange="idleSwitch(this)"><span class="track"></span></label>`;
+  if (r.type === "idleminutes") return `<span class="sv">${esc(idleMinutesText(idleSecondsNow()))}</span> ${ghostBtn("שינוי…", "idleMinutesSheet()")}`;
+  if (r.type === "tls") return tlsRowHtml();
+  if (r.type === "timezone") return timezoneRow(r)[1];   // #1447
+  if (r.type === "name") {
+    const v = settingCurrent(r.key);
+    const btn = SERVER_CTX ? `<button class="btn sm flat" type="button" disabled title="שם של שרת משנה משנים מהקונסולה שלו — השינוי מפעיל אותו מחדש">שינוי שם…</button>` : ghostBtn("שינוי שם…", "hostnameSheet()");
+    return `${v ? `<span class="sv mono" dir="ltr">${esc(v)}</span>` : `<span class="muted">לא נקרא</span>`} ${btn}`;
+  }
+  if (r.type === "version") {
+    if (updateError) return settingUnreadHtml(updateError);
+    const u = HEALTH_UPDATE;
+    return u && u.current ? `<span class="sv mono" dir="ltr">${esc(u.current)}</span>` : `<span class="muted">לא ידועה (אין תגית git על העץ)</span>`;
+  }
+  if (r.type === "lastcheck") return `<span class="sv">${updateLastCheckHtml(HEALTH_UPDATE)}</span> ${ghostBtn("בדוק עכשיו", "healthUpdateCheck()")}`;
+  if (r.type === "reboot") return `<span class="sv">${esc(autoRebootText())}</span> ${ghostBtn("שינוי…", "autoRebootSheet()")}`;
+  if (r.type === "backup") return ghostBtn("הורדה…", "confirmSettingsBackup()");
+  const v = settingCurrent(r.key);
+  return `<span class="sv">${r.type === "number" ? settingNumberText(r, v) : (v ? esc(v) : `<span class="muted">לא נקבע</span>`)}</span> ${ghostBtn("שינוי…", `settingsValueSheet('${r.key}')`)}`;
+}
+function settingRowVisible(r) {
+  if (r.key === "class_deploy_enabled") return classroomsOn();
+  if (r.type === "idleminutes") return idleSecondsNow() > 0;   // "אחרי N דקות" — רק כשהניתוק פעיל
+  // ‏"בדיקה אחרונה" רק כשהמתג דלוק — בלעדיו השרת אינו בודק (404).
+  if (r.type === "lastcheck") return !!(HEALTH_UPDATE && HEALTH_UPDATE.enabled);
+  return true;
+}
+function settingsGroupHtml(g) {
+  const rows = SETTING_ROWS.filter((r) => r.card === g.card && settingRowVisible(r))
+    .map((r) => [r.label, settingDd(r), r.more ? ` title="${esc(r.more)}"` : ""]);
+  const extra = g.card === "update" ? updateActionsHtml() : "";
+  const acts = g.card === "update" && updateUpToDate() ? UI.pill("ok", "✓ מעודכן") : "";
+  return `<section class="set-grp">${UI.card({ title: g.title, acts, body: settingsKv(rows) + extra })}<p class="set-foot">${esc(g.foot)}</p></section>`;
+}
+/* מתג נשמר מיד. כיבוי של מתג confirmOff — קודם חלון אישור (כפתור אדום); עד האישור המתג חוזר למצבו. */
+function settingsSwitch(key, input) {
+  const r = settingRow(key), want = !!(input && input.checked);
+  if (!r || !isAdmin()) return;
+  const save = async () => {
+    await post("/settings", { [key]: want ? "true" : "false" });
+    toast(`${r.label}: ${want ? "דלוק" : "כבוי"} — נשמר ונרשם ביומן`);
+    await loadSettingsData();
+  };
+  if (r.confirmOff && !want) {
+    input.checked = true;
+    confirmSheet(`לכבות: ${r.label}?`, r.more || "", "כיבוי", save, [["w", "השינוי חל מיד ונרשם ביומן"]]);
+    return;
+  }
+  input.disabled = true;
+  save().catch((e) => { input.checked = !want; input.disabled = false; toast(e.message); });
+}
+/* ערך (שם / שניות) — חלון קטן שנשמר מיד, לא שדה פתוח בדף. */
 function settingsValueSheet(key) {
   const r = settingRow(key);
   if (!r || !isAdmin()) return;
-  sheet({ title: r.type === "text" ? `שינוי ${r.label}` : r.label, sub: r.more || "",
-    fields: [{ id: "v", label: r.type === "number" ? (r.unit ? `${r.label} (${r.min}–${r.max})` : `${r.label} (בשניות, ${r.min} לפחות)`) : r.label, value: settingCurrent(key) }],
+  sheet({ title: r.label, sub: r.more || "",
+    fields: [{ id: "v", label: r.unit ? `${r.label} (${r.unit}, ${r.min}–${r.max})` : `${r.label} (בשניות, ${r.min} לפחות)`, value: settingCurrent(key) }],
     onSubmit: async (v) => {
-      let value = String(v.v == null ? "" : v.v).trim();
-      if (r.type === "number") {
-        const n = Number(value);
-        if (value === "" || !Number.isInteger(n) || n < r.min || (r.max != null && n > r.max)) throw new Error(`${r.label}: מספר שלם, ${r.max != null ? `${r.min}–${r.max}` : `${r.min} לפחות`}`);
-        value = String(n);
-      } else if (!value) throw new Error(`${r.label}: לא יכול להיות ריק`);
-      await post("/settings", { [key]: value });
-      if (key === "console_idle_seconds") { ME.idle_seconds = Number(value); startIdleWatch(); }   // תקף מיד, בלי כניסה מחדש
-      if (key === "server_name") { ME.server_name = value; if (PRIMARY_ME) PRIMARY_ME.server_name = value; applyServerName(); }
+      const value = String(v.v == null ? "" : v.v).trim();
+      const n = Number(value);
+      if (value === "" || !Number.isInteger(n) || n < r.min || (r.max != null && n > r.max)) throw new Error(`${r.label}: מספר שלם, ${r.max != null ? `${r.min}–${r.max}` : `${r.min} לפחות`}`);
+      await post("/settings", { [key]: String(n) });
       toast("נשמר — נרשם ביומן");
       await loadSettingsData();
+    } });
+}
+/* ‏#1447: אזור הזמן — "לא נקרא" ≠ ערך (עיקרון 5); מערכת שמדווחת אזור אחר מההגדרה (שרת שהותקן ב-UTC
+   ועוד לא עלה מחדש, או timedatectl שנכשל) — נאמר בשורה, לא מוסתר. */
+let TZ_STATUS = null, tzError = "";
+function timezoneRow(r) {
+  const attrs = r.more ? ` title="${esc(r.more)}"` : "";
+  if (!TZ_STATUS) return [r.label, `<span class="muted">לא נקרא${tzError ? ": " + esc(tzError) : ""}</span>`, attrs];
+  const sys = TZ_STATUS.system;
+  const differs = sys === TZ_STATUS.zone ? "" : ` <span class="muted">· מסך השרת: ${sys ? ltr(sys) : "לא נקרא"}</span>`;
+  return [r.label, `${ltr(TZ_STATUS.zone)}${differs} ${ghostBtn(r.action, "timezoneSheet()")}`, attrs];
+}
+function timezoneSheet() {
+  if (!isAdmin() || !TZ_STATUS) return;
+  sheet({ title: "אזור זמן", sub: "מסך השרת, מסכי התחנות והפעלה מחדש אוטומטית יציגו את השעה לפי האזור הזה",
+    fields: [{ id: "zone", label: "אזור זמן", type: "select", value: TZ_STATUS.zone, options: TZ_STATUS.zones.map((z) => ({ value: z, label: z })) }],
+    onSubmit: async (v) => {
+      await post("/timezone", { zone: v.zone });
+      toast("נשמר — נרשם ביומן"); await loadSettingsData();
     } });
 }
 function autoRebootSheet() {
   if (!isAdmin()) return;
   sheet({ title: "הפעלה מחדש אוטומטית", sub: "לפי השעה המקומית של השרת",
     fields: [
-      { id: "mode", label: "הפעלה מחדש אוטומטית", type: "select", value: settingCurrent("auto_reboot"), options: [{value:"off", label:"כבוי"}, {value:"daily", label:"כל יום"}, {value:"weekly", label:"פעם בשבוע"}] },
+      { id: "mode", label: "תדירות", type: "select", value: settingCurrent("auto_reboot"), options: [{value:"off", label:"כבוי"}, {value:"daily", label:"כל יום"}, {value:"weekly", label:"פעם בשבוע"}] },
       { id: "time", label: "שעה", type: "time", value: settingCurrent("auto_reboot_time") },
-      { id: "weekday", label: "יום", type: "select", value: settingCurrent("auto_reboot_weekday"), options: [{value:"0", label:"יום שני"}, {value:"1", label:"יום שלישי"}, {value:"2", label:"יום רביעי"}, {value:"3", label:"יום חמישי"}, {value:"4", label:"יום שישי"}, {value:"5", label:"שבת"}, {value:"6", label:"יום ראשון"}] }],
+      { id: "weekday", label: "יום (בהפעלה שבועית)", type: "select", value: settingCurrent("auto_reboot_weekday"), options: REBOOT_DAYS.map((label, i) => ({ value: String(i), label })) }],
     onSubmit: async (v) => {
       await post("/settings", { auto_reboot: v.mode, auto_reboot_time: v.time, auto_reboot_weekday: v.weekday });
       toast("נשמר — נרשם ביומן"); await loadSettingsData();
     } });
 }
-function appearanceCard() {
-  const seg = THEME_CYCLE.map((t) => `<button type="button" onclick="setThemePref('${t}')" aria-pressed="${currentTheme() === t}">${esc(THEME_TITLE[t])}</button>`).join("");
-  return UI.card({ title: "מראה", body: `<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><span>ערכת נושא</span><span class="seg" role="group" aria-label="ערכת נושא">${seg}</span></div>` });
+/* ‏לשונית "שרתי משנה" (נדב 18/10): רק בראשי/עצמאי ורק ל-admin; בשרת משנה היכולות כבויות — אין לשונית כלל. */
+function settingsSecondariesAllowed() {
+  return isAdmin() && !SERVER_CTX && !!(ME.capabilities && (ME.capabilities.enroll_secondary || ME.capabilities.interbranch_transfer));
 }
 function settings() {
   if (!SETTINGS && !settingsError) return pagePlaceholder();
-  const dirty = settingsDirty();
-  // console-full.html P.settings: "ביטול" ואחריו "שמירה" (ראשי) — מנוטרלים עד שמתג שונה.
-  const actions = `<button class="btn" id="set-cancel" onclick="cancelSettings()"${dirty ? "" : " disabled"}>ביטול</button><button class="btn primary" id="set-save" onclick="saveSettings()"${dirty ? "" : " disabled"}>שמירה</button>`;
-  const sub = SETTINGS ? ["הגדרות השרת", ME && ME.version ? `גרסה ${ME.version}` : ""].filter(Boolean).map(esc).join(" · ") : `‏/settings לא נקרא: ${esc(settingsError)}`;
+  const tabs = settingsSecondariesAllowed() ? ["כללי", "שרתי משנה"] : [];
+  const tab = tabs.length ? Math.min(currentTab, 1) : 0;
+  const sub = SETTINGS ? ["הגדרות השרת", ME && ME.version ? `גרסה ${ME.version}` : "", "כל שינוי נשמר מיד ונרשם ביומן"].filter(Boolean).map(esc).join(" · ") : `‏/settings לא נקרא: ${esc(settingsError)}`;
   const pill = !SETTINGS ? UI.pill("err", "לא נקרא") : "";
   const header = UI.objHeader({ crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "ניהול" }, { label: "הגדרות" }],
-    icon: "t-sliders", name: "הגדרות", sub, pill, actions: SETTINGS ? actions : "" });
+    icon: "t-sliders", name: "הגדרות", sub, pill, tabs, tab });
   const body = !SETTINGS
     ? UI.note("err", `לא הצלחתי לקרוא את ההגדרות: ${esc(settingsError)}`)
-    : UI.card({ title: "כללי", body: settingsCardBody("general") }) + UI.card({ title: "אבטחה", body: settingsCardBody("security") })
-      + backupCard() + updateCard(settingsCardBody("update")) + appearanceCard() + tlsCardHtml() + hostnameCardHtml();
+    : tab === 1 ? settingsSecondariesTab()
+    : `<div class="set-col">${SETTING_GROUPS.map(settingsGroupHtml).join("")}</div>`;
   return `<div class="page aligned settings">${header}<div class="body">${body}</div></div>`;
 }
-async function saveSettings() {
-  const body = {};
-  for (const r of SETTING_ROWS) {
-    if (!(r.key in SETTINGS_DRAFT)) continue;
-    const v = SETTINGS_DRAFT[r.key];
-    if (r.type === "number") {
-      const n = Number(v);
-      if (!Number.isInteger(n) || n < r.min) { toast(`${r.label}: מספר שלם, ${r.min} לפחות`); return; }
-      body[r.key] = String(n);
-    } else if (r.type === "switch") body[r.key] = v ? "true" : "false";
-    else {
-      const s = String(v).trim();
-      if (!s) { toast(`${r.label}: לא יכול להיות ריק`); return; }
-      body[r.key] = s;
-    }
-  }
-  if (!Object.keys(body).length) return;
-  try {
-    await post("/settings", body);
-    if (body.console_idle_seconds) { ME.idle_seconds = Number(body.console_idle_seconds); startIdleWatch(); }   // תקף מיד, בלי כניסה מחדש
-    if (body.server_name) { ME.server_name = body.server_name; applyServerName(); }
-    SETTINGS_DRAFT = {};
-    toast(`נשמר — ${Object.keys(body).length} ${Object.keys(body).length === 1 ? "הגדרה" : "הגדרות"}, נרשם ביומן`);
-    await loadSettingsData();
-  } catch (e) { toast(e.message); }
-}
-function cancelSettings() { SETTINGS_DRAFT = {}; renderCurrent(); }
 async function loadSettingsData() {
   try { SETTINGS = await api("/settings"); settingsError = ""; }
   catch (e) { SETTINGS = null; settingsError = e.message; toast("טעינת ההגדרות נכשלה: " + e.message); }
-  await loadHealthUpdate();   // כרטיס העדכונים
-  await loadHostCfg();       // #153: תעודה ושם מארח
+  await loadHealthUpdate();   // קבוצת העדכונים
+  await loadHostCfg();       // #153: תעודה
   if (current === "settings") renderCurrent();
+  if (settingsSecondariesAllowed()) loadSettingsSecondaries();   // הלשונית "שרתי משנה" — לא חוסמת את שאר העמוד
 }
-/* ---------- #153: תעודת TLS ושם המארח ----------
-   שני כרטיסים באותה שפה של "עדכונים". שניהם מסתיימים באתחול
-   השרת (התעודה נטענת רק בעליית uvicorn) — ולכן חלון אישור עם ההשלכות
-   וכפתור אדום, בלי הקלדת מילה (#1270). "לא נקרא" ≠ "אין" (עיקרון 5). */
-let TLS_STATUS = null, tlsError = "", HOSTNAME = null, hostnameError = "";
+/* ---------- #153: תעודת TLS ושם השרת ----------
+   שתיהן מסתיימות באתחול השרת (התעודה נטענת רק בעליית uvicorn; שם המארח — ‏hostnamectl) — ולכן חלון
+   אישור עם ההשלכות וכפתור אדום, בלי הקלדת מילה (#1270). "לא נקרא" ≠ "אין" (עיקרון 5). */
+let TLS_STATUS = null, tlsError = "";
 async function loadHostCfg() {
   try { TLS_STATUS = await api("/tls"); tlsError = ""; } catch (e) { TLS_STATUS = null; tlsError = e.message; }
-  try { HOSTNAME = (await api("/hostname")).hostname; hostnameError = ""; } catch (e) { HOSTNAME = null; hostnameError = e.message; }
+  try { TZ_STATUS = await api("/timezone"); tzError = ""; } catch (e) { TZ_STATUS = null; tzError = e.message; }   // #1447
 }
 function tlsModeHe(tls) { return tls && tls.mode === "ca-signed" ? "תעודה חתומה" : "תעודה עצמית"; }
 function tlsExpiryHtml(iso) {
@@ -6957,29 +7383,33 @@ function tlsExpiryHtml(iso) {
   if (!(days >= 0)) return `${when} ${UI.pill("err", "פג תוקף")}`;
   return days < 30 ? `${when} ${UI.pill("warn", `עוד ${days} ימים`)}` : when;
 }
-function tlsCardHtml() {
-  let body;
-  if (!TLS_STATUS) body = UI.note("err", `‏/tls לא נקרא: ${esc(tlsError || "לא נטען")}`);
-  else if (!TLS_STATUS.enabled) body = UI.note("warn", "הקונסולה רצה בלי TLS (loopback בלבד) — אין תעודה להחליף");
-  else {
-    const c = TLS_STATUS.on_disk;
-    const fp = esc(c.fingerprint_sha256);
-    const pairs = [["סוג", c.self_signed ? "תעודה עצמית" : `חתומה בידי ${esc(c.issuer || "—")}`],
-      ["הונפקה ל", `<span class="mono" dir="ltr">${esc(c.subject || "—")}</span>`],
-      ["שמות (SAN)", c.sans.length ? `<span class="mono" dir="ltr">${c.sans.map(esc).join(", ")}</span>` : "—"],
-      ["בתוקף עד", tlsExpiryHtml(c.not_after)],
-      ["SHA-256", `<span class="mono" dir="ltr" title="${fp}">${esc(c.fingerprint_sha256.slice(0, 23))}…</span>`]];
-    const notes = (TLS_STATUS.pending_restart ? UI.note("warn", "התעודה על הדיסק שונה מזו שבשימוש — היא תיכנס לשימוש באתחול השרת") : "")
-      + (TLS_STATUS.covers_hostname ? "" : UI.note("warn", `שם המארח <span class="mono" dir="ltr">${esc(TLS_STATUS.hostname)}</span> אינו בתעודה — דפדפן שפונה בשם הזה יזהיר`));
-    body = `${settingsKv(pairs.map(([k, v]) => [k, v]))}${notes}<div class="macts"><button class="btn" onclick="tlsUploadSheet()">העלאת תעודה</button></div>`;
-  }
-  return UI.card({ title: "תעודת TLS", body });
+/* "פרטים…" של שורת התעודה: חמש השורות הטכניות והאזהרות — רמה אחת פנימה (§16 Simplicity), ו"העלאת תעודה…". */
+function tlsDetailsSheet() {
+  if (!TLS_STATUS || !TLS_STATUS.enabled) return;
+  const c = TLS_STATUS.on_disk, fp = esc(c.fingerprint_sha256);
+  const pairs = [["סוג", c.self_signed ? "תעודה עצמית" : `חתומה בידי ${esc(c.issuer || "—")}`],
+    ["הונפקה ל", `<span class="mono" dir="ltr">${esc(c.subject || "—")}</span>`],
+    ["שמות (SAN)", c.sans.length ? `<span class="mono" dir="ltr">${c.sans.map(esc).join(", ")}</span>` : "—"],
+    ["בתוקף עד", tlsExpiryHtml(c.not_after)],
+    ["SHA-256", `<span class="mono" dir="ltr" title="${fp}">${esc(c.fingerprint_sha256.slice(0, 23))}…</span>`]];
+  const notes = (TLS_STATUS.pending_restart ? UI.note("warn", "התעודה על הדיסק שונה מזו שבשימוש — היא תיכנס לשימוש באתחול השרת") : "")
+    + (TLS_STATUS.covers_hostname ? "" : UI.note("warn", `שם השרת <span class="mono" dir="ltr">${esc(TLS_STATUS.hostname)}</span> אינו בתעודה — דפדפן שפונה בשם הזה יזהיר`));
+  sheet({ title: "תעודת TLS", sub: "הקונסולה מוצגת בתעודה הזו", note: settingsKv(pairs) + notes,
+    submitLabel: "העלאת תעודה…", cancelLabel: "סגירה", onSubmit: async () => tlsUploadSheet,
+    // ‏"הנפקת תעודה חדשה" — רק לתעודה עצמית, ליד "העלאת תעודה…" (נדב 17/10)
+    extra: c.self_signed ? { label: "הנפקת תעודה חדשה…", onClick: tlsReissueSheet } : null });
 }
-function hostnameCardHtml() {
-  const body = HOSTNAME == null
-    ? UI.note("err", `‏/hostname לא נקרא: ${esc(hostnameError || "לא נטען")}`)
-    : settingsKv([["שם המארח", `<span class="mono" dir="ltr">${esc(HOSTNAME)}</span> ${ghostBtn("שינוי", "hostnameSheet()")}`, ` title="שם המכונה ברשת (hostname) — נפרד מ&quot;שם השרת&quot; שבעץ. גישה בשם דורשת גם רשומת DNS אצל ה-IT ושם בתעודה"`]]);
-  return UI.card({ title: "שם המארח", body });
+function tlsReissueSheet() {
+  confirmSheet("הנפקת תעודה חדשה", "תעודה עצמית חדשה לקונסולה, במקום הנוכחית",
+    "הנפקה והפעלה מחדש", async () => {
+      const r = await post("/tls/reissue", {});
+      toast(`תעודה חדשה הונפקה (בתוקף עד ${fmtDate(r.certificate.not_after)}) — השרת מופעל מחדש`, 6000);
+      await loadHostCfg();
+      if (current === "settings") renderCurrent();
+    },
+    [["w", "הדפדפן יבקש לאשר את התעודה מחדש, פעם אחת"],
+     ["w", "התעודה החדשה נכנסת לתוקף בהפעלה מחדש של השרת — הקונסולה תתנתק לכמה שניות"],
+     ["w", "התעודה הקודמת נשמרת ליד הנוכחית (‎console.crt.prev‎)"]]);
 }
 function tlsUploadSheet() {
   sheet({
@@ -7000,18 +7430,26 @@ function tlsUploadSheet() {
     },
   });
 }
-function hostnameSheet() {
+/* ‏שינוי שם השרת — המקום היחיד (נדב 17/10): השם הוא שם המארח, ולכן ‏POST /hostname (‏hostnamectl, קריאה חוזרת,
+   הפעלה מחדש). ‏primary — מהצומת העליון בעץ (לחיצה כפולה), תמיד על הראשי. */
+function hostnameSheet(primary = false) {
+  if (!isAdmin()) return;
+  if (SERVER_CTX) { toast(primary ? "כדי לשנות את שם השרת הראשי — חזרו קודם לשרת הראשי" : "שם של שרת משנה משנים מהקונסולה שלו"); return; }
+  const name = (SETTINGS && SETTINGS.server_name) || (ME && ME.server_name) || "";
   sheet({
-    title: "שינוי שם המארח", sub: HOSTNAME || "",
-    fields: [{ id: "hostname", label: "שם חדש", value: HOSTNAME || "", dir: "ltr", help: "אותיות אנגליות, ספרות ומקפים; נקודות בין חלקים (RFC 1123)" }],
-    note: impactList([["w", "השם נכתב במכונה (hostnamectl) ונקרא בחזרה"], ["w", "השרת יופעל מחדש והקונסולה תתנתק לכמה שניות"],
-      ["w", "התעודה אינה מתחלפת — אם השם החדש אינו בה, הדפדפן יזהיר בגישה בשם"]]),
-    danger: true, submitLabel: "שינוי והפעלה מחדש",
+    title: "שינוי שם השרת", sub: name,
+    fields: [{ id: "hostname", label: "שם חדש", value: name, dir: "ltr", help: "אותיות אנגליות, ספרות ומקפים; נקודות בין חלקים (RFC 1123)" }],
+    note: impactList([["w", "השם מתחלף בעץ, בכותרת ובמסכי התחנות"],
+      ["w", "שם המכונה ברשת (hostname) מתחלף איתו — השרת יופעל מחדש והקונסולה תתנתק לכמה שניות"],
+      ["w", "אם השם החדש אינו בתעודת ה-TLS, הדפדפן יזהיר בגישה בשם"]]),
+    danger: true, submitLabel: "שינוי שם והפעלה מחדש",
     onSubmit: async (v) => {
       const r = await post("/hostname", { hostname: v.hostname });
-      toast(`שם המארח שונה ל-${r.hostname} — השרת מופעל מחדש`, 6000);
-      await loadHostCfg();
-      if (current === "settings") renderCurrent();
+      toast(`שם השרת שונה ל-${r.hostname} — השרת מופעל מחדש`, 6000);
+      if (ME) ME.server_name = r.hostname;
+      if (PRIMARY_ME) PRIMARY_ME.server_name = r.hostname;
+      applyServerName();
+      if (current === "settings") await loadSettingsData();
     },
   });
 }
@@ -7182,11 +7620,11 @@ function toolsPage() {
 const pages = {
   settings: { crumb: "הגדרות", title: "הגדרות", tabs: [], render: settings, load: loadSettingsData, own: true },   // ‏#954 גל 6
   // ‏#954 גל 7: כותרת אובייקט + datagrid (UI.*, כמו drivers.js) — שרתים/העברות/קבוצות.
-  branches: { crumb: "סניפים", title: "סניפים", tabs: ["שרתים", "העברות", "קבוצות"], render: (i) => branchesPage(i), load: () => loadBranchesData(), own: true },
-  // ‏#936: הדף של משני אחד (נבחר בעץ, BRANCH_NODE) — אותם נתונים ואותן
-  // פונקציות של "סניפים" (branches.js). ‏#1179: בלי לשוניות — העמוד הוא העלה
-  // שנבחר בעץ של המשני (BRANCH_VIEW), כמו שכל עמוד של הראשי הוא עלה בעץ שלו.
-  branch: {crumb:"שרת משני", title:"שרת משני", desc:"אותו עץ כמו הראשי, מול הנתונים של השרת המשני — כפי שהראשי מדד מולו", tabs: [], render:pagePlaceholder},
+  branches: { crumb: "שרתי משנה", title: "שרתי משנה", tabs: ["שרתים", "העברות", "קבוצות"], render: (i) => branchesPage(i), load: () => loadBranchesData(), own: true },
+  // ‏#936: הדף של שרת משנה אחד (נבחר בעץ, BRANCH_NODE) — אותם נתונים ואותן
+  // פונקציות של "שרתי משנה" (branches.js). ‏#1179: בלי לשוניות — העמוד הוא העלה
+  // שנבחר בעץ של שרת המשנה (BRANCH_VIEW), כמו שכל עמוד של הראשי הוא עלה בעץ שלו.
+  branch: {crumb:"שרת משנה", title:"שרת משנה", desc:"אותו עץ כמו הראשי, מול הנתונים של שרת המשנה — כפי שהראשי מדד מולו", tabs: [], render:pagePlaceholder},
   // ‏#954: הדף מצייר את הכותרת והלשוניות שלו (own) לפי שפת העיצוב החדשה; הלשוניות בפועל לפי תפקיד (homeTabs).
   home: { crumb: "סקירה כללית", title: "סקירה כללית", tabs: ["סיכום", "משימות", "אירועים"], render: home, load: loadHome, own: true },
   images: { crumb: "אימג'ים", title: "ספריית אימג'ים", tabs: imagesTabs(), render: images, load: loadImages, own: true },
@@ -7216,19 +7654,19 @@ function tabRender(pageId, index) {
   return fn ? fn() : `<div class="card"><div class="card-b">אין תוכן עבור הכרטיס הזה.</div></div>`;
 }
 
-/* ‏#1179: בהקשר משני העמוד מצויר מתשובה של שרת אחר. תשובה בצורה שהעמוד אינו
+/* ‏#1179: בהקשר שרת משנה העמוד מצויר מתשובה של שרת אחר. תשובה בצורה שהעמוד אינו
    מכיר (אובייקט במקום רשימה) לא תשבור את הקונסולה — העמוד אומר "לא נקרא" והסיבה. */
 function layout(page, index = 0) {
   if (!SERVER_CTX) return layoutOf(page, index);
   try { return layoutOf(page, index); }
   catch (e) {
-    return `<div class="page"><div class="body">${UI.note("err", `לא הצלחתי לצייר את העמוד מהתשובה של ${esc(serverRootName("השרת המשני"))} — לא נקרא: ${esc(e && e.message)}`)}</div></div>`;
+    return `<div class="page"><div class="body">${UI.note("err", `לא הצלחתי לצייר את העמוד מהתשובה של ${esc(serverRootName("שרת המשנה"))} — לא נקרא: ${esc(e && e.message)}`)}</div></div>`;
   }
 }
 function layoutOf(page, index) {
   if (page.own) return page.render(index);   // ‏#954: עמוד שנבנה מחדש מצייר כותרת+לשוניות בעצמו
   const stale = overviewError && ["home","deploy"].includes(current) ? `<div class="notice warn" role="status">${esc(overviewError)}</div>` : "";
-  return `<div class="breadcrumbs"><span>${esc(serverRootName("שרת אימג'ים"))}</span><span class="sep">/</span><strong>${page.crumb}</strong></div><div class="toolbar"><div class="title-block"><h1>${page.title}</h1><p>${page.desc}</p></div><div class="toolbar-actions"><button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>${PAGE_ACTIONS[current] ? `<div class="rel"><button class="btn primary" id="pageActionBtn" aria-haspopup="menu" aria-expanded="false" onclick="openAction()">+ פעולה</button><div id="pageActionMenu" class="action-menu" role="menu"></div></div>` : ""}</div></div><div class="vcenter-tabs" role="tablist">${page.tabs.map((t, i) => `<button type="button" class="vcenter-tab ${i === index ? "active" : ""}" role="tab" aria-selected="${i === index}" tabindex="${i === index ? 0 : -1}" onclick="activateTab(${i})">${t}</button>`).join("")}</div><div class="scroll">${stale}${tabRender(current, index)}<div class="footer-note">ImageCtl Console</div></div>`;
+  return `<div class="breadcrumbs"><span>${esc(serverRootName("שרת אימג'ים"))}</span><span class="sep">/</span><strong>${page.crumb}</strong></div><div class="toolbar"><div class="title-block"><h1>${page.title}</h1><p>${page.desc}</p></div><div class="toolbar-actions"><button class="btn" onclick="refreshPage()">${uiIcon("refresh")} רענון</button>${PAGE_ACTIONS[current] ? `<div class="rel"><button class="btn primary" id="pageActionBtn" aria-haspopup="menu" aria-expanded="false" onclick="openAction()">+ פעולה</button><div id="pageActionMenu" class="action-menu" role="menu"></div></div>` : ""}</div></div><div class="vcenter-tabs" role="tablist">${page.tabs.map((t, i) => `<button type="button" class="vcenter-tab ${i === index ? "active" : ""}" role="tab" aria-selected="${i === index}" tabindex="${i === index ? 0 : -1}" onclick="activateTab(${i})">${t}</button>`).join("")}</div><div class="scroll">${stale}${tabRender(current, index)}<div class="footer-note">ImageSrv Console</div></div>`;
 }
 
 /* S1 (#829): הצומת של הדף הנוכחי מודגש בעץ. הצמתים הם .inventory-node
@@ -7281,10 +7719,10 @@ function syncTreeToTab() {
 }
 
 function selectPage(el, id) {
-  // ‏#1179: צומת של משני (data-branch-node / שורת השרת) נכנס להקשר שלו. היציאה היא
+  // ‏#1179: צומת של שרת משנה (data-branch-node / שורת השרת) נכנס להקשר שלו. היציאה היא
   // לחיצה על צומת של הראשי (מאזין ה-capture), "העברות" (openBranchView) או עמוד שהוא
   // של הראשי בלבד — לא צומת שפונקציה מתוך העמוד מעבירה (openNetwork, selectMachinesRole
-  // מוצאות את הצומת של הראשי); בהקשר משני הוא מוחלף בצומת של המשני.
+  // מוצאות את הצומת של הראשי); בהקשר שרת משנה הוא מוחלף בצומת של שרת המשנה.
   const ownNode = (x) => !!(x && ((x.dataset && (x.dataset.branchNode || x.dataset.secondary))
     || (x.closest && x.closest("#secondaryServers"))));
   if (el && el.dataset && !el.dataset.branchView) {
@@ -7313,10 +7751,10 @@ function selectPage(el, id) {
   closeSidebar();
 }
 
-/* עמודים של הראשי בלבד (של המשתמש או של ניהול הענפים) — פותחים אותם מחוץ להקשר משני. */
+/* עמודים של הראשי בלבד (של המשתמש או של ניהול הענפים) — פותחים אותם מחוץ להקשר שרת משנה. */
 const PRIMARY_ONLY_PAGES = ["account", "branches", "branch", "tools"];
 function selectPageById(id) {
-  // ‏#1179: בהקשר משני — העלה של המשני לאותו עמוד, אם יש; אחרת בלי צומת (ההקשר נשאר).
+  // ‏#1179: בהקשר שרת משנה — העלה של שרת המשנה לאותו עמוד, אם יש; אחרת בלי צומת (ההקשר נשאר).
   selectPage(SERVER_CTX
     ? document.querySelector(`[data-branch-node="${CSS.escape(SERVER_CTX)}"][data-branch-page="${id}"]`)
     : document.querySelector(`.inventory-node[data-page="${id}"]`), id);
@@ -7596,9 +8034,7 @@ function drawRail() {
     return `<button type="button" class="ri${own ? " cur" : ""}${kids ? " kids" : ""}" data-ri="${i}" tabindex="${i === stop ? 0 : -1}" aria-label="${esc(name)}"`
       + `${own ? (deep ? ' aria-current="location"' : ' aria-current="page"') : ""}${kids ? ' aria-haspopup="menu" aria-expanded="false" aria-controls="navFly"' : ""}>${railIcon(n)}</button>`;
   }).join("") + "</div>");
-  const foot = document.getElementById("treeFootStatus");
-  const fcls = foot && foot.getAttribute ? String(foot.getAttribute("class") || "").replace("status", "").trim() || "unk" : "unk";
-  const ftxt = foot ? String(foot.textContent || "").trim() : "מצב השירותים לא נבדק";
+  const { cls: fcls, text: ftxt } = serverDotState(SERVER_HEALTH[""]);   // נדב 18/10: הנקודה של הראשי (הקופסה בתחתית העץ יצאה)
   rail.innerHTML = groups.join(`<div class="rsep" aria-hidden="true"></div>`)
     + `<div class="rfoot"><span class="rled" role="img" aria-label="${esc(ftxt)}" data-tipx="${esc(ftxt)}"><span class="led ${esc(fcls)}"></span></span></div>`;
 }
@@ -7791,11 +8227,22 @@ function syncTaskPanel() {
     document.body.style.setProperty("--task-h", h + "px");
   } catch (e) { /* no layout here */ }
 }
+/* נדב 17/10: הדוק סגור בכל כניסה. מה שהמשתמש פתח נזכר ב-sessionStorage — לאותו סשן בלבד (רענון), ו-showLogin מוחק. */
+const DOCK_KEY = "imagectl.dock.open";
+function dockStore(v) { try { if (v) sessionStorage.setItem(DOCK_KEY, "1"); else sessionStorage.removeItem(DOCK_KEY); } catch (e) { /* העדפה בלבד */ } }
 function toggleTaskPanel() {
   const panel = document.getElementById("taskPanel");
   panel.classList.toggle("open");
-  document.body.classList.toggle("tasks-open", panel.classList.contains("open"));
+  const open = panel.classList.contains("open");
+  document.body.classList.toggle("tasks-open", open);
+  dockStore(open);
   syncTaskPanel();
+}
+function restoreTaskDock() {
+  try {
+    const panel = document.getElementById("taskPanel");
+    if (sessionStorage.getItem(DOCK_KEY) === "1" && panel && !panel.classList.contains("open")) toggleTaskPanel();
+  } catch (e) { /* בלי sessionStorage — סגור */ }
 }
 
 function activateTab(index) {
@@ -7820,7 +8267,7 @@ function refreshPage() {
   toast("הנתונים עודכנו");
 }
 
-/* ביקורת 10/10: כפתור "+ פעולה" בכותרת הגנרית נפתח לתפריט ריק בשרת המשני (אין לו רשומה כאן). עכשיו הוא מצויר רק
+/* ביקורת 10/10: כפתור "+ פעולה" בכותרת הגנרית נפתח לתפריט ריק בשרת המשנה (אין לו רשומה כאן). עכשיו הוא מצויר רק
    לעמוד שיש לו פעולות. */
 const PAGE_ACTIONS = {
   images: [["אימג׳ חדש", "openCapture().catch(e => toast(e.message))"], ["קליטת אימג׳", "openImageIngest()"], ["אימות ספרייה", "scrubLibrary()"]],   // ‏#1303: POST /images/scrub
@@ -8102,17 +8549,6 @@ function openModalContent(title, body, okLabel = "אישור", okFn = "closeModa
   openModalFrame(modal, "box");
 }
 
-function downloadFile(name, text, type) {
-  const blob = new Blob([text], { type });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
-
 /* ביקורת 10/10: החיפוש בסרגל סינן רק `.table tbody tr`, אבל כל העמודים שנבנו מחדש (#954) משתמשים ב-`table.dg` —
    אז "build" בדף המחשבים החזיר "0 תוצאות" מול שורה build-01 שעל המסך. עכשיו שני סוגי הטבלאות, ושורת כותרת קבוצה
    (tr.group) לא נספרת כתוצאה: היא מוצגת רק כשיש מתחתיה שורה תואמת. */
@@ -8142,7 +8578,7 @@ function doGlobalSearch(value) {
 }
 
 /* ---------- ‏#554: חיפוש גלובלי (שורת החיפוש העליונה) ----------
-   הכרעת נדב 11/10: החיפוש חוצה את המערכת — אימג'ים, מחשבי בנייה/שיכפול, משתמשים, שרתים משניים ודפים.
+   הכרעת נדב 11/10: החיפוש חוצה את המערכת — אימג'ים, מחשבי בנייה/שיכפול, משתמשים, שרתי משנה ודפים.
    בלי API חדש: הנתונים הם הרשימות שהקונסולה כבר טוענת (IMAGES/MACHINES/USERS/BRANCH_NODES); מה שעוד לא נטען נקרא
    פעם אחת מאותם נתיבים. ההרשאה לפי pageAllowed/isAdmin — מפעיל הפצה (deploy) רואה אימג'ים ודפים מותרים בלבד.
    היומן אינו נכלל (החלטה פתוחה). השורה הראשונה תמיד "סנן בעמוד הנוכחי" — ההתנהגות הישנה, בלחיצה או Enter. */
@@ -8164,7 +8600,7 @@ function globalSearchGroups(value) {
       .map((u) => ({ label: u.username, sub: u.role === "admin" ? "מנהל" : "מפעיל הפצה", go: () => selectPageById("permissions") })));
   }
   if (pageAllowed("branches") && typeof BRANCH_NODES !== "undefined") {
-    add("שרתים משניים", (BRANCH_NODES || []).filter((n) => gsHit(q, n.name, n.id))
+    add("שרתי משנה", (BRANCH_NODES || []).filter((n) => gsHit(q, n.name, n.id))
       .map((n) => ({ label: n.name || n.id, sub: n.url || "", go: () => openBranchView(n.id, "overview") })));
   }
   add("דפים", Object.keys(pages).filter((id) => id !== "branch" && pageAllowed(id) && gsHit(q, pages[id].title, pages[id].crumb))
@@ -8180,7 +8616,7 @@ function gsEnsureData() {
     if (!MACHINES || !GROUPS) need.push(["מחשבים", () => Promise.all([api("/machines"), api("/groups")]), (v) => { MACHINES = v[0]; GROUPS = v[1]; }]);
     if (!USERS) need.push(["משתמשים", () => api("/users"), (v) => { USERS = v; }]);
     if (pageAllowed("branches") && typeof BRANCH_NODES !== "undefined" && !(BRANCH_NODES && BRANCH_NODES.length))
-      need.push(["שרתים משניים", () => api("/storage-nodes"), (v) => { BRANCH_NODES = v; }]);
+      need.push(["שרתי משנה", () => api("/storage-nodes"), (v) => { BRANCH_NODES = v; }]);
   }
   GS.failed = GS.failed.filter((n) => !need.some((x) => x[0] === n));
   for (const [name, get, put] of need) {
@@ -8292,10 +8728,16 @@ function accountCardsHtml(asPage = false) {
   if (builtin) mfa = UI.pill("", "מקומי · ללא MFA")
     + `<p class="muted" style="margin-top:8px">משתמש המנהל שנוצר בהתקנת השרת אינו משתמש ב-MFA — בכוונה, כדי שתמיד תהיה דרך להיכנס. למשתמשי מנהל אחרים MFA מופעל מכאן.</p>`;
   else if (mfaOn) {
-    mfa = UI.status("ok", "פעיל");
+    // נדב 18/10: מי שהפעיל יכול גם לבטל — עם קוד (השרת מסרב כשהחיוב למנהלים דלוק)
+    mfa = UI.status("ok", "פעיל") + ` <button class="btn sm" onclick="accountDisableMfa()">בטל…</button>`;
     codes = UI.card({ title: "קודי גיבוי", cls: half, body: `<p class="muted" style="margin-bottom:10px">כל קוד עובד פעם אחת. יצירת קודים חדשים פוסלת את הקיימים.</p><button class="btn sm" onclick="accountNewBackupCodes()">צור קודי גיבוי חדשים</button>` });
   } else mfa = UI.status("", "כבוי") + (admin ? ` <button class="btn sm" onclick="accountEnableMfa()">הפעל</button>` : "");
-  return me + UI.card({ title: "אימות דו-שלבי (MFA)", cls: half, body: mfa }) + codes;
+  return me + UI.card({ title: "אימות דו-שלבי (MFA)", cls: half, body: mfa }) + codes + (asPage ? appearanceCard() : "");
+}
+/* ‏"מראה" — העדפה של המשתמש (users.theme), לא של השרת: עבר מההגדרות ל"החשבון שלי" (נדב 17/10). */
+function appearanceCard() {
+  const seg = THEME_CYCLE.map((t) => `<button type="button" onclick="setThemePref('${t}')" aria-pressed="${currentTheme() === t}">${esc(THEME_TITLE[t])}</button>`).join("");
+  return UI.card({ title: "מראה", cls: "c6", body: `<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><span>ערכת נושא</span><span class="seg" role="group" aria-label="ערכת נושא">${seg}</span></div><p class="muted" style="margin-top:8px">חל על המשתמש שלך בלבד, בכל מחשב שתיכנס ממנו.</p>` });
 }
 function openAccount() {
   closeUserMenu();
@@ -8347,6 +8789,23 @@ async function accountEnableMfa() {
       },
     });
   } catch (e) { toast(e.message); }
+}
+
+/* נדב 18/10: ביטול MFA לעצמי — עם קוד מהאפליקציה או קוד גיבוי (POST /me/mfa/disable). */
+function accountDisableMfa() {
+  sheet({
+    title: "לבטל את האימות הדו-שלבי?",
+    sub: "הכניסה הבאה תהיה בסיסמה בלבד. לאישור — הסיסמה הנוכחית, והקוד מהאפליקציה או קוד גיבוי.",
+    fields: [{ id: "current_password", label: "הסיסמה הנוכחית", type: "password", autocomplete: "current-password" },
+             { id: "code", label: "קוד", dir: "ltr" }],
+    danger: true, submitLabel: "בטל MFA",
+    onSubmit: async (v) => {
+      await post("/me/mfa/disable", { current_password: v.current_password, code: v.code });
+      if (ME) ME.mfa_enabled = false;
+      toast("האימות הדו-שלבי בוטל");
+      if (current === "account") renderCurrent();
+    },
+  });
 }
 
 function accountNewBackupCodes() {
@@ -8401,11 +8860,30 @@ function logout() {
    ממשיך עם `prompt`, והשאלה מוצגת כאן במקום "לא נראתה". null = לא ממתינה.
    #908/#912: המסכים של מחשב הבנייה שולחים מילה קבועה (הסוכן מדפיס ASCII
    בלבד) — כאן היא מתורגמת; כל טקסט אחר הוא השורה שעל המסך, ומוצג כמו שהוא. */
-const PROMPT_HE = { menu: "תפריט", signin: "כניסה" };
-function waitingHtml(m) {
-  if (!m.prompt) return "—";
-  const he = PROMPT_HE[m.prompt];
-  return he ? `ממתין למפעיל: ${he}` : `ממתין למפעיל: <span dir="ltr">${esc(m.prompt)}</span>`;
+/* 18/10 (rc6, משכפל 2 בדף המוניטור): גם השאלות הקבועות של מסכי השיכפול המקומי (`attended_start` ב-
+   localclone.sh/lcpull.sh) עולות כ-`prompt` באנגלית — הן מתורגמות כאן, מילה במילה מול הסוכן
+   (test_hebrew_screen_strings בודק שלכל שאלה כזו יש שורה). */
+const PROMPT_HE = { menu: "תפריט", signin: "כניסה",
+  "Local clone screen: from the server, or a local clone": "מסך הבחירה: מהשרת או שיכפול מקומי",
+  "Local clone at the machine -- not from the server": "שיכפול מקומי במחשב — לא מהשרת",
+  "Restore an image from the server onto this machine's drawers": "שחזור אימג' מהשרת למגירות של המחשב הזה" };
+/* 17/10 (נדב): סיבות כשל מוצגות בעברית בלבד. שורת ה-hold של הסוכן (ui_error_hold) עולה כ-`prompt`
+   באנגלית עם הקידומת "FAILED: "; כאן היא מתורגמת לאותן כותרות שמסך הכשל של המחשב כותב
+   (failscreen.sh). שורה שאין לה מקרה → "המשימה נכשלה" (כמו שם) — לא האנגלית הגולמית.
+   הסדר חשוב: הראשון שתואם. */
+const PROMPT_FAILED_HE = [
+  ["all drawers skipped", "כל המגירות דולגו — לא נכתב דבר"], ["the disk was skipped", "הדיסק דולג — לא נכתב דבר"],
+  ["no drawer completed", "אף מגירה לא הסתיימה בהצלחה"], ["restore cancelled", "השחזור בוטל, אך טבלת המחיצות לא נמחקה"],
+  ["restore did not complete", "השחזור נכשל"], ["capture did not complete", "הקליטה נכשלה"],
+  ["direct deployment did not", "השליחה הישירה נכשלה"], ["the work finished but", "המשימה הסתיימה — והשרת לא אישר"],
+];
+function promptHe(p) {
+  if (PROMPT_HE[p]) return PROMPT_HE[p];
+  if (typeof p !== "string") return p;
+  if (p.startsWith("Replace the flagged disk")) return "החליפו את הדיסק שסומן: כיבוי ידני";
+  if (!p.startsWith("FAILED: ")) return p;
+  const line = p.slice(8), hit = PROMPT_FAILED_HE.find(([en]) => line.startsWith(en));
+  return (hit ? hit[1] : "המשימה נכשלה") + (/server was not told$/.test(line) ? " — והשרת לא יודע" : "");
 }
 
 /* #927: אותה אזהרת shrink-restore שב-captureWarningHtml, הפעם ליד
@@ -8448,6 +8926,7 @@ function init() {
   document.getElementById("content").addEventListener("keydown", tablistKeydown);
   const tree = document.querySelector(".tree");
   if (tree) tree.addEventListener("keydown", treeKeydown);
+  TREE_INITIAL = treeSnapshot();   // נדב 18/10: מצב העץ של index.html — אליו חוזרים בכל כניסה
   wireRail();   // ‏#1300: פס האייקונים — ריחוף, tooltip, תפריט צף ומקלדת
 }
 
@@ -8480,11 +8959,11 @@ function stuckNote(stuck, mac) {
 /* בריאות SMART וההכרעה על דיסק פגום (#652), לצפייה בלבד. הכותרת היא
    "דיסק N" לפי החריץ (port) ולא שם ההתקן — אותה מוסכמה של הסוכן. רק
    דיסק שאיננו תקין או שנעשתה עליו הכרעה מוצג, כדי לא להציף.
-   ‏#872: שלושה צבעים — failed_last (נכשל בשיכפול הקודם) אדום, fail
-   (בריאות FAILED) כתום, ok/unchecked ירוק; warn מסוכן ישן — כתום. */
+   ‏#1580 (נדב 17/10): שלושה צבעים — fail (SMART תקול) אדום ולא נכתב, failed_last
+   (נכשל בשיכפול הקודם) כתום, ok/unchecked ירוק; warn מסוכן ישן — כתום. */
 const SMART_HE = {ok: "תקין", warn: "SMART אזהרה", fail: "ה-BIOS יעצור ב-F1",   // #1366
                   failed_last: "נכשל בשיכפול הקודם", unchecked: "לא נבדק"};
-const DECISION_HE = {replace: "להחלפה", rescue: "נכתב בכוח", skip: "דולג"};
+const DECISION_HE = {replace: "להחלפה", rescue: "נכתב שוב", skip: "דולג"};
 function disksHtml(disks) {
   if (!Array.isArray(disks) || !disks.length) return "";
   const chips = disks
@@ -8504,10 +8983,15 @@ function disksHtml(disks) {
    גלוי ליד המחשב, לא שורת יומן אבודה (עיקרון 5). */
 function driversHtml(d) {
   if (!d) return "";
-  if (d.state === "staged") return `<div class="sub">דרייברים הונחו: ${esc((d.packages || []).join(", "))}</div>`;
+  if (hasLinuxDrivers(d)) return driversTone(d) === "warn" ? `<div class="notice warn">${esc(linuxDriversText(d.linux))}</div>` : `<div class="sub">${esc(linuxDriversText(d.linux))}</div>`;   // ‏#1331 T8
+  // ‏#1331: drivers.boot רוכב על staged בלבד — bootstorage.sh רץ רק אחרי שהחבילות על הדיסק.
+  // ‏#1331 (מוקאפ 17/10): אדום רק לדרייבר האחסון שלא הוגדר; "לא הונחו" — כתום, השחזור הושלם (#856).
+  const boot = bootStorageText(d.boot), failedBoot = d.boot && d.boot.state === "failed";
+  const bootHtml = !boot ? "" : failedBoot ? `<div class="err">${esc(boot)}. ${BOOT_RISK_HE}.</div>` : `<div class="sub">${esc(boot)}</div>`;
+  if (d.state === "staged") return `<div class="sub">${esc(driversStagedText(d.packages))}</div>${bootHtml}`;
   if (d.state === "no_match") return `<div class="sub">דרייברים: אין חבילה תואמת לחומרה</div>`;
   if (d.state === "skipped") return "";
-  return `<div class="err">דרייברים לא הונחו: ${esc(d.error || d.state)}</div>`;
+  return `<div class="notice warn">דרייברים לא הונחו — ${esc(d.error || "סיבה לא ידועה")}. המחשב יעלה בלי הדרייברים של הדגם.</div>`;
 }
 
 /* #856: החבר של ה-MAC הזה בסבב המוצג שהסתיים `done` ועדיין נושא `error`
@@ -8740,13 +9224,13 @@ function confirmUpdateApply(tag) {
 }
 function confirmUpdateRevert(tag) {
   if (!tag) return;
-  const hostname = ME && ME.server_name || "";
+  // ‏#1778 (הכרעת #1270): כפתור אדום בלי הקלדה ובלי שם שרת בגוף — החזרה הפיכה כמו "החל" (#1192).
   sheet({
     title: "לחזור לגרסה הקודמת?", sub: tag,
     note: impactList([["w", `השרת יחזור ל-${esc(tag)} ויופעל מחדש`]]),
     danger: true, submitLabel: "חזרה לגרסה",
     onSubmit: async () => {
-      await post("/update/revert", { confirm_name: hostname });
+      await post("/update/revert");
       // ‏#1301: אותו סקריפט ואותו restart — אותו מסך.
       const from = (HEALTH_UPDATE && HEALTH_UPDATE.current) || (ME && ME.version) || null;
       return () => updStart({ tag, from, by: ME && ME.username });
@@ -8768,9 +9252,12 @@ function openNewUser() { sheet({
         { value: "admin", label: "מנהל", hint: "הכול, כולל משתמשים והגדרות" },
       ],
     },
+    // נדב 18/10: מנהל מסומן יירשם ל-MFA בכניסה הראשונה, גם כשהחיוב הכללי כבוי
+    { id: "mfa_required", label: "דרוש אימות דו-שלבי", type: "checkbox", value: false,
+      help: "המשתמש יירשם לאימות דו-שלבי בכניסה הראשונה ולא יוכל לבטל אותו בעצמו. חל על מנהלים." },
   ],
   submitLabel: "צור משתמש",
-  onSubmit: async (v) => { await post("/users", v); toast(`המשתמש ${v.username} נוצר`); await loadUsersData(); },
+  onSubmit: async (v) => { await post("/users", { ...v, mfa_required: !!v.mfa_required }); toast(`המשתמש ${v.username} נוצר`); await loadUsersData(); },
 }); }
 
 /* ---------- #984: WoL למחשב בודד ולקבוצת הבנייה (#954 גל 6) ----------
@@ -8806,7 +9293,7 @@ async function wakeGroup(gidEnc) {
 function isAdmin() { return !!ME && ME.role === "admin"; }
 function pageAllowed(id) {
   if (!ME) return false;
-  // 16/10: גם בלי משני — ראשי/עצמאי (enroll_secondary) צריך את הדף כדי לרשום את **הראשון**
+  // 16/10: גם בלי שרת משנה — ראשי/עצמאי (enroll_secondary) צריך את הדף כדי לרשום את **הראשון**
   if (id === "branches") return isAdmin() && !!(ME.capabilities?.interbranch_transfer || ME.capabilities?.enroll_secondary);
   if (id === "branch") return isAdmin() && !!ME.capabilities?.enroll_secondary;
   if (id === "tools") return isAdmin() && toolsOn();   // v1 בלי ארגז הכלים; v1.1 מדליק
@@ -8828,6 +9315,7 @@ function startStatusWatch() {
     // ‏#1253: כשל בדגימה = הרשימה שבזיכרון אינה ראיה שקליטה עדיין רצה (HOME.err.tasks).
     if (isAdmin() || current === "images") loadCaptures().then(() => { delete HOME.err.tasks; }, (e) => { HOME.err.tasks = e.message; toast(e.message); });
     if ((current === "machines" && MACHINES_CLASS) || current === "deploy") refreshGroupLive().catch(() => {});   // ‏גל 3א/4: /room חי באובייקט המשכפלים ובחדר
+    refreshServerDots();   // נדב 18/10: רק שרת שהמדידה שלו ישנה מ-SERVER_DOT_TTL
     if (typeof vmuTick === "function") vmuTick();   // ‏#1334: עדכון ב-VM — הפס הגלובלי ועמוד ה-VM (vmupdate.js)
   }, 2000);
 }

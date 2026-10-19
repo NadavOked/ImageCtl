@@ -135,9 +135,9 @@ def test_a_stale_200_is_not_connected(tmp_path):
 
 @_GUI
 def test_the_drawers_stay_on_screen_when_the_server_is_down(tmp_path):
-    """"השרת לא עונה" אינו מסתיר את הכלוב: מגירה 2 (SMART ‏fail) עדיין
-    מסומנת בפס הכתום בקצה הימני שלה."""
-    off = _render(tmp_path, "off", "hello_age=6\nhello_rc=\n" + TWO)
+    """"השרת לא עונה" אינו מסתיר את הכלוב: מגירה 2 (נכשלה בשיכפול הקודם —
+    כתום מאז #1580) עדיין מסומנת בפס הכתום בקצה הימני שלה."""
+    off = _render(tmp_path, "off", "hello_age=6\nhello_rc=\n" + TWO.replace("|fail|", "|failed_last|cable"))
     # bay 2: y 348..479, x 165..1114; its right edge x 1111..1114 carries the 4px bar (dimmed .72)
     bar = (1111, 360, 1115, 470)
     w, _h, ch, px = off["light"]
@@ -150,12 +150,11 @@ def test_the_drawers_stay_on_screen_when_the_server_is_down(tmp_path):
 
 @_GUI
 def test_bays_flag_by_the_872_colours_and_the_empty_one_is_hatched(tmp_path):
-    ok = _render(tmp_path, "ok", "hello_age=4\nhello_rc=200\n" + TWO
-                 .replace("|fail|", "|failed_last|cable"))
+    ok = _render(tmp_path, "ok", "hello_age=4\nhello_rc=200\n" + TWO)   # #1580: bay 2 is SMART fail = red
     for t in ("light", "dark"):
         img = ok[t]
         red = _token("--clr-danger", t)
-        assert _count(img, (1111, 360, 1115, 470), red, tol=6) >= 4 * 100, t   # bay 2: failed_last = red bar
+        assert _count(img, (1111, 360, 1115, 470), red, tol=6) >= 4 * 100, t   # bay 2: SMART fail = red bar (#1580)
         assert _count(img, (1111, 218, 1115, 330), red, tol=6) == 0, t          # bay 1: passed, no bar
         # bay 3 (empty): the face is hatched -- two tones, each over a good share of it
         face = (240, 500, 990, 610)
@@ -184,6 +183,35 @@ def test_a_disk_in_a_fourth_port_gets_a_fourth_bay_that_fits_at_4_3(tmp_path):
     assert len(runs) == 2 * 4 + 2, runs          # four bays (top+bottom) + the cage's two edges
     porcelain = _token("--clr-bg")
     assert _count(four["light"], (0, h - 36 - 8, w, h - 36), porcelain, tol=2) == w * 8
+
+
+def _bays_drawn(img) -> int:
+    """Bays in the cage, counted like the fourth-bay test: hairline runs down a
+    column through every bay's face, two per bay plus the cage's two edges."""
+    hair = _token("--clr-border")
+    _w, h, _ch, _px = img
+    rows = [y for y in range(48, h - 36) if _count(img, (300, y, 301, y + 1), hair, tol=6)]
+    runs = [y for i, y in enumerate(rows) if i == 0 or rows[i - 1] != y - 1]
+    assert len(runs) >= 2 and len(runs) % 2 == 0, runs
+    return (len(runs) - 2) // 2
+
+
+@_GUI
+def test_the_cage_has_exactly_the_cloners_drawer_count(tmp_path):
+    """#1565: the agent writes drawer_count= (#1315) and the screen draws that
+    many bays -- 2 on cloner 1, not a ghost third. Without the record the
+    legacy three stay; a disk in a port past the count still gets its bay."""
+    body = "hello_age=4\nhello_rc=200\n" + TWO.replace("|fail|", "|passed|")
+    third = "cdisk=3|sdc|Crucial MX500|1000204886016|passed|\n"
+    cases = {
+        "legacy": (body, 3),
+        "two": ("drawer_count=2\n" + body, 2),
+        "four": ("drawer_count=4\n" + body, 4),
+        "two-plus-disk": ("drawer_count=2\n" + body + third, 3),
+    }
+    got = {name: _bays_drawn(_render(tmp_path, name, text, "1024x768")["light"])
+           for name, (text, _want) in cases.items()}
+    assert got == {name: want for name, (_text, want) in cases.items()}
 
 
 @_GUI

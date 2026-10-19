@@ -43,9 +43,13 @@ def packages() -> list[str]:
 def tools(bindir: Path, *, apt="exit 0", installed=None, user_exists=False, useradd="true"):
     """‏apt/dpkg-query/id/useradd מדומים. ‏`installed` — מה dpkg-query מכיר (ברירת
     מחדל: הכול). המשתמש "נוצר" ב-useradd: id מצליח אחריו."""
+    done = posix(bindir / "apt.done")
+    if apt == "exit 0":   # ‏apt מצליח: אחרי install מה שביקשנו מותקן (כמו apt אמיתי)
+        apt = f'[ "$1" = install ] && touch "{done}"; exit 0'
     fake_tool(bindir, "fakeapt", apt)
     known = packages() if installed is None else installed
     fake_tool(bindir, "fakedpkg",
+              f'[ -e "{done}" ] && {{ printf "install ok installed"; exit 0; }}\n'
               'pkg="${@: -1}"; case " ' + " ".join(known) + ' " in *" $pkg "*) printf "install ok installed" ;; *) exit 1 ;; esac')
     marker = bindir / "user.made"
     if user_exists:
@@ -75,13 +79,13 @@ def test_the_list_installs_everything_the_engine_checks_for():
 
 
 def test_installs_the_list_and_creates_the_user(tmp_path, bindir):
-    tools(bindir)
+    tools(bindir, installed=[])
     proc = run_host(tmp_path, bindir)
     log = calls(tmp_path)
     assert proc.returncode == 0, proc.stdout
     apt = [row for row in log if row.startswith("fakeapt ")]
-    # ‏#1371: רשימות עדכניות קודם — מקור שנוסף זה עתה אינו קיים בעיני apt בלעדיהן
-    assert apt[0].split()[1:3] == ["update", "-qq"] and "Acquire::https::Timeout=20" in apt[0]
+    # ‏#1459: רשימות עדכניות, ואז התקנה של מה ש-dpkg-query אומר שחסר (כאן: הכול)
+    assert apt[0].split()[1:3] == ["update", "-qq"] and not any("https" in a for a in apt)
     assert apt[1].split()[1:4] == ["install", "-y", "-qq"] and apt[1].split()[4:] == packages()
     assert any(row.startswith("fakeuseradd --system") and row.endswith("imagectl-vm") for row in log)
 
@@ -93,7 +97,7 @@ def test_is_idempotent_with_an_existing_user(tmp_path, bindir):
 
 
 def test_apt_failure_is_named_and_creates_nothing(tmp_path, bindir):
-    tools(bindir, apt='echo "E: Unable to locate package ovmf" >&2; exit 100')
+    tools(bindir, installed=[], apt='echo "E: Unable to locate package ovmf" >&2; exit 100')
     proc = run_host(tmp_path, bindir)
     assert proc.returncode == 3
     assert "apt-get install נכשל" in proc.stdout and "Unable to locate package ovmf" in proc.stdout
@@ -102,9 +106,8 @@ def test_apt_failure_is_named_and_creates_nothing(tmp_path, bindir):
 
 def test_apt_exit_0_is_not_evidence(tmp_path, bindir):
     """‏apt יצא 0 אבל ovmf אינו מותקן — "יצא 0" אינו "מותקן" (עיקרון 5)."""
-    tools(bindir, installed=[p for p in packages() if p != "ovmf"])
+    tools(bindir, installed=[p for p in packages() if p != "ovmf"], apt="exit 0  # no marker")
     proc = run_host(tmp_path, bindir)
-    assert proc.returncode == 4 and "ovmf" in proc.stdout.splitlines()[-1]
 
 
 def test_a_user_that_was_not_created_fails(tmp_path, bindir):
@@ -113,7 +116,7 @@ def test_a_user_that_was_not_created_fails(tmp_path, bindir):
     assert proc.returncode == 5 and "imagectl-vm" in proc.stdout.splitlines()[-1]
 
 
-# --- ‏#1371: שרת מה-ISO — המאגר המקומי עקבי, ו-Debian מהאינטרנט בעדיפות נמוכה ---------
+# --- ‏#1371/#1459: שרת מה-ISO — המאגר המקומי עקבי, ואין מקור apt חי ---------
 
 
 def iso_server(tmp_path: Path, bindir: Path) -> tuple[dict, Path, Path]:
@@ -135,19 +138,47 @@ def iso_server(tmp_path: Path, bindir: Path) -> tuple[dict, Path, Path]:
     return env, apt_etc, index
 
 
-def test_an_iso_server_gets_debian_over_https_at_low_priority(tmp_path, bindir):
-    tools(bindir)
+def test_an_iso_server_gets_no_live_apt_source(tmp_path, bindir):
+    """‏#1459: שרת מה-ISO לא מקבל deb.debian.org — לא קובץ מקור ולא pin."""
+    tools(bindir, installed=[])
     env, apt_etc, _index = iso_server(tmp_path, bindir)
     proc = run_bash(f'bash "{posix(HOST)}"', tmp_path, bindir, env=env)
     assert proc.returncode == 0, proc.stdout
-    source = (apt_etc / "sources.list.d" / "imagectl-debian.list").read_text(encoding="utf-8")
-    assert source.split()[:3] == ["deb", "https://deb.debian.org/debian", "trixie"]
-    pref = (apt_etc / "preferences.d" / "imagectl-debian.pref").read_text(encoding="utf-8")
-    assert 'Pin: origin "deb.debian.org"' in pref
-    priority = int(pref.split("Pin-Priority:")[1].split()[0])
-    assert 0 < priority < 500   # מתחת למאגר המקומי (500), ועדיין מועמד לחבילה שאין מקומית
-    log = calls(tmp_path)
-    assert [row.split()[1] for row in log if row.startswith("fakeapt ")] == ["update", "install"]
+    assert not (apt_etc / "sources.list.d" / "imagectl-debian.list").exists()
+    assert not (apt_etc / "preferences.d" / "imagectl-debian.pref").exists()
+    written = "".join(p.read_text(encoding="utf-8") for p in apt_etc.rglob("*") if p.is_file())
+    assert "debian.org" not in written and "http" not in written
+    log = " ".join(calls(tmp_path))
+    assert "debian.org" not in log and "Acquire::https" not in log
+
+
+def test_an_iso_server_that_got_the_live_source_before_has_it_removed(tmp_path, bindir):
+    """שרת שעודכן בגרסה שהוסיפה את המקור (#1371) — העדכון הבא מנקה אותו."""
+    tools(bindir)
+    env, apt_etc, _index = iso_server(tmp_path, bindir)
+    (apt_etc / "preferences.d").mkdir()
+    (apt_etc / "sources.list.d" / "imagectl-debian.list").write_text(
+        "deb https://deb.debian.org/debian trixie main contrib\n", encoding="utf-8")
+    (apt_etc / "preferences.d" / "imagectl-debian.pref").write_text("Pin: origin deb.debian.org\n", encoding="utf-8")
+    assert run_bash(f'bash "{posix(HOST)}"', tmp_path, bindir, env=env).returncode == 0
+    assert not (apt_etc / "sources.list.d" / "imagectl-debian.list").exists()
+    assert not (apt_etc / "preferences.d" / "imagectl-debian.pref").exists()
+
+
+def test_everything_installed_never_touches_apt(tmp_path, bindir):
+    """‏#1459: dpkg-query קודם — כשהכול מותקן אין update ואין install (גם לא רשת)."""
+    tools(bindir)
+    proc = run_host(tmp_path, bindir)
+    assert proc.returncode == 0, proc.stdout
+    assert not any(row.startswith("fakeapt ") for row in calls(tmp_path))
+
+
+def test_only_the_missing_packages_are_installed(tmp_path, bindir):
+    tools(bindir, installed=[p for p in packages() if p not in ("ovmf", "jq")])
+    proc = run_host(tmp_path, bindir)
+    assert proc.returncode == 0, proc.stdout
+    install = [row for row in calls(tmp_path) if row.startswith("fakeapt install")]
+    assert len(install) == 1 and install[0].split()[4:] == ["ovmf", "jq"]
 
 
 def test_an_iso_server_local_repo_stops_publishing_files_it_does_not_have(tmp_path, bindir):
@@ -167,15 +198,15 @@ def test_a_server_not_from_the_iso_keeps_its_own_sources(tmp_path, bindir):
     assert not (apt_etc / "preferences.d").exists()
 
 
-def test_an_unreachable_internet_source_is_named_when_the_install_fails(tmp_path, bindir):
-    """‏apt יוצא 0 על מקור שאינו נגיש (אזהרה) — השורה האחרונה אומרת למה חבילה חסרה."""
-    tools(bindir, apt='if [ "$1" = update ]; then echo "W: Failed to fetch https://deb.debian.org/debian/dists/trixie/InRelease  Could not connect" >&2; exit 0; fi\n'
-                      'echo "E: Unable to locate package qemu-system-x86" >&2; exit 100')
+def test_a_package_the_release_does_not_carry_is_a_named_failure_not_a_fetch(tmp_path, bindir):
+    """חבילה שאין במאגר המקומי: כשל עם שמה (#1459) — ושום ניסיון להגיע לרשת."""
+    tools(bindir, installed=[p for p in packages() if p != "qemu-system-x86"],
+          apt='echo "E: Unable to locate package qemu-system-x86" >&2; exit 100')
     env, _apt_etc, _index = iso_server(tmp_path, bindir)
     proc = run_bash(f'bash "{posix(HOST)}"', tmp_path, bindir, env=env)
     assert proc.returncode == 3
     last = proc.stdout.splitlines()[-1]
-    assert "Unable to locate package qemu-system-x86" in last and "deb.debian.org לא נגיש" in last
+    assert "Unable to locate package qemu-system-x86" in last and "deb.debian.org" not in proc.stdout
 
 
 def test_a_local_repo_that_cannot_be_checked_fails_by_name(tmp_path, bindir):

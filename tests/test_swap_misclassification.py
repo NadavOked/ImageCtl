@@ -129,8 +129,9 @@ def test_an_ntfs_partition_without_a_file_never_reaches_mkswap(tmp_path, row, sh
     assert calls(box, "mkswap") == "", f"‏mkswap רץ על מחיצת NTFS ({shape})"
     assert calls(box, "sgdisk") == "", "הדיסק נגע לפני שהמניפסט נבדק"
     # ‏#1408 (77557596): `validate_restore_plan` דוחה את השורה לפני
-    # ‏`--zap-all`, בהודעה הקבועה ש-test_restore_plan_1418 נועל.
-    assert target_error(run) == "תוכנית השחזור פגומה — הדיסק לא שונה"
+    # ‏`--zap-all`; ‏#1435: ההודעה נוקבת במחיצה ובכלל (test_restore_plan_1418).
+    assert target_error(run) == ("תוכנית השחזור פגומה (מחיצה 3: קובץ או sha256 חסרים או "
+                                 "לא חוקיים) — הדיסק לא שונה")
 
 
 @requires_bash

@@ -27,7 +27,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from . import auth, registry, storage_locations
+from . import auth, disk_reserve, registry, storage_locations
 from .api import ServerContext, identity_gate
 from .images import validate_display_name
 from .db import _write_lock, journal, now_iso, update_one, writing
@@ -41,7 +41,7 @@ from .images import (
 # (שורה 280), והוא דורס את המודול — ‏`tasks.new_token` הופך
 # ל-`AttributeError` על אובייקט פונקציה. ייבוא שמות מפורש.
 from .tasks import (
-    OPEN_STATES, TOKEN_HEADER, active_task, claim_task, new_token, staging_dir,
+    OPEN_STATES, TOKEN_HEADER, active_task, claim_task, new_token, request_origin, staging_dir,
 )
 
 
@@ -174,6 +174,12 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
 
     async def stream_to(request: Request, path: Path) -> str:
         digest = hashlib.sha256()
+        # ‏#1737: הזרם הוא chunked — אורכו אינו ידוע מראש, ולכן הרזרבה למערכת
+        # נבדקת **תוך כדי**, לא רק לפני הבייט הראשון.
+        # השורש ולא תיקיית הביניים: ביטול מוחק את התיקייה מתחת לזרם (‏#532),
+        # ומדידה עליה הייתה הופכת את ה-409 של הביטול ל"לא נמדד".
+        guard = disk_reserve.StreamGuard(lambda: _free_bytes(ctx.library.root),
+                                         f"הקליטה של {path.name}")
         # ‏#1470: רשומה ישנה של העלאה קודמת לאותו שם אינה ראיה על הבייטים האלה.
         record = upload_sha_path(path)
         record.unlink(missing_ok=True)
@@ -188,6 +194,7 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
                     batch += chunk
                     if len(batch) >= CHUNK:
                         await asyncio.to_thread(_write_and_hash, handle, digest, bytes(batch))
+                        guard.wrote(len(batch))
                         batch.clear()
                 if batch:
                     await asyncio.to_thread(_write_and_hash, handle, digest, bytes(batch))
@@ -197,6 +204,10 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
                 record.write_text(digest.hexdigest(), encoding="ascii")
             except FileNotFoundError as exc:
                 raise _StagingGone(f"תיקיית הביניים של {path.name} נמחקה בזמן ההעלאה") from exc
+        except disk_reserve.ReserveReached as exc:
+            path.unlink(missing_ok=True)
+            record.unlink(missing_ok=True)
+            raise _DiskFull(str(exc)) from exc
         except OSError as exc:
             # ‏#411: דיסק שהתמלא תוך כדי זרם הוא כשל גלוי (עיקרון 4), לא 500
             # באמצע עם קובץ חלקי שנשאר. שאר ה-OSError ממשיכים כשהיו.
@@ -246,10 +257,14 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
         if unchecked:
             status, reason = "unchecked", "לא נבדק: " + " · ".join(unchecked) + " — הקליטה נעצרה לפני הכיווץ"
         else:
+            # ‏#1737: הרזרבה למערכת (`disk_reserve`) אינה מקום לקליטה — גם לא באזהרה.
+            keep = disk_reserve.reserve()
             numbers = f"תפוס {used / 1e9:.1f} GB · פנוי בשרת {free / 1e9:.1f} GB"
-            if used > free:
+            if keep:
+                numbers += f" · נשמרים למערכת {disk_reserve.gb(keep)}"
+            if used + keep > free:
                 status, reason = "refused", "אין מקום בשרת לקליטה: " + numbers
-            elif used * 2 > free:
+            elif used * 2 + keep > free:
                 status, reason = "warning", "אזהרת מקום: " + numbers + " — יחס הדחיסה אינו ידוע; ניתן להמשיך"
             else:
                 status, reason = "ok", numbers
@@ -291,9 +306,9 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
         declared = request.headers.get("content-length")
         needed = int(declared) if declared and declared.isdigit() else CHUNK
         free = _free_bytes(folder)
-        if free < needed:
-            reason = (f"אין מקום בשרת לאחסן את הקליטה: {filename} דורש {needed}"
-                      f" בייט, פנויים {free} בלבד")
+        # ‏#1737: גם בלי אורך מוצהר — הזרם לא מתחיל כשהמקום כבר ברזרבה.
+        reason = disk_reserve.refusal(free, needed, f"אחסון הקליטה ({filename})")
+        if reason is not None:
             _fail(ctx.conn, task_id, reason)
             raise HTTPException(507, reason)
         gone = None
@@ -323,8 +338,10 @@ def create_agent_capture_router(ctx: ServerContext) -> APIRouter:
             # המשימה פתוחה ובכל זאת התיקייה איננה: אין ראיה לבייטים — כשל בשם, לא "ok".
             _fail(ctx.conn, task_id, gone)
             raise HTTPException(500, gone)
-        # codeql[py/log-injection] false positive: task_id נמצא ב-DB, ושם הקובץ עבר SAFE_FILE (#291)
-        log.info("capture %s: received %s", task_id, filename)
+        # ‏#1535: ‏task_id ושם הקובץ באים מה-URL — שבירת שורה אינה מגיעה ליומן,
+        # גם אם בדיקה למעלה תשתנה (לא נשען על SAFE_FILE ועל ה-DB לבדם).
+        log.info("capture %s: received %s", task_id.replace("\r", " ").replace("\n", " "),
+                 filename.replace("\r", " ").replace("\n", " "))
         return {"ok": True, "sha256": got}
 
     # ‏#1470 (הכרעת נדב 16/10): ‏202 — המניפסט התקבל והבדיקות הזולות עברו,
@@ -768,11 +785,11 @@ def create_console_capture_router(ctx: ServerContext) -> APIRouter:
         now = now_iso()
         ctx.conn.execute(
             "INSERT INTO tasks (id, mac, type, disk, image_id, name, description,"
-            " folder, created_by, created_at, updated_at, token)"
-            " VALUES (?, ?, 'capture', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " folder, created_by, created_at, updated_at, token, origin)"
+            " VALUES (?, ?, 'capture', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (task_id, mac, disk, image_id, name,
              (body.get("description") or "").strip(),
-             folder, user[0], now, now, new_token()),
+             folder, user[0], now, now, new_token(), request_origin(request)),
         )
         ctx.conn.commit()
         journal(ctx.conn, "capture_start", f'{task_id} {mac} disk={disk} "{name}"', user[0])

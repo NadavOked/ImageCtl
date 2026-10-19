@@ -40,7 +40,6 @@ button{cursor:pointer}
 .tree-item .chev{font-size:var(--t-xs);width:10px;color:var(--muted)}
 .tree-item .ico{width:18px;height:18px;display:grid;place-items:center;color:var(--clr-action-fg)}
 .tree-sub{margin-inline-start:18px}
-.tree-foot{border-top:1px solid var(--hair);padding:10px 12px;color:var(--muted);font-size:var(--t-xs)}
 .content{direction:rtl;min-width:0;min-height:0;background:var(--porcelain);display:flex;flex-direction:column}
 .breadcrumbs{height:42px;border-bottom:1px solid var(--hair);display:flex;align-items:center;padding:0 16px;gap:8px;color:var(--muted);font-size:var(--t-sm)}
 .breadcrumbs strong{color:var(--ink);font-weight:600}.sep{color:var(--muted)}
@@ -402,8 +401,8 @@ details.paste .inner{padding:0 13px 13px}
 .member .disks{display:flex; flex-wrap:wrap; gap:5px; margin-top:5px}
 .disk-smart{font-size:var(--t-xs); padding:2px 7px; border-radius:20px; white-space:nowrap;
   background:var(--warn-soft); color:var(--warn-ink)}
-/* #872: fail (בריאות FAILED) כתום — ברירת המחדל למעלה; אדום רק לדיסק שנכשל בשיכפול הקודם */
-.disk-smart.failed_last{background:var(--danger-line); color:var(--clr-danger-fg)}
+/* #1580 (נדב 17/10): SMART תקול (fail) אדום — לא נכתב; "נכשל בשיכפול הקודם" כתום — ברירת המחדל למעלה */
+.disk-smart.fail{background:var(--danger-line); color:var(--clr-danger-fg)}
 /* #874: שורות הקרנל של הכשל -- ראיה, ASCII, כיוון LTR */
 .ata-log{direction:ltr; text-align:left; font-size:var(--t-xs); max-height:180px; overflow:auto; white-space:pre; margin:4px 0 0}
 .disk-smart.unchecked{background:var(--field-line); color:var(--muted)}
@@ -552,7 +551,7 @@ fieldset.radio-group .check input{margin:0}
 .breadcrumbs,.toolbar,.object-strip{flex:none}
 .inventory-node{min-height:30px}
 .inventory-node > span:last-child,.server-name{min-width:0;overflow-wrap:anywhere}
-/* #1179: משני שלא ענה — הענף אדום, לא רק הנקודה (markSecondaryStatus → data-conn) */
+/* #1179: שרת משנה שלא ענה — הענף אדום, לא רק הנקודה (markSecondaryStatus → data-conn) */
 .server-node[data-conn="err"] .server-name{color:var(--clr-danger-fg)}
 .tag.danger{color:var(--clr-danger-fg);background:color-mix(in srgb,var(--danger) 12%,var(--surface))}
 .form-grid{padding:16px}
@@ -706,7 +705,7 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 /* #1032: שורת סינון אחידה — שורה אחת תמיד ברוחב שולחני (flex-start, לא
    center: align-items:center נתן היסט של כ-7px בין input ל-select באותו
    גובה מדויק — קוונטת ריהוט טפסים דפדפנית; flex-start ניטרלי לחלוטין
-   וממורכז ע"י הריפוד השווה משני הצדדים). overflow-x כרשת ביטחון לרוחב
+   וממורכז ע"י הריפוד השווה שרת משנה הצדדים). overflow-x כרשת ביטחון לרוחב
    צר-אך-לא-נייד, ולא wrap כברירת מחדל (מה שגרם לבורר לקפוץ לשורה נפרדת
    מהחיפוש — #1032 סעיף 2). ב-<=740px חוזרים ל-wrap (הבדיקה בהמשך הקובץ). */
 .page .dg-bar{display:flex;align-items:flex-start;gap:8px;padding:8px 12px;border-bottom:1px solid var(--hair);flex-wrap:nowrap;overflow-x:auto;font-size:var(--t-base)}
@@ -770,7 +769,6 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .mcard.err{border-color:var(--danger);background:var(--danger-soft)}
 .page .machine-fail{color:var(--danger);font-size:var(--t-sm);font-weight:700}
 .page .machine-round{font-size:var(--t-sm);color:var(--muted)}
-.page .room-wave-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .page .mcard-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:var(--t-base);min-width:0}
 .page .mcard-h .muted{font-size:var(--t-sm);overflow-wrap:anywhere}
 .page .mcard .acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:auto}
@@ -864,7 +862,7 @@ button:focus-visible,[role="button"]:focus-visible,.inventory-node:focus-visible
 .page .dg.dense td{padding:5px 10px;font-size:var(--t-sm)}.page .dg.dense .sub,.page .dg.dense .cap{font-size:var(--t-sm)}
 .page .dg.dense td:nth-child(2),.page .dg.dense td:nth-child(3),.page .dg.dense td:nth-child(4){white-space:nowrap}
 .page .dg.dense .sw{width:34px;height:18px}.page .dg.dense .sw::after{width:14px;height:14px}.page .dg.dense .sw.on::after{inset-inline-end:18px}.page .dg.dense .sw.unk::after{inset-inline-end:10px}
-.page .dg.dense td .cap.mono{display:block;white-space:normal;overflow-wrap:anywhere;margin-top:3px;font-size:var(--t-sm)}
+.page .dg.dense td .cap.mono{display:block;white-space:normal;overflow-wrap:break-word;margin-top:3px;font-size:var(--t-sm)}
 @media(max-width:740px){.page .swrow{white-space:normal}.page .dg.dense td:nth-child(3),.page .dg.dense td:nth-child(4){white-space:normal}}
 /* ---------- #954 גל 6: מוניטור, דרייברים, הגדרות, הרשאות, יומן ---------- */
 /* הגדרות: שורה = שם + מה זה אומר | שליטה; שורה שהשתנתה מסומנת עד השמירה */
@@ -1345,11 +1343,15 @@ th,.table th,.page .dg th{letter-spacing:.02em}
 .sidebar #srvTA .inventory-children .inventory-node{padding-inline-start:30px}
 .sidebar #srvTA .inventory-children .inventory-children .inventory-node{padding-inline-start:46px}
 .sidebar #srvTA .inventory-children .inventory-children .inventory-children .inventory-node{padding-inline-start:62px}
+/* נדב 18/10 (vCenter, כמה hosts): כל שרת משנה הוא צומת שורש כמו TA, והעץ שלו מוזח באותם צעדים —
+   בלי זה הדפים של שרת המשנה נצמדו לשוליים ונראו כרשימה שטוחה. ‏#secondaryServers הוא display:contents. */
+.sidebar #secondaryServers > .inventory-children .inventory-children .inventory-node{padding-inline-start:30px}
+.sidebar #secondaryServers > .inventory-children .inventory-children .inventory-children .inventory-node{padding-inline-start:46px}
+.sidebar #secondaryServers > .inventory-children .inventory-children .inventory-children .inventory-children .inventory-node{padding-inline-start:62px}
 .sidebar .inventory-node.active{background:var(--clr-action-soft);color:var(--clr-action-fg);font-weight:600}
 .sidebar .inventory-node.active .ui-icon{color:var(--clr-action-fg)}
 .sidebar .inventory-node.active::before{content:"";position:absolute;inset-block:5px;inset-inline-start:0;width:3px;border-radius:3px 0 0 3px;background:var(--clr-action)}
 .sidebar .inventory-node.anc::after{margin-inline-start:0;order:10}   /* #1300: הנקודה אחרי החץ, בקצה — כמו .tn.anc::after במוקאפ */
-.sidebar .tree-foot{margin:12px 14px 14px;padding:10px 12px;border:1px solid var(--clr-row-border);border-radius:var(--r-sm);font-size:var(--t-sm);color:var(--clr-muted)}
 
 /* ---------- סבב סופי מול המוקאפ · כותרת העמוד, לשוניות ופילים (.ph / .hico / .tabs / .pill) ----------
    כותרת: חומר מעבר-אור, שביל פירורים xs, אריכת אייקון 36px בכחול-רך, שם + פיל באותה שורה, שורת משנה אחת נחתכת. */
@@ -1539,6 +1541,7 @@ body.tasks-open .app>.task-dock{bottom:var(--task-h,220px);border-top:1px solid 
 .page .empty .eic{width:48px;height:48px;border-radius:50%;background:var(--clr-hover);display:grid;place-items:center;margin:0 auto 12px;color:var(--clr-muted)}
 .page .empty .eic .ui-icon{width:22px;height:22px}
 .page .empty b.et{display:block;font-size:var(--t-md);font-weight:600;color:var(--clr-text);margin-bottom:4px}
+.page .empty p{max-width:44ch;margin:0 auto}   /* מוקאפ ‏.empty p: הטקסט בשתי שורות, לא ברוחב הכרטיס */
 .page .mon-off .sub{color:var(--clr-muted);font-size:var(--t-xs)}
 /* ‏#1300 (console-full.html P.settings, אחד-לאחד): ‏dl.kv — תווית 150px וערך, קו בין שורות; ‏label.sw — המתג בראש
    השורה, הטקסט אחריו, הצבע הכחול של הפעולה. ‏.mkv/.msw — כדי לא להתנגש ב-.kv (span) וב-.sw (כפתור) של שאר הדפים. */
@@ -1547,8 +1550,6 @@ body.tasks-open .app>.task-dock{bottom:var(--task-h,220px);border-top:1px solid 
 .page dl.mkv dt{color:var(--clr-muted);padding-inline-end:24px}
 .page dl.mkv dd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
 .page dl.mkv dd .btn.sm.flat{height:24px;padding:0 6px}
-.page .msws{display:grid;gap:14px}
-.page dl.mkv+.msws{margin-top:16px}
 .page label.msw{position:relative;display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:var(--t-sm);white-space:nowrap;justify-self:start}
 .page label.msw input{position:absolute;opacity:0;width:1px;height:1px}
 .page label.msw .track{flex:none;position:relative;width:34px;height:20px;border-radius:99px;background:var(--clr-border);transition:background var(--dur-fast)}
@@ -1557,13 +1558,38 @@ body.tasks-open .app>.task-dock{bottom:var(--task-h,220px);border-top:1px solid 
 .page label.msw input:checked+.track::after{inset-inline-start:16px}
 .page label.msw input:focus-visible+.track{outline:2px solid var(--clr-action);outline-offset:2px}
 .page label.msw.changed{color:var(--clr-warning-fg)}
-.page p.mcap{margin:0 0 12px;color:var(--clr-muted);font-size:var(--t-sm)}
 .page .macts{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
 .page .mupd .note{margin-bottom:0}
-.page .msws+.mupd{margin-top:16px}
 .page .mupd-st{margin-top:10px}
 @media(max-width:560px){.page dl.mkv{grid-template-columns:110px 1fr}.page label.msw{white-space:normal}}
 .page.settings .note{border:0;border-radius:var(--r-sm);padding:10px 12px}
+/* סידור עמוד ההגדרות (נדב 17/10, המוקאפ settings-redesign; apple-design §16): עמודה אחת ברוחב קריא, שורה לכל
+   הגדרה — התווית בתחילת השורה והשליטה בסופה, באותו טור — והסבר גלוי מתחת לכל קבוצה. רק טוקנים קיימים. */
+.page.settings .set-col{grid-column:1/-1;width:100%;max-width:880px}
+.page.settings .set-grp{margin:0 0 22px}
+.page.settings .set-grp .card-b{padding:2px 16px}
+.page.settings dl.mkv{grid-template-columns:minmax(0,1fr) auto}
+.page.settings dl.mkv dt,.page.settings dl.mkv dd{padding:11px 0;min-height:22px}
+.page.settings dl.mkv dt{color:var(--clr-text);display:flex;align-items:center}
+.page.settings dl.mkv dd{justify-content:flex-end;gap:10px}
+.page.settings dl.mkv dt:last-of-type,.page.settings dl.mkv dd:last-of-type{border-bottom:0}
+.page.settings dl.mkv .sv{color:var(--clr-muted)}
+.page.settings dl.mkv .sv.mono{color:var(--clr-text)}
+.page.settings dl.mkv details.tech{flex-basis:100%;text-align:end}
+.page.settings label.msw.solo{gap:0}
+.page.settings .mupd{padding:12px 0 14px;border-top:1px solid var(--clr-row-border)}
+.page.settings .set-foot{margin:6px 16px 0;color:var(--clr-muted);font-size:var(--t-sm);line-height:1.5;max-width:72ch}
+@media(max-width:560px){.page.settings dl.mkv{grid-template-columns:1fr}.page.settings dl.mkv dt{border-bottom:0;padding-bottom:0}.page.settings dl.mkv dd{justify-content:flex-start;padding-top:4px}}
+/* לשונית "שרתי משנה": שורה אחת לשרת המשנה — שם וכתובת בתחילת השורה, סטטוס כ-pill ופעולות בסופה */
+.page.settings dl.mkv dt.sec{flex-direction:column;align-items:flex-start;justify-content:center;gap:2px}
+.page.settings dl.mkv dt.sec .name{font-weight:600}
+.page.settings dl.mkv .sub{display:block;color:var(--clr-muted);font-size:var(--t-sm)}
+.page.settings dl.mkv dd.sec .sub{display:inline}
+.page.settings .card-b .empty{padding:26px 16px}
+/* חלון "תעודת TLS" (פרטים…): אותן שורות dl.mkv, בתוך החלון */
+.sheet dl.mkv{display:grid;grid-template-columns:max-content 1fr;gap:0 18px;margin:0 0 12px;font-size:var(--t-base)}
+.sheet dl.mkv dt,.sheet dl.mkv dd{margin:0;padding:7px 0;border-bottom:1px solid var(--clr-row-border)}
+.sheet dl.mkv dt{color:var(--clr-muted)}
 .page .dg b.uname{font-weight:600}
 .page .dg td b.uname+.sub,.page .dg td .pill+.sub{display:block}
 /* ‏#1300 (console-full.html P.network "ports"): משפט פתיחה בראש כרטיס */
@@ -1763,6 +1789,8 @@ body.tasks-open .app>.task-dock{bottom:var(--task-h,220px);border-top:1px solid 
 .page .mach:focus-visible{outline:2px solid var(--clr-action);outline-offset:2px}
 .page .mach .mt{display:flex;align-items:center;gap:8px;font-weight:600;margin-bottom:2px;flex-wrap:wrap}
 .page .mach .mt .pill{font-size:var(--t-xs);font-weight:600;padding:1px 9px;border-radius:99px}
+/* 17/10: תגית ארוכה ("ממתין למפעיל: …") נשברת לשורות בתוך הכרטיס במקום לגלוש (nowrap גלובלי למעלה) */
+.page .mach .mt .pill{white-space:normal;max-width:100%;min-width:0;overflow-wrap:anywhere;border-radius:12px;line-height:1.4}
 .page .mach .ms{font-size:var(--t-xs);color:var(--clr-muted);margin-bottom:10px}
 .page .mach .dsks{display:grid;gap:6px}
 .page .mach .dsk{display:grid;grid-template-columns:62px minmax(0,1fr) auto;align-items:center;gap:8px;font-size:var(--t-xs);color:var(--clr-muted)}
@@ -1772,6 +1800,24 @@ body.tasks-open .app>.task-dock{bottom:var(--task-h,220px);border-top:1px solid 
 .page .mach .dsk.unmapped b{color:var(--warn-ink)}
 .page .mach .dsk.opt span,.page .mach .dsk.vacant b{color:var(--clr-muted);font-weight:500}
 .page .mach .mach-note{font-size:var(--t-xs);color:var(--clr-muted);margin-top:8px}
+/* 18/10 (נדב: "לא לפי המוקאפ"): כרטיס המשכפל בסבב = ‏.mach/.dsk של המוקאפ console-full.html (P.deploy) אחד-לאחד —
+   "דיסק N" · פס · אחוז בשורה אחת; אדום = רקע אדום עם קו --danger-line, לא מחובר = מקווקו. */
+.page .rgrid.round .mach.err{border-color:var(--danger-line)}
+.page .room-foot{margin-top:14px;padding-top:10px;border-top:1px solid var(--clr-border);display:grid;gap:2px}.page .room-foot p{margin:0;font-size:var(--t-xs);line-height:1.5;color:var(--clr-muted)}   /* 18/10: מה שאינו במוקאפ ואינו דורש פעולה — שקט, בתחתית הכרטיס */
+.page .rgrid.round .dsk{position:relative}
+.page .mach .dsk.bad b{color:var(--clr-danger-fg)}
+.page .mach .mach-note.err{color:var(--clr-danger-fg);font-weight:600}
+/* #1386 "בטל…" ו-#984 WoL: פעולות שאינן במוקאפ — מופיעות בריחוף/פוקוס (מקלדת מגיעה אליהן ב-Tab), ובלי ריחוף (מגע) תמיד */
+.page .rgrid.round .dsk .dx{position:absolute;inset-inline-end:0;top:50%;transform:translateY(-50%);height:22px;padding:0 7px;font-size:var(--t-xs);opacity:0;pointer-events:none;transition:opacity var(--dur-fast)}
+.page .rgrid.round .dsk:hover .dx,.page .rgrid.round .dsk:focus-within .dx{opacity:1;pointer-events:auto}
+.page .rgrid.round .mt .wx{margin-inline-start:auto;height:22px;padding:0 7px;font-size:var(--t-xs);font-weight:500;opacity:0;transition:opacity var(--dur-fast)}
+.page .rgrid.round .mach:hover .wx,.page .rgrid.round .mach:focus-within .wx{opacity:1}
+@media (hover:none){.page .rgrid.round .dsk .dx{position:static;transform:none;opacity:1;pointer-events:auto;grid-column:1/-1;justify-self:end}.page .rgrid.round .mt .wx{opacity:1}}
+.page .mach .dsk.cancelled span,.page .mach .dsk.cancelled b{color:var(--clr-muted)}.page .mach .dsk.cancelling b{color:var(--warn-ink)}
+/* #1331 (מוקאפ 17/10, גרסה 2): מה קרה לדרייברים של הדיסק — שורה מתחת לפס, ברוחב השורה כולה */
+.page .mach .dsk .dline{grid-column:1/-1;min-width:0;white-space:normal;overflow-wrap:break-word;font-size:var(--t-xs);line-height:1.4;color:var(--clr-muted)}
+.page .mach .dsk .dline.warn{color:var(--clr-warning-fg)}.page .mach .dsk .dline.bad{color:var(--clr-danger-fg);font-weight:600}
+.page .drv-legend{font-size:var(--t-xs);color:var(--clr-muted);margin-bottom:10px}
 .page .mach.err{border-color:var(--clr-danger);background:var(--clr-danger-soft)}
 .page .mach.off{opacity:.75;border-style:dashed}
 .page .mach .acts{display:flex;gap:6px;margin-top:10px}
@@ -1815,7 +1861,7 @@ body.tasks-open .app>.task-dock{bottom:var(--task-h,220px);border-top:1px solid 
 .rnew .dk .n-chip{margin-inline-start:auto}
 #modalHint.rn-sum.need{color:var(--warn-ink)}
 @media (max-width:640px){.rnew .rn-2{grid-template-columns:minmax(0,1fr)}}
-/* 16/10 (מוקאפ #1525, ג׳1–ג׳3): רישום משני, שלב 2 — הטביעה בקבוצות ושמונה תיבות לקוד */
+/* 16/10 (מוקאפ #1525, ג׳1–ג׳3): רישום שרת משנה, שלב 2 — הטביעה בקבוצות ושמונה תיבות לקוד */
 .enroll-cmp{border:2px solid var(--indigo);border-radius:9px;padding:12px 14px;background:var(--indigo-soft);margin-bottom:10px}
 .enroll-cmp .t{font-size:var(--t-xs);font-weight:600;margin-bottom:6px}
 .enroll-fp{font-family:var(--font-mono);font-weight:600;font-size:var(--t-xl);line-height:1.2;letter-spacing:.04em}
@@ -1829,3 +1875,11 @@ body.tasks-open .app>.task-dock{bottom:var(--task-h,220px);border-top:1px solid 
 .enroll-d{opacity:.4;font-family:var(--font-mono);font-weight:600;font-size:var(--t-lg)}
 @media (max-width:640px){.enroll-c{width:34px;height:46px;font-size:var(--t-lg)}.enroll-cin{gap:5px}}
 .branches-empty{text-align:center;padding:36px 18px}.branches-empty h3{margin:0 0 6px;font-size:var(--t-lg)}.branches-empty p{max-width:560px;margin:0 auto 16px}
+
+/* נדב 17/10: תחתית התפריט הצדדי (כרטיס "TA · מחובר" ושורת האזהרות) נחתכה מאחורי הדוק הקבוע. התפריט נגמר מעל הדוק —
+   34px כשהוא סגור, ועוד גובה הפאנל (--task-h) כשהוא פתוח; אותו דבר לפס המצומצם ולתוכן הנגלל. */
+.sidebar{--dock-h:34px}
+body.tasks-open .sidebar{--dock-h:calc(34px + var(--task-h,220px))}
+.sidebar .nav-full,.sidebar .rail{bottom:var(--dock-h)}
+.sidebar .rail{padding-bottom:8px}
+body.tasks-open .scroll{padding-block-end:calc(44px + var(--task-h,220px))}

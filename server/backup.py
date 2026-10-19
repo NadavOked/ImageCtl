@@ -62,7 +62,7 @@ def build_archive(conn: sqlite3.Connection, data_dir: Path, version: str | None,
     ‏`MANIFEST.txt`, ‏`SHA256SUMS`. מחזיר (bytes, שם קובץ)."""
     now = now or datetime.now(timezone.utc)
     stamp = now.strftime("%Y%m%d-%H%M%S")
-    name = f"imagectl-settings-{stamp}.tar.gz"
+    name = f"imagesrv-settings-{stamp}.tar.gz"
     db_bytes = consistent_db_copy(conn)
     sums: list[str] = []
     buf = io.BytesIO()

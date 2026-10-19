@@ -23,6 +23,19 @@ TOKEN_BYTES = 24
 def new_token() -> str:
     return secrets.token_hex(TOKEN_BYTES)
 
+#: ‏#1576: מאיפה הוזמנה המשימה (עמודת `tasks.origin`).
+ORIGIN_CONSOLE = "console"
+ORIGIN_BUILD_GUI = "build_gui"
+
+
+def request_origin(request) -> str:
+    """‏`build_gui` כשהבקשה נכנסה בערוץ הסוכן -- ראוטר הקיוסק על פורט הסוכן,
+    שמסמן אותה (‏kiosk.mark_build_gui) -- אחרת `console`. **השרת קובע, לא
+    הלקוח**: גואי ישן או נתיב עתידי בלי שדה עדיין מסומן לפי הערוץ (‏#1576,
+    סקירת אבטחה)."""
+    return getattr(request.state, "task_origin", ORIGIN_CONSOLE)
+
+
 #: מצבים שבהם המשימה עדיין מחכה למכונה או רצה עליה.
 OPEN_STATES = ("pending", "running")
 

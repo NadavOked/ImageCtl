@@ -149,9 +149,11 @@ def test_gui_source_applies_tz_and_labels_unknown_clock_utc():
     assert '"%H:%M UTC"' in screens and '"12:45"' in screens
 
 
-def test_installer_sets_jerusalem_before_timesyncd():
+def test_installer_sets_the_chosen_zone_before_timesyncd():
+    # 17/10: the zone is the installer's question (default Asia/Jerusalem,
+    # tests/test_installer_timezone_1447.py), no longer fixed here.
     finish = (REPO / "installer" / "lib" / "finish.sh").read_text(encoding="utf-8")
-    link = 'chroot "$TARGET" ln -sf /usr/share/zoneinfo/Asia/Jerusalem /etc/localtime'
+    link = 'chroot "$TARGET" ln -sf "/usr/share/zoneinfo/$ANSWER_TIMEZONE" /etc/localtime'
     assert link in finish
-    assert 'write_target 0644 /etc/timezone "Asia/Jerusalem' in finish
+    assert 'write_target 0644 /etc/timezone "$ANSWER_TIMEZONE' in finish
     assert finish.index(link) < finish.index("systemctl enable systemd-timesyncd.service")

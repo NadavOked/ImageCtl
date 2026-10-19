@@ -210,20 +210,21 @@ test('/health that cannot be read is its own state — red note, "לא נקרא"
   assert.match(run('toasts.join("|")'),/DB down/);
 });
 
-test('stage 3: update card (moved to settings): installed/previous/last-check, check → apply button with a plain confirm (#1192), revert behind typed name',async()=>{
+test('stage 3: update card (moved to settings): installed/previous/last-check, check → apply button with a plain confirm (#1192), revert with a red-button confirm (#1778)',async()=>{
   const {run,requests}=setup(); run('current="settings"');
   await run('loadSettingsData()');
   let html=run('settings()');
-  const card=cell(html,'<span>עדכונים',1500);
-  // ‏#1300 (console-full.html P.settings "עדכונים"): הודעת מידע אחת — מה מותקן ומה מצאה הבדיקה — ושורת כפתורים
-  assert.match(card,/class="note info"><span aria-hidden="true">●<\/span><span>מותקן <b class="mono">v0\.34\.0<\/b> · בדיקה אחרונה: מעולם לא נבדק בשרת הזה<\/span>/,'#1000: last_check null = never checked on this server');
-  assert.match(card,/onclick="healthUpdateCheck\(\)">בדוק עדכון</);
+  const card=cell(html,'<span>עדכונים',2400);
+  // סידור ההגדרות (נדב 17/10): "עדכונים ותחזוקה" — שורה לכל דבר: מה מותקן, ומה מצאה הבדיקה האחרונה + "בדוק עכשיו"
+  assert.match(card,/<dt[^>]*>גרסה מותקנת<\/dt><dd[^>]*><span class="sv mono" dir="ltr">v0\.34\.0<\/span>/);
+  assert.match(card,/<dt>בדיקה אחרונה<\/dt><dd><span class="sv">מעולם לא נבדק בשרת הזה<\/span>/,'#1000: last_check null = never checked on this server');
+  assert.match(card,/onclick="healthUpdateCheck\(\)">בדוק עכשיו</);
   assert.doesNotMatch(card,/החל עדכון/,'no apply before a check found something');
   assert.match(card,/confirmUpdateRevert\(UPDATE_INFO\.previous\)">חזור ל-v0\.33\.0</);
   await run('healthUpdateCheck()');
   assert.ok(requests.some((r)=>r.url==='/update/check' && r.method==='POST'));
   html=run('settings()');
-  assert.match(cell(html,'<span>עדכונים',1800),/קיימת גרסה חדשה: <b class="mono">v0\.35\.0<\/b> · נבדק היום 06:00/,'#1000: the time is the server `at`, not the browser clock');
+  assert.match(cell(html,'<span>עדכונים',3200),/קיימת גרסה חדשה: <b class="mono">v0\.35\.0<\/b> · נבדק היום 06:00/,'#1000: the time is the server `at`, not the browser clock');
   // ‏#1192 (נדב 21/09): עדכון = דיאלוג אישור בלבד, בלי הקלדת שם השרת (הפעולה הפיכה: "חזור ל-").
   assert.match(html,/confirmUpdateApply\(UPDATE_INFO\.latest\)">החל עדכון v0\.35\.0</);
   assert.doesNotMatch(html,/הקלדת שם השרת\)/,'#1192: no typed-name hint on the apply button');
@@ -234,27 +235,35 @@ test('stage 3: update card (moved to settings): installed/previous/last-check, c
   await s.onSubmit();
   const apply=requests.find((r)=>r.url==='/update/apply');
   assert.deepEqual(apply.body,{tag:'v0.35.0'},'#1192: no confirm_name');
+  // ‏#1778 (הכרעת #1270): "חזור ל-…" — אותו חלון עם כפתור אדום, בלי שדה הקלדה ובלי שם שרת בגוף.
+  run("confirmUpdateRevert(UPDATE_INFO.previous)");
+  const r=run('sheets.at(-1)');
+  assert.equal(r.danger,true); assert.equal(r.verify,undefined,'#1778: no text field to type'); assert.equal(r.fields,undefined);
+  assert.equal(r.sub,'v0.33.0');
+  await r.onSubmit();
+  const revert=requests.find((q)=>q.url==='/update/revert');
+  assert.equal(revert.method,'POST'); assert.deepEqual(revert.body,{},'#1778: no confirm_name');
 });
 
 test('update card: switch off → note with a link to settings and no buttons; failed check ≠ "no update"; status line; /update unreadable',async()=>{
   let s=setup({'/update':{current:'v0.34.0',enabled:false,previous:null,server_name:'srv'}}); s.run('current="settings"');
   await s.run('loadSettingsData()');
-  let card=cell(s.run('settings()'),'<span>עדכונים',1500);
-  // ‏#1300: המתג "עדכון גרסה מהקונסולה" יושב בכרטיס הזה עצמו — לא הערה שמפנה "למעלה"
-  assert.match(card,/<label class="msw" id="srow-update_enabled"[^>]*><input type="checkbox" role="switch" aria-label="עדכון גרסה מהקונסולה" onchange=/,'#1300: label.sw of the mockup, off = not checked');
-  // #1128: the settings-backup button does not depend on the update switch; no update buttons though
+  let card=cell(s.run('settings()'),'<span>עדכונים',2400);
+  // ‏#1300: המתג "עדכון גרסה מהקונסולה" יושב בקבוצה הזו עצמה — מתג בסוף השורה (סידור 17/10)
+  assert.match(card,/<label class="msw solo" id="srow-update_enabled"><input type="checkbox" role="switch" aria-label="עדכון גרסה מהקונסולה" onchange=/,'off = not checked');
+  // #1128: the settings-backup row does not depend on the update switch; no update buttons though
   assert.doesNotMatch(card,/healthUpdateCheck|confirmUpdateApply|confirmUpdateRevert/);
-  assert.match(s.run('settings()'),/<span>גיבוי<[\s\S]*confirmSettingsBackup/,'backup is its own card and never depends on the update switch');
+  assert.match(card,/גיבוי הגדרות<\/dt><dd[^>]*><button[^>]*onclick="confirmSettingsBackup\(\)"/,'backup never depends on the update switch');
   assert.doesNotMatch(card,/חזור ל-/,'no previous version → no revert');
   assert.ok(!s.requests.some((r)=>r.url==='/update/status'),'status is not asked while the switch is off');
   s=setup({'/update/check':new Error('no route to github'),'/update/status':{state:'running',tag:'v0.35.0',verified:false}}); s.run('current="settings"');
   await s.run('loadSettingsData()'); await s.run('healthUpdateCheck()');
-  card=cell(s.run('settings()'),'<span>עדכונים',1800);
+  card=cell(s.run('settings()'),'<span>עדכונים',3200);
   assert.match(card,/הבדיקה נכשלה: no route to github/); assert.doesNotMatch(card,/החל עדכון|אין חדש/);
   assert.match(card,/class="st run">העדכון ל-v0\.35\.0 הופעל — ממתין לאתחול השרת/);
   s=setup({'/update':new Error('403')}); s.run('current="settings"');
   await s.run('loadSettingsData()');
-  assert.match(cell(s.run('settings()'),'<span>עדכונים',600),/note err.*\/update לא נקרא: 403/);
+  assert.match(cell(s.run('settings()'),'<span>עדכונים',900),/גרסה מותקנת<\/dt><dd[^>]*><span class="muted">לא נקרא: 403<\/span>/,'unread is said, not an empty version');
 });
 
 test('#1277: the check shows the new tag as signed / unsigned / not checked — an unsigned tag disables apply, "not checked" never reads as signed',async()=>{
@@ -282,13 +291,13 @@ test('#1277: the check shows the new tag as signed / unsigned / not checked — 
 test('#1273: while an update is running the apply and revert buttons are disabled; a verified update enables them again',async()=>{
   let s=setup({'/update/status':{state:'running',tag:'v0.35.0',verified:false}}); s.run('current="settings"');
   await s.run('loadSettingsData()'); await s.run('healthUpdateCheck()');
-  let card=cell(s.run('settings()'),'<span>עדכונים',2000);
+  let card=cell(s.run('settings()'),'<span>עדכונים',3600);
   assert.match(card,/<button class="btn primary" disabled[^>]*>החל עדכון v0\.35\.0</,'apply is disabled while running');
   assert.match(card,/<button class="btn danger" disabled[^>]*>חזור ל-v0\.33\.0</,'revert is disabled while running');
-  assert.match(card,/<button class="btn" onclick="healthUpdateCheck\(\)">בדוק עדכון</,'checking stays available');
+  assert.match(card,/<button class="btn sm flat" type="button" onclick="healthUpdateCheck\(\)">בדוק עכשיו</,'checking stays available');
   s=setup({'/update/status':{state:'done',tag:'v0.34.0',verified:true}}); s.run('current="settings"');
   await s.run('loadSettingsData()'); await s.run('healthUpdateCheck()');
-  card=cell(s.run('settings()'),'<span>עדכונים',2000);
+  card=cell(s.run('settings()'),'<span>עדכונים',3600);
   assert.doesNotMatch(card,/disabled/,'a verified update does not block the next one');
 });
 
@@ -311,12 +320,12 @@ test('#1273: a double click on "החלת העדכון" sends one /update/apply, 
 test('#1000: "last check" comes from /update.last_check and survives a reload; a stored failure is named, not "no update"',async()=>{
   let s=setup({'/update':{current:'v0.34.0',enabled:true,previous:null,server_name:'srv',last_check:{at:'2026-09-18T06:00:00+00:00',current:'v0.34.0',latest:'v0.34.0',available:false,reason:null}}}); s.run('current="settings"');
   await s.run('loadSettingsData()');
-  let card=cell(s.run('settings()'),'<span>עדכונים',1500);
-  assert.match(card,/בדיקה אחרונה: 18\/09\/2026 06:00 — כבר על הגרסה העדכנית \(v0\.34\.0\)/);
+  let card=cell(s.run('settings()'),'<span>עדכונים',2400);
+  assert.match(card,/בדיקה אחרונה<\/dt><dd><span class="sv">18\/09\/2026 06:00 — כבר על הגרסה העדכנית \(v0\.34\.0\)/);
   assert.doesNotMatch(card,/לא נבדק בסשן/);
   s=setup({'/update':{current:'v0.34.0',enabled:true,previous:null,server_name:'srv',last_check:{at:'2026-09-18T06:00:00+00:00',current:'v0.34.0',latest:null,available:false,reason:'הבדיקה מול x נכשלה: timeout'}}}); s.run('current="settings"');
   await s.run('loadSettingsData()');
-  card=cell(s.run('settings()'),'<span>עדכונים',1500);
+  card=cell(s.run('settings()'),'<span>עדכונים',2400);
   assert.match(card,/18\/09\/2026 06:00 — הבדיקה נכשלה: הבדיקה מול x נכשלה: timeout/); assert.doesNotMatch(card,/אין חדש|כבר על הגרסה/);
   assert.doesNotMatch(card,/החל עדכון/,'a stored "available" from an earlier session is not an apply button — apply needs a fresh check (UPDATE_CHECK)');
 });
@@ -486,7 +495,7 @@ test('#1300: the health header has one state pill and no TLS pill; TLS lives in 
     assert.doesNotMatch(run('health()'),/TLS (כבוי|תעודה)/,tls);
   }
   assert.doesNotMatch(run('layout(pages.home,0)'),/TLS (כבוי|תעודה)/,'the overview header does not show TLS either');
-  assert.equal(typeof run('tlsCardHtml'),'function','the TLS card is still on the settings page');
+  assert.equal(typeof run('tlsRowHtml'),'function','the TLS row is on the settings page');
 });
 test('#1300: raw English detail never sits in a health row — a short Hebrew line, the text behind "פרטים"',async()=>{
   const {run}=setup({'/health':[check('boot','קבצי האתחול','bad','missing in /srv/tftp: bootx64.efi, grubx64.efi, grub/grub.cfg'),check('fw','חומת אש','unknown','nft: command not found')]}); run('current="health"');

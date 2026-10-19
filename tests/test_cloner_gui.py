@@ -80,14 +80,20 @@ def env(run: Path, gui: Path) -> str:
 
 
 def target(run: Path, dev: str, state: str, total: int, base: int, cur: str) -> None:
-    """יעד פר-מגירה, בדיוק במבנה של target_init/progress.sh."""
+    """יעד פר-מגירה, בדיוק במבנה של target_init/progress.sh.
+
+    ‏#1657: ‏`target_bytes` סוכם את מוני המחיצות `bytes.<N>` — לא `base` ולא
+    ‏`bytes.raw`. ‏`base` (המחיצות שהסתיימו) נכתב ל-`bytes.0`, ו-`cur` (המחיצה
+    הנוכחית) ל-`bytes.1`, שאליו מצביע `counter`. עד התיקון הפיקסטורה כתבה
+    ‏`bytes.raw`, והרשומה אמרה 0 בייטים לכל מגירה (Testrunner 18/10)."""
     d = run / "targets" / dev
     d.mkdir(parents=True, exist_ok=True)
     (d / "state").write_text(state + "\n", newline="\n")
     (d / "total").write_text(f"{total}\n", newline="\n")
-    (d / "base").write_text(f"{base}\n", newline="\n")
-    (d / "bytes.raw").write_text(cur, newline="\n")
-    (d / "counter").write_text(posix(d / "bytes.raw") + "\n", newline="\n")
+    (d / "bytes.0").write_text(f"{base}\n", newline="\n")
+    (d / "bytes.1").write_text(cur, newline="\n")
+    (d / "counter.index").write_text("1\n", newline="\n")
+    (d / "counter").write_text(posix(d / "bytes.1") + "\n", newline="\n")
 
 
 # disk_port מוזרק: מקורו נבדק ב-test_agent/test_smart; כאן נבדק המבנה.
@@ -173,8 +179,8 @@ def test_a_drawer_record_reports_the_local_bytes_and_port(tmp_path):
     45 (40+5) ו-sdb הוא 0 — שני מספרים שונים, מהקבצים המקומיים."""
     lines = state_lines(tmp_path)
     # ‏#410: שדות 7–8 הם קצב ו-ETA; ‏-1 = לא נמדד (דגימה ראשונה / לא כותבת).
-    assert "drawer=1|sda|writing|45|100||-1|-1|1|SATA 0" in lines
-    assert "drawer=2|sdb|waiting|0|100||-1|-1|2|SATA 1" in lines
+    assert "drawer=1|sda|writing|45|100||-1|-1|1|SATA 0||" in lines
+    assert "drawer=2|sdb|waiting|0|100||-1|-1|2|SATA 1||" in lines
 
 
 def test_a_second_sample_carries_the_rate_and_eta_from_the_local_counter(tmp_path):
@@ -187,7 +193,7 @@ def test_a_second_sample_carries_the_rate_and_eta_from_the_local_counter(tmp_pat
     target(run, "sda", "writing", 1000, 0, "50")
     out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
     assert out.returncode == 0, out.stderr
-    assert "drawer=1|sda|writing|50|1000||-1|-1|1|SATA 0" in (gui / "state").read_text().splitlines()
+    assert "drawer=1|sda|writing|50|1000||-1|-1|1|SATA 0||" in (gui / "state").read_text().splitlines()
     t0, b0 = (gui / "pace.sda").read_text().split()
     assert b0 == "50"
     (gui / "pace.sda").write_text(f"{int(t0) - 10} 50\n", newline="\n")
@@ -195,7 +201,8 @@ def test_a_second_sample_carries_the_rate_and_eta_from_the_local_counter(tmp_pat
     out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
     assert out.returncode == 0, out.stderr
     line = [l for l in (gui / "state").read_text().splitlines() if l.startswith("drawer=")][0]
-    port, dev, state, bytes_, total, err, rate, eta, drawer, conn = line[len("drawer="):].split("|")   # #1495: +9-10
+    port, dev, state, bytes_, total, err, rate, eta, drawer, conn, cancel, cancelled_at = line[len("drawer="):].split("|")   # #1495: +9-10; #1386: +11-12
+    assert (cancel, cancelled_at) == ("", "")
     assert bytes_ == "250"
     assert 15 <= int(rate) <= 20, rate                      # 200 / (10s + הזמן בין הריצות)
     assert eta == str((1000 - 250) // int(rate))
@@ -210,7 +217,7 @@ def test_a_drawer_that_stopped_writing_drops_its_anchor_and_reports_unmeasured(t
     target(run, "sda", "done", 1000, 1000, "")
     out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
     assert out.returncode == 0, out.stderr
-    assert "drawer=1|sda|done|1000|1000||-1|-1|1|SATA 0" in (gui / "state").read_text().splitlines()
+    assert "drawer=1|sda|done|1000|1000||-1|-1|1|SATA 0||" in (gui / "state").read_text().splitlines()
     assert not (gui / "pace.sda").exists()
 
 
@@ -238,7 +245,7 @@ def test_an_error_pipe_cannot_corrupt_the_record(tmp_path):
     out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
     assert out.returncode == 0, out.stderr
     drawer = [l for l in (gui / "state").read_text().splitlines() if l.startswith("drawer=")][0]
-    assert drawer.count("|") == 9, drawer          # בדיוק עשרה שדות (#410: +קצב, +ETA; #1495: +מגירה, +חיבור)
+    assert drawer.count("|") == 11, drawer         # בדיוק 12 שדות (#410: +קצב, +ETA; #1495: +מגירה, +חיבור; #1386: +ביטול, +מתי)
     assert "bad   disk line2" in drawer
 
 
@@ -259,6 +266,7 @@ def test_the_kiosk_load_chain_carries_the_cached_smart_verdict(tmp_path):
     sysroot = tmp_path / "sysroot"
     (sysroot / "sys" / "block" / "sda" / "device").mkdir(parents=True)
     (sysroot / "sys" / "block" / "sda" / "size").write_text("1000\n", newline="\n")
+    (sysroot / "sys" / "block" / "sda" / "ro").write_text("0\n", newline="\n")   # #1742: unread = not checked
     (sysroot / "sys" / "block" / "sda" / "device" / "model").write_text("FakeDisk\n", newline="\n")
     (run / "smart").mkdir()
     (run / "smart" / "sda.v").write_text("ok ok 0 0 0 0\n", newline="\n")
@@ -299,6 +307,7 @@ def idle_state(tmp_path: Path, ports: dict[str, str], failed: dict[str, str] | N
     for dev in ports:
         (sysroot / "sys" / "block" / dev / "device").mkdir(parents=True)
         (sysroot / "sys" / "block" / dev / "size").write_text("1000\n", newline="\n")
+        (sysroot / "sys" / "block" / dev / "ro").write_text("0\n", newline="\n")   # #1742
         (sysroot / "sys" / "block" / dev / "device" / "model").write_text(f"Model {dev}\n", newline="\n")
         (run / "smart" / f"{dev}.v").write_text("ok ok 0 0 0 0\n", newline="\n")
     memory = " ".join(f"echo 'S-{dev}||{cause}';" for dev, cause in (failed or {}).items())
@@ -452,6 +461,65 @@ gui_smart_choice sda fail pending > {posix(gui)}/out; echo "rc=$?"
     out = sh(script)
     assert "rc=1" in out.stdout, out.stdout
     assert (gui / "out").read_text() == "", "אסור פלט — היעדר פלט הוא הנפילה לטקסט"
+
+
+def test_an_unanswered_question_gives_up_after_its_ceiling(tmp_path):
+    """סקירת אבטחה 17/10: בלי תקרה, שאלה שאיש לא עונה עליה החזיקה את המכונה
+    — ואת השולח, שממתין לה — לנצח. אחרי `WAIT_SMART_GUI_S` הפונקציה נכשלת
+    (rc=1, בלי פלט), הלחיצה הישנה נמחקת, ו-smart_ask לוקח את "בלי תשובה" של
+    הצבע (כתום כותב, אדום מדלג — נדב 16/09). המסך עצמו **חי** כל הזמן.
+
+    **בקרה שלילית:** על הקוד הישן הלולאה ממתינה עד שהמסך מת (20ש' כאן)."""
+    setup, gui = smart_choice_env(tmp_path)
+    script = f"""{setup}
+WAIT_SMART_GUI_S=2
+sleep 20 & _gui_pid=$!
+s=$(date +%s)
+gui_smart_choice sda failed_last cable > {posix(gui)}/out 2> {posix(gui)}/err; rc=$?
+e=$(date +%s)
+kill -0 $_gui_pid 2>/dev/null && echo GUI-ALIVE
+kill $_gui_pid 2>/dev/null
+echo "rc=$rc elapsed=$((e - s))"
+[ -f {posix(gui)}/smart-request ] && echo REQUEST-LEFT
+true
+"""
+    out = sh(script)
+    assert out.returncode == 0, out.stderr
+    last = [l for l in out.stdout.splitlines() if l.startswith("rc=")][0]
+    assert last.startswith("rc=1 "), out.stdout
+    assert int(last.split("elapsed=")[1]) < 10, out.stdout
+    assert "GUI-ALIVE" in out.stdout, "המבחן חייב לרוץ מול מסך חי"
+    assert "REQUEST-LEFT" not in out.stdout
+    assert (gui / "out").read_text() == ""
+    assert "no SMART answer" in (gui / "err").read_text()
+
+
+def test_a_closed_round_ends_the_question(tmp_path):
+    """ברזל rc2 (17/10): אחרי send_failed השרת סגר את הסבב, והמכונה נשארה על
+    שאלת ה-SMART עם המגירות `waiting`. הסמן `session-closed` (‏progress.sh)
+    מסיים את השאלה (rc=1, בלי פלט), והמסלול עוצר על הסבב הסגור (drawers.sh).
+    המסך עצמו **חי**.
+
+    **בקרה שלילית:** על הקוד הקודם השאלה ממתינה עד שהמסך מת (20ש' כאן)."""
+    setup, gui = smart_choice_env(tmp_path)
+    script = f"""{setup}
+sleep 20 & _gui_pid=$!
+( sleep 1; echo ses_80844e82 > "$RUN_DIR/session-closed" ) &
+s=$(date +%s)
+gui_smart_choice sda failed_last unclassified > {posix(gui)}/out; rc=$?
+e=$(date +%s)
+kill -0 $_gui_pid 2>/dev/null && echo GUI-ALIVE
+kill $_gui_pid 2>/dev/null
+echo "rc=$rc elapsed=$((e - s))"
+[ -f {posix(gui)}/smart-request ] && echo REQUEST-LEFT
+true
+"""
+    out = sh(script)
+    assert out.returncode == 0, out.stderr
+    last = [l for l in out.stdout.splitlines() if l.startswith("rc=")][0]
+    assert last.startswith("rc=1 ") and int(last.split("elapsed=")[1]) < 10, out.stdout
+    assert "GUI-ALIVE" in out.stdout and "REQUEST-LEFT" not in out.stdout
+    assert (gui / "out").read_text() == ""
 
 
 def test_a_decision_with_no_trailing_newline_still_cleans_up_the_handshake(tmp_path):
@@ -614,6 +682,7 @@ def test_native_gui_builds_and_routes_the_cloner_screen(tmp_path):
     state = tmp_path / "state.txt"
     state.write_text(
         "cloner=Office 2024\n"
+        "drawer_count=2\n"
         "drawer=1|sda|writing|45|100|\n"
         "drawer=2|sdb|failed|0|100|pending sectors\n"
         "smart_prompt=2-2|2|fail|pending\n"
@@ -631,6 +700,7 @@ def test_native_gui_builds_and_routes_the_cloner_screen(tmp_path):
         stdin=subprocess.DEVNULL,
     )
     assert run.returncode == 0, run.stderr           # הניתוב נכשל => rc≠0
+    assert "unknown key 'drawer_count'" not in run.stderr
     assert (tmp_path / "card-cloner-light.png").exists()
     assert (tmp_path / "card-cloner-dark.png").exists()
 
@@ -924,8 +994,8 @@ def _ink_bounds_x(px, ch, w, x0, x1, y0, y1, bg, tol=12):
 )
 def test_room_grid_paints_healthy_drawers_green(tmp_path):
     """‏#695: מסך "הפצה למחשבי שיכפול" מצייר מלבן לכל מחשב עם הדיסקים בפנים.
-    ‏disk בריא (`smart=passed`) נצבע ב-`led_ok` ירוק, ו-`smart=fail` ב-**כתום**
-    (‏#872: F1 = כתום; אדום שמור ל-`failed_last`). ‏#1090: שלושת הצבעים הם
+    ‏disk בריא (`smart=passed`) נצבע ב-`led_ok` ירוק, ו-`smart=fail` ב-**אדום**
+    (‏#1580, נדב 17/10: SMART תקול = אדום; ‏`failed_last` כתום). ‏#1090: שלושת הצבעים הם
     טוקני הקונסולה `--clr-success`/`--clr-warning`/`--clr-danger` (בהיר).
     הטסט מזין `machine`/`machine_drawers`/`room_drawer` דרך `--state`, מרנדר
     את כרטיס החדר, וסופר פיקסלים ירוקים ואדומים. **בקרה שלילית:** בלי הפרסר
@@ -958,8 +1028,7 @@ def test_room_grid_paints_healthy_drawers_green(tmp_path):
     orange = _count_color(px, ch, _token("--clr-warning"))
     red = _count_color(px, ch, _token("--clr-danger"))
     assert green > 400, f"healthy drawers not painted green ({green} px)"
-    assert orange > 200, f"F1 drawer not painted orange ({orange} px)"
-    assert red < 200, f"a SMART-failed drawer must not be red -- red is failed_last ({red} px)"
+    assert red > 200, f"a SMART-failed drawer must be red (#1580) ({red} px, orange {orange})"
 
 
 @requires_native(
@@ -999,8 +1068,7 @@ def test_cloner_idle_disks_show_smart_health_color(tmp_path):
     orange = _count_color(px, ch, _token("--clr-warning"))
     red = _count_color(px, ch, _token("--clr-danger"))
     assert green > 50, f"healthy idle disk not shown green ({green} px)"
-    assert orange > 50, f"F1 idle disk not shown orange ({orange} px)"
-    assert red < 50, f"a SMART-failed idle disk must not be red ({red} px)"
+    assert red > 50, f"a SMART-failed idle disk must be red (#1580) ({red} px, orange {orange})"
 
 
 @requires_native(
@@ -1008,10 +1076,10 @@ def test_cloner_idle_disks_show_smart_health_color(tmp_path):
     ("pango/cairo/libdrm", _pkgconfig("pangocairo", "cairo", "libdrm")),
     why="native-gui נבנה על המעבדה בלבד",
 )
-def test_cloner_idle_disk_that_failed_last_clone_is_painted_red(tmp_path):
+def test_cloner_idle_disk_that_failed_last_clone_is_painted_orange(tmp_path):
     """‏#867: דיסק שנושא את הסימון של #845 מגיע ב-`cdisk=` כ-`failed_last`,
-    והמסך מצייר אותו אדום עם "נכשל בשיכפול הקודם" — גם כש-SMART שלו נקי.
-    כאן הדיסק היחיד הוא `failed_last`, ולכן על המסך חייב להיות אדום.
+    והמסך מצייר אותו **כתום** (‏#1580, נדב 17/10: "נסה שוב") עם "נכשל
+    בשיכפול הקודם" — גם כש-SMART שלו נקי. כאן הדיסק היחיד הוא `failed_last`.
     **בקרה שלילית:** ‏`state.c` על main מקפל ערך לא-מוכר ל-`unchecked`
     והריבוע נצבע ירוק — אפס פיקסלים אדומים והטסט נופל."""
     binary = _build_gui(tmp_path)
@@ -1034,8 +1102,10 @@ def test_cloner_idle_disk_that_failed_last_clone_is_painted_red(tmp_path):
     )
     assert run.returncode == 0, _routing_error(run.stderr)
     w, h, ch, px = _png_rgb(tmp_path / "card-cloner-light.png")
+    orange = _count_color(px, ch, _token("--clr-warning"))
     red = _count_color(px, ch, _token("--clr-danger"))
-    assert red > 50, f"disk that failed the last clone not shown red ({red} px)"
+    assert orange > 50, f"disk that failed the last clone not shown orange ({orange} px)"
+    assert red < 50, f"failed_last is orange since #1580, not red ({red} px)"
 
 
 @requires_native(
@@ -1236,8 +1306,8 @@ def _c_function(src: str, name: str) -> str:
 def test_the_gui_maps_the_three_colours_in_one_place():
     src = (GUI_SRC / "screens_rounds.c").read_text(encoding="utf-8")
     level = _c_function(src, "smart_level")
-    assert '"failed_last")) return 2' in level
-    assert '"fail") || !strcmp(smart, "warn")) return 1' in level
+    assert '"fail")) return 2' in level                     # #1580: SMART תקול = אדום
+    assert '"failed_last") || !strcmp(smart, "warn")) return 1' in level
     assert "return 0;" in level                             # ok/unchecked/כל השאר
     body = _c_function(src, "smart_color")
     assert "lvl == 2 ? t->danger : lvl == 1 ? t->warn : t->led_ok" in body
@@ -1267,28 +1337,27 @@ def test_the_gui_says_unchecked_in_words_next_to_a_green_dot():
     assert "unchecked" not in _c_function(rounds, "smart_level")   # נופל ל-return 0 = ירוק
 
 
-def test_the_gui_panel_offers_replace_or_continue_only_on_a_red_disk():
-    """אדום = החלף / המשך (שני כפתורים, "המשך" שולח skip); כתום נשאר עם
-    שלושה ("כתוב בכל זאת" = rescue). הסוכן ממילא אינו מקבל rescue על אדום
-    (test_smart) — אבל המסך לא מציע מה שלא יתקבל. ‏#1090: הכפתורים יושבים
-    בשורה מתחת לשלושת הכרטיסים (`screen_cloner`), לא בפאנל."""
+def test_the_gui_panel_offers_the_write_through_the_window_on_every_colour():
+    """‏#1580 (נדב 17/10, "כמו Clonezilla"): גם אדום (SMART תקול) מקבל
+    "כתוב בכל זאת…" — הכפתור **פותח** את חלון ה-SMART, והכפתור האדום שבו הוא
+    האישור (main.c: ‏`cloner_smart_ask`); כתום שנכשל בפעם הקודמת — "נסה שוב…".
+    החלף / דלג / כתיבה — שלושה כפתורים. ‏#1090: בשורה מתחת לכרטיסים."""
     src = (GUI_SRC / "screens_cloner.c").read_text(encoding="utf-8")
     fn = _c_function(src, "screen_cloner")
-    assert 'int red = !strcmp(a->st.smart_verdict, "failed_last");' in fn
-    guarded = fn[fn.index("if (!red) {"):]
-    guarded = guarded[:guarded.index("\n        }")]          # סוגר הבלוק, לא ה-`}` של (Rect){…}
-    assert '"כתוב בכל זאת…"' in guarded and "HIT_SMART_RESCUE" in guarded   # rescue רק כשלא אדום (16/10: "…" -- החלון שואל)
-    assert fn.count("HIT_SMART_RESCUE") == 1
-    assert 'red ? "המשך בלי הדיסק" : "דלג על הדיסק"' in fn and "HIT_SMART_SKIP" in fn   # mockup 10/10
-    assert '"החלף דיסק"' in fn and "HIT_SMART_REPLACE" in fn
+    assert 'const char *go = !strcmp(a->st.smart_verdict, "failed_last") ? "נסה שוב…" : "כתוב בכל זאת…";' in fn
+    assert "int red" not in fn
+    assert fn.count("HIT_SMART_RESCUE") == 1 and "HIT_SMART_SKIP" in fn and "HIT_SMART_REPLACE" in fn
+    main = (GUI_SRC / "main.c").read_text(encoding="utf-8")
+    ask = _c_function(main, "cloner_smart_ask")
+    assert "if (!a->st.smart_pending) return;" in ask and '"fail"' not in ask and '"failed_last"' not in ask
 
 
-def test_the_console_paints_failed_last_red_and_fail_orange():
+def test_the_console_paints_fail_red_and_failed_last_orange():
     # ‏#1247: מסך התחנה בדפדפן (station.css / room.js) הוסר — נשארת הקונסולה.
     css = (STATIC / "console.css").read_text(encoding="utf-8")
-    # stage 1 (10/10): text in a colour is the --clr-*-fg token; failed_last stays red
-    assert ".disk-smart.failed_last{background:var(--danger-line); color:var(--clr-danger-fg)}" in css
-    assert ".disk-smart.fail{" not in css                   # כתום = ברירת המחדל של .disk-smart
+    # #1580 (17/10): SMART fail is red; failed_last is the orange default of .disk-smart
+    assert ".disk-smart.fail{background:var(--danger-line); color:var(--clr-danger-fg)}" in css
+    assert ".disk-smart.failed_last{" not in css
     js = (STATIC / "console.js").read_text(encoding="utf-8")
     assert 'failed_last: "נכשל בשיכפול הקודם"' in js
 
@@ -1305,4 +1374,6 @@ def test_the_native_gui_paints_done_with_warning_orange_not_red_or_green():
         assert mode_done in rounds
         assert rounds.index('m->error[0]) snprintf(out, n, "<span foreground=\\"%s\\">הסתיים · עם אזהרה') < rounds.index(mode_done)
     cloner = (REPO / "native-gui" / "src" / "screens_cloner.c").read_text(encoding="utf-8")
-    assert 'text_draw_r(cr, &error, right, y, !strcmp(d->state, "done") ? t->warn : t->danger);' in cloner
+    # 17/10: the row (lcbay.c) -- a done disk's error is its line, in orange
+    assert 'snprintf(y->line, sizeof y->line, "הושלם — %s", d->error); y->line_warn = 1;' in cloner
+    assert "g->line_warn ? t->warn" in (REPO / "native-gui" / "src" / "lcbay.c").read_text(encoding="utf-8")

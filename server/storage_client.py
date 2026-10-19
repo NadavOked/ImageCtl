@@ -165,7 +165,7 @@ class PinnedMTLSClient:
 
     def __init__(self, host: str, port: int, *, expected_secondary_spki: str,
                  cert_pem: bytes, key_pem: bytes, path_prefix: str = "/api/interserver/v1",
-                 timeout: float = 10.0):
+                 timeout: float = 10.0, request_timeout: float | None = None):
         self.host = host
         self.port = port
         self.expected_spki = expected_secondary_spki
@@ -173,6 +173,10 @@ class PinnedMTLSClient:
         self._key_pem = key_pem
         self.path_prefix = path_prefix.rstrip("/")
         self.timeout = timeout
+        #: ‏#1564: הדופק מקצר את התקרה לבקשה; כל השאר נשארים על `REQUEST_TIMEOUT`.
+        #: ‏None נקרא כאן ולא כברירת מחדל בחתימה — ברירת מחדל נקבעת פעם אחת
+        #: בייבוא, והקבוע של המודול הפסיק להיות הכפתור (#1286).
+        self.request_timeout = REQUEST_TIMEOUT if request_timeout is None else request_timeout
         self._conn = None
 
     def __enter__(self) -> "PinnedMTLSClient":
@@ -240,7 +244,7 @@ class PinnedMTLSClient:
         else:
             lines.append("Content-Length: 0")
         request = ("\r\n".join(lines) + "\r\n\r\n").encode() + payload
-        self._conn.limit(REQUEST_TIMEOUT, total=True, waiting_for=f"{method} {path}")
+        self._conn.limit(self.request_timeout, total=True, waiting_for=f"{method} {path}")
         try:
             self._conn.sendall(request)
         except Exception as exc:                             # noqa: BLE001
@@ -422,7 +426,7 @@ class PinnedMTLSClient:
         return already + got
 
     def put_stream(self, path: str, token: str, chunks, total: int, *,
-                   on_progress=None) -> dict:
+                   on_progress=None, headers: dict | None = None) -> dict:
         """‏PUT של גוף זורם באורך ידוע (``total``), עם ``Expect: 100-continue``.
 
         המשני מריץ את בדיקותיו (אימות, "כבר קיים", מקום פנוי) **לפני**
@@ -441,6 +445,7 @@ class PinnedMTLSClient:
             f"Content-Length: {total}",
             "Expect: 100-continue",
         ]
+        lines.extend(f"{key}: {value}" for key, value in (headers or {}).items())
         self._conn.limit(STREAM_IDLE_TIMEOUT, total=False, waiting_for=f"זרם {path}")
         self._conn.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
         status, _headers, raw = _read_http_response(self._conn)
@@ -508,7 +513,7 @@ async def open_tunnel(host: str, port: int, *, expected_secondary_spki: str,
         if ssl_obj is None or ssl_obj.version() != "TLSv1.3":
             raise InterserverClientError("השרת ירד מ-TLS 1.3 — נדחה")
         if not der or not interserver_auth.verify_pinned_spki(der, expected_secondary_spki):
-            raise InterserverClientError("‏SPKI של המשני אינו תואם את ההצמדה — נדחה")
+            raise InterserverClientError("‏SPKI של שרת המשנה אינו תואם את ההצמדה — נדחה")
         request = (
             f"GET {path_prefix.rstrip('/')}{path} HTTP/1.1\r\n"
             f"Host: {host}\r\n"

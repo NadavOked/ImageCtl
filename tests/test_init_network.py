@@ -142,5 +142,5 @@ def test_no_nic_means_no_nic_mark(tmp_path):
 
 def test_init_marks_init_and_modules_in_the_whole_file():
     text = (AGENT / "init").read_text(encoding="utf-8")
-    assert text.index("boot_mark init") < text.index("while read -r _m; do")
-    assert text.index('done < "$MOD_DIR/modules"') < text.index("boot_mark modules")
+    assert text.index("boot_mark init") < text.index("mods_load_all")
+    assert text.index("mods_load_all") < text.index("boot_mark modules")

@@ -195,6 +195,18 @@ def _key(sock: socket.socket, keysym: int, down: bool) -> None:
     sock.sendall(struct.pack(">BBHI", 4, 1 if down else 0, 0, keysym))
 
 
+def test_shifted_number_keysyms_are_mapped_by_the_injector():
+    """Shifted number symbols used to fall through and be silently dropped."""
+    source = MONITOR_C.read_text(encoding="utf-8")
+    shifted_digits = {
+        ")": "KEY_0", "!": "KEY_1", "@": "KEY_2", "#": "KEY_3",
+        "$": "KEY_4", "%": "KEY_5", "^": "KEY_6", "&": "KEY_7",
+        "*": "KEY_8", "(": "KEY_9",
+    }
+    for symbol, code in shifted_digits.items():
+        assert f"case '{symbol}': return {code};" in source
+
+
 def _pointer(sock: socket.socket, buttons: int, x: int, y: int) -> None:
     sock.sendall(struct.pack(">BBHH", 5, buttons, x, y))
 
@@ -585,7 +597,7 @@ def test_secret_file_rotates_after_an_authenticated_client_leaves(tmp_path):
 
 import evdev_lab
 
-UINPUT_NAME = "ImageCtl remote monitor"
+UINPUT_NAME = "ImageSrv remote monitor"
 
 WITH_UINPUT = requires_native(
     ("cc", shutil.which("cc") or shutil.which("gcc")),

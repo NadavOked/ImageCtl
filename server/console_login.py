@@ -71,7 +71,10 @@ async def finish_login(conn, request: Request, response: Response, *,
     if kiosk:
         if info["must_change_password"]:
             raise HTTPException(403, "החלף סיסמה בקונסולה קודם")
-        auth.attach_cookie(response, conn, stored, role, tls)
+        # ‏#1340: בפורט הסוכן העוגייה מסומנת — סיסמה בלבד, ב-HTTP; הקונסולה מסרבת לה.
+        purpose = auth.PURPOSE_KIOSK if getattr(
+            request.app.state, auth.KIOSK_APP_FLAG, False) else ""
+        auth.attach_cookie(response, conn, stored, role, tls, purpose=purpose)
         users.record_login(conn, stored, ip)
         journal(conn, "login", "kiosk", stored)
         # ‏#1499 (נדב 16/10): ערכת הנושא השמורה של המשתמש — ה-GUI הנייטיבי
@@ -91,7 +94,7 @@ async def finish_login(conn, request: Request, response: Response, *,
         journal(conn, "login", "mfa_required", stored)
         return {"mfa_required": True, "challenge": challenge}
 
-    if role == "admin" and not info["is_builtin"]:
+    if console_mfa.enrollment_required(conn, role, info):   # נדב 18/10: רק כשהחיוב דלוק
         auth.attach_cookie(response, conn, stored, role, tls,
                            purpose=auth.PURPOSE_MFAENROLL)
         users.record_login(conn, stored, ip)

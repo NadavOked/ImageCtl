@@ -65,7 +65,8 @@ static void config_json(const App *a, char *out, size_t n, int step) {
     json_pair(&p, &n, "mode", s->static_mode ? "static" : "dhcp", 1);
     json_pair(&p, &n, "address", s->address, 1); json_pair(&p, &n, "netmask", s->netmask, 1);
     json_pair(&p, &n, "gateway", s->gateway, 1); json_pair(&p, &n, "dns", s->dns, 1);
-    json_pair(&p, &n, "hostname", s->hostname, 1); json_pair(&p, &n, "admin_user", s->admin_user, 1);
+    json_pair(&p, &n, "hostname", s->hostname, 1); json_pair(&p, &n, "timezone", s->timezone, 1);
+    json_pair(&p, &n, "admin_user", s->admin_user, 1);
     json_pair(&p, &n, "password", s->password, 1); json_pair(&p, &n, "password_confirm", s->confirm, 1);
     json_pair(&p, &n, "current_password", s->current_password, 1);
     if (step > 0) { int k=snprintf(p,n,",\"step\":%d",step); if(k>0&&(size_t)k<n){p+=k;n-=(size_t)k;} }
@@ -86,7 +87,7 @@ static int run_bridge(const InstallBridge *b, const char *action, const char *in
 }
 
 static int truth(const char *v){return !strcmp(v,"1")||!strcmp(v,"true")||!strcmp(v,"True");}
-static int error_slot(const char *key){static const char *names[]={"disk","role","primary_url","interface","mode","address","netmask","gateway","dns","hostname","admin_user","password","password_confirm","current_password"};for(int i=0;i<14;i++)if(!strcmp(key,names[i]))return i;return -1;}
+static int error_slot(const char *key){static const char *names[]={"disk","role","primary_url","interface","mode","address","netmask","gateway","dns","hostname","admin_user","password","password_confirm","current_password","timezone"};for(int i=0;i<15;i++)if(!strcmp(key,names[i]))return i;return -1;}
 
 static void parse_disk(InstallState *s,char *value){
     if(s->ndisks>=INSTALL_MAX_DISKS){return;}InstallDisk *d=&s->disks[s->ndisks];memset(d,0,sizeof *d);
@@ -117,6 +118,7 @@ static void parse_lines(InstallState *s,char *text,const char *action){
         else if(!strcmp(line,"primary_url"))snprintf(s->primary_url,sizeof s->primary_url,"%s",eq);
         else if(!strcmp(line,"interface")){for(int i=0;i<s->nnics;i++)if(!strcmp(s->nics[i].name,eq))s->nic=i;}
         else if(!strcmp(line,"mode"))s->static_mode=!strcmp(eq,"static");else if(!strcmp(line,"hostname"))snprintf(s->hostname,sizeof s->hostname,"%s",eq);
+        else if(!strcmp(line,"timezone"))snprintf(s->timezone,sizeof s->timezone,"%s",eq);
         else if(!strcmp(line,"admin_user"))snprintf(s->admin_user,sizeof s->admin_user,"%s",eq);else if(!strcmp(line,"ok"))s->primary_ok=truth(eq);
         else if(!strcmp(line,"name"))snprintf(s->primary_name,sizeof s->primary_name,"%s",eq);else if(!strcmp(line,"version"))snprintf(s->primary_version,sizeof s->primary_version,"%s",eq);
         else if(!strcmp(line,"fingerprint"))snprintf(s->primary_fingerprint,sizeof s->primary_fingerprint,"%s",eq);else if(!strcmp(line,"error"))snprintf(s->error,sizeof s->error,"%s",eq);
@@ -141,9 +143,9 @@ void install_demo(App *a,int view){InstallState *s=&a->install;memset(s,0,sizeof
     s->nnics=3;s->nic=0;s->secondary=1;
     s->nics[0]=(InstallNic){"ens18","Intel I219-LM","52:54:00:aa:10:01","מחובר","10.44.10.37/24","DHCP · שער 10.44.10.254","10.44.10.37","255.255.255.0","10.44.10.254","10.44.10.2"};
     s->nics[1]=(InstallNic){"ens19","Intel I350","52:54:00:aa:12:01","מחובר","—","אין כתובת (אין DHCP ברשת הזו)","","","",""};s->nics[2]=(InstallNic){"ens20","Intel I350","52:54:00:aa:14:01","לא מודלק","—","—","","","",""};
-    snprintf(s->primary_url,sizeof s->primary_url,"192.168.68.250");snprintf(s->hostname,sizeof s->hostname,"imagectl-haifa");snprintf(s->admin_user,sizeof s->admin_user,"admin");
+    snprintf(s->primary_url,sizeof s->primary_url,"192.168.68.250");snprintf(s->hostname,sizeof s->hostname,"imagesrv-haifa");snprintf(s->timezone,sizeof s->timezone,"Asia/Jerusalem");snprintf(s->admin_user,sizeof s->admin_user,"admin");
     snprintf(s->password,sizeof s->password,"Imag3ctl!haifa");snprintf(s->confirm,sizeof s->confirm,"Imag3ctl!haifa");seed_from_nic(s);s->primary_ok=s->primary_checked=1;
-    snprintf(s->primary_name,sizeof s->primary_name,"imagectl-ta");snprintf(s->primary_version,sizeof s->primary_version,"v0.52.1");snprintf(s->primary_fingerprint,sizeof s->primary_fingerprint,"3fa3221ea017f9ce3493fe0fe0c180aaa5ea6293a2a399b0f14977280a074915");snprintf(s->phase,sizeof s->phase,"packages");s->progress_pct=52;
+    snprintf(s->primary_name,sizeof s->primary_name,"imagesrv-ta");snprintf(s->primary_version,sizeof s->primary_version,"v0.52.1");snprintf(s->primary_fingerprint,sizeof s->primary_fingerprint,"3fa3221ea017f9ce3493fe0fe0c180aaa5ea6293a2a399b0f14977280a074915");snprintf(s->phase,sizeof s->phase,"packages");s->progress_pct=52;
     snprintf(s->title,sizeof s->title,"Installing ImageSrv packages");snprintf(s->log,sizeof s->log,"Setting up imagectl-server");if(view==INSTALL_FAILED)snprintf(s->error,sizeof s->error,"packages-failed: apt returned exit 100");
     snprintf(s->console_url,sizeof s->console_url,"https://10.44.10.37:8081");snprintf(s->user,sizeof s->user,"admin");snprintf(s->output,sizeof s->output,"[10:43:02] bootstrap complete\n[10:43:08] unpacking packages\n[10:43:11] apt returned exit 100\n");a->focus=HIT_INSTALL_ADMIN_USER;if(view==INSTALL_DONE)arm_reboot(s,monotonic_s());}
 
@@ -151,14 +153,15 @@ static int finish_install(App *a,InstallBridge *b){a->install.error[0]=0;if(call
 static void route_engine_state(App *a,InstallBridge *b){InstallState *s=&a->install;int state=engine_state_index(s->phase);if(state<0){snprintf(s->error,sizeof s->error,"מצב מנוע לא מוכר: %s",s->phase);s->view=INSTALL_FAILED;}else if(!strcmp(s->phase,"ready"))s->view=INSTALL_DISK;else if(!strcmp(s->phase,"done"))finish_install(a,b);else if(!strcmp(s->phase,"failed"))s->view=INSTALL_FAILED;else s->view=INSTALL_PROGRESS;}
 
 int install_start(App *a,InstallBridge *b,int demo){if(demo){install_demo(a,INSTALL_DISK);return 0;}memset(&a->install,0,sizeof a->install);a->install.active=1;a->install.view=INSTALL_DISK;a->install.disk=a->install.nic=a->install.existing_disk=-1;
-    if(call(a,b,"inventory","{}")){return -1;}seed_from_nic(&a->install);if(!a->install.hostname[0])snprintf(a->install.hostname,sizeof a->install.hostname,"imagectl-server");if(!a->install.admin_user[0])snprintf(a->install.admin_user,sizeof a->install.admin_user,"admin");
+    if(call(a,b,"inventory","{}")){return -1;}seed_from_nic(&a->install);if(!a->install.hostname[0])snprintf(a->install.hostname,sizeof a->install.hostname,"imagesrv-server");if(!a->install.admin_user[0])snprintf(a->install.admin_user,sizeof a->install.admin_user,"admin");
+    if(!a->install.timezone[0])snprintf(a->install.timezone,sizeof a->install.timezone,"Asia/Jerusalem");   /* #1447: Nadav's default */
     if(!call(a,b,"progress","{}")&&strcmp(a->install.phase,"ready")){route_engine_state(a,b);b->next_poll=0;}return 0;}
 
 /* #1310: green is a positive answer to THIS address -- edits reset it (below) */
 int install_role_ready(const InstallState *s){return !s->secondary||(s->primary_checked&&s->primary_ok);}
 int install_password_ready(const InstallState *s){const char *p=s->password;int letter=0,digit=0,special=0;for(;*p;p++){letter|=(*p>='A'&&*p<='Z')||(*p>='a'&&*p<='z');digit|=*p>='0'&&*p<='9';special|=strchr("!@#$%^&*(),.?\":{}|<>",*p)!=NULL;}return s->admin_user[0]&&strlen(s->password)>=8&&letter&&digit&&special&&!strcmp(s->password,s->confirm);}
-static char *field(InstallState *s,int id,size_t *n){switch(id){case HIT_INSTALL_PRIMARY_URL:*n=sizeof s->primary_url;return s->primary_url;case HIT_INSTALL_ADDRESS:*n=sizeof s->address;return s->address;case HIT_INSTALL_NETMASK:*n=sizeof s->netmask;return s->netmask;case HIT_INSTALL_GATEWAY:*n=sizeof s->gateway;return s->gateway;case HIT_INSTALL_DNS:*n=sizeof s->dns;return s->dns;case HIT_INSTALL_HOSTNAME:*n=sizeof s->hostname;return s->hostname;case HIT_INSTALL_ADMIN_USER:*n=sizeof s->admin_user;return s->admin_user;case HIT_INSTALL_PASSWORD:*n=sizeof s->password;return s->password;case HIT_INSTALL_CONFIRM:*n=sizeof s->confirm;return s->confirm;case HIT_INSTALL_CURRENT_PASSWORD:*n=sizeof s->current_password;return s->current_password;default:*n=0;return NULL;}}
-static int fields(InstallState *s,int *ids){int n=0;if(s->view==INSTALL_ROLE&&s->secondary)ids[n++]=HIT_INSTALL_PRIMARY_URL;else if(s->view==INSTALL_NETWORK&&s->static_mode){ids[n++]=HIT_INSTALL_ADDRESS;ids[n++]=HIT_INSTALL_NETMASK;ids[n++]=HIT_INSTALL_GATEWAY;ids[n++]=HIT_INSTALL_DNS;}else if(s->view==INSTALL_HOSTNAME)ids[n++]=HIT_INSTALL_HOSTNAME;else if(s->view==INSTALL_ADMIN){ids[n++]=HIT_INSTALL_ADMIN_USER;if(s->rerun)ids[n++]=HIT_INSTALL_CURRENT_PASSWORD;ids[n++]=HIT_INSTALL_PASSWORD;ids[n++]=HIT_INSTALL_CONFIRM;}return n;}
+static char *field(InstallState *s,int id,size_t *n){switch(id){case HIT_INSTALL_PRIMARY_URL:*n=sizeof s->primary_url;return s->primary_url;case HIT_INSTALL_ADDRESS:*n=sizeof s->address;return s->address;case HIT_INSTALL_NETMASK:*n=sizeof s->netmask;return s->netmask;case HIT_INSTALL_GATEWAY:*n=sizeof s->gateway;return s->gateway;case HIT_INSTALL_DNS:*n=sizeof s->dns;return s->dns;case HIT_INSTALL_HOSTNAME:*n=sizeof s->hostname;return s->hostname;case HIT_INSTALL_TIMEZONE:*n=sizeof s->timezone;return s->timezone;case HIT_INSTALL_ADMIN_USER:*n=sizeof s->admin_user;return s->admin_user;case HIT_INSTALL_PASSWORD:*n=sizeof s->password;return s->password;case HIT_INSTALL_CONFIRM:*n=sizeof s->confirm;return s->confirm;case HIT_INSTALL_CURRENT_PASSWORD:*n=sizeof s->current_password;return s->current_password;default:*n=0;return NULL;}}
+static int fields(InstallState *s,int *ids){int n=0;if(s->view==INSTALL_ROLE&&s->secondary)ids[n++]=HIT_INSTALL_PRIMARY_URL;else if(s->view==INSTALL_NETWORK&&s->static_mode){ids[n++]=HIT_INSTALL_ADDRESS;ids[n++]=HIT_INSTALL_NETMASK;ids[n++]=HIT_INSTALL_GATEWAY;ids[n++]=HIT_INSTALL_DNS;}else if(s->view==INSTALL_HOSTNAME){ids[n++]=HIT_INSTALL_HOSTNAME;ids[n++]=HIT_INSTALL_TIMEZONE;}else if(s->view==INSTALL_ADMIN){ids[n++]=HIT_INSTALL_ADMIN_USER;if(s->rerun)ids[n++]=HIT_INSTALL_CURRENT_PASSWORD;ids[n++]=HIT_INSTALL_PASSWORD;ids[n++]=HIT_INSTALL_CONFIRM;}return n;}
 /* #1206: the keyboard ring. The ESXi web console delivers the arrows but
  * swallows Tab, so Up/Down (and Tab/Shift+Tab) walk every control on the
  * screen -- radio options, fields, the inline check button. Landing on a
@@ -173,8 +176,8 @@ static void move_focus(App *a,int dir){int ids[INSTALL_MAX_STOPS],n=stops(&a->in
  * receiving keystrokes (typed on the admin screen, landed in the hostname;
  * ESXi 21/09), and the first Tab only moved it here. */
 static void refocus(App *a){a->focus=home(&a->install);}
-static int any_errors(const InstallState *s){for(int i=0;i<14;i++)if(s->field_error[i][0])return 1;return 0;}
-static int screen_errors(const InstallState *s,int view){int first=0,last=13;if(view==INSTALL_DISK)last=0;else if(view==INSTALL_ROLE){first=1;last=2;}else if(view==INSTALL_NETWORK){first=3;last=8;}else if(view==INSTALL_HOSTNAME){first=last=9;}else if(view==INSTALL_ADMIN)first=10;for(int i=first;i<=last;i++)if(s->field_error[i][0])return 1;return 0;}
+static int any_errors(const InstallState *s){for(int i=0;i<15;i++)if(s->field_error[i][0])return 1;return 0;}
+static int screen_errors(const InstallState *s,int view){int first=0,last=13;if(view==INSTALL_DISK)last=0;else if(view==INSTALL_ROLE){first=1;last=2;}else if(view==INSTALL_NETWORK){first=3;last=8;}else if(view==INSTALL_HOSTNAME){if(s->field_error[14][0])return 1;first=last=9;}else if(view==INSTALL_ADMIN){first=10;last=13;}for(int i=first;i<=last;i++)if(s->field_error[i][0])return 1;return 0;}
 static void back(App *a){InstallState *s=&a->install;if(s->view==INSTALL_FAILED){s->view=INSTALL_DISK;refocus(a);return;}if(s->view>INSTALL_DISK&&s->view<=INSTALL_SUMMARY){s->view--;refocus(a);}}
 static void check_primary_call(App *a,InstallBridge *b){char json[512],*p=json;size_t n=sizeof json;*p++='{';n--;json_pair(&p,&n,"primary_url",a->install.primary_url,0);if(n>1){*p++='}';*p=0;}a->install.error[0]=0;a->install.primary_checked=1;a->install.primary_ok=0;a->install.primary_name[0]=a->install.primary_version[0]=a->install.primary_fingerprint[0]=0;if(call(a,b,"check-primary",json)){a->install.primary_ok=0;snprintf(a->install.primary_error,sizeof a->install.primary_error,"פעולת הגשר נכשלה: check-primary");}else snprintf(a->install.primary_error,sizeof a->install.primary_error,"%s",a->install.error);a->install.error[0]=0;}
 static void next(App *a,InstallBridge *b){InstallState *s=&a->install;if(s->view==INSTALL_DISK&&(s->disk<0||!s->disk_ack))return;if(s->view==INSTALL_SUMMARY){char json[4096];config_json(a,json,sizeof json,0);s->error[0]=0;if(!call(a,b,"apply",json)&&!any_errors(s)&&!s->error[0]){snprintf(s->phase,sizeof s->phase,"partitioning");s->progress_pct=0;s->view=INSTALL_PROGRESS;b->next_poll=0;}return;}char json[4096];int view=s->view,step=view==INSTALL_ADMIN?0:(view==INSTALL_DISK?1:view-INSTALL_DISK);config_json(a,json,sizeof json,step);s->error[0]=0;if(!call(a,b,"validate",json)&&!screen_errors(s,view)){s->view++;refocus(a);}}

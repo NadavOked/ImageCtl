@@ -29,6 +29,10 @@ websockets==15.0.1
 # אימות שקולט תעודת-לקוח חתומה-עצמית לא-מוכרת בזמן ה-pairing (stdlib ssl אינו
 # יכול — הוא דורש CA). מוצמדים לגרסת דביאן 13 (trixie), כמו fastapi/uvicorn —
 # ‏python3-cryptography 43.0.0 ו-python3-openssl 25.0.0 מותקנים ב-apt במתקין.
+# ‏Dependabot מדווח על ההצמדות האלה כפגיעות. אל תעלו אותן כדי להשתיק —
+# SECURITY.md, סעיף "התראות Dependabot על תלויות מוצמדות", מסביר, התראה אחר התראה,
+# מה תוקן ב-Debian (‏43.0.0-3+deb13u1 / 25.0.0-1+deb13u1), מה לא, ולמה
+# הקוד לא מגיע לנתיבים הפגיעים (‏tests/test_pinned_deps_unreachable_paths.py).
 cryptography==43.0.0
 pyOpenSSL==25.0.0
 # ‏#1150: QR במסך הגדרת ה-MFA (‏`console_mfa._qr_svg`, ‏SvgPathImage — בלי PIL).

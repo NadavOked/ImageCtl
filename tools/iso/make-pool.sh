@@ -5,6 +5,16 @@
 #
 #   sudo tools/iso/make-pool.sh --out /root/ic-iso-tmp/repo
 #   sudo tools/iso/make-pool.sh --index-only <עץ-ISO>
+#   sudo tools/iso/make-pool.sh --security --out /root/ic-security-pool
+#
+# ‏#1411: המארח הבונה **חייב** לכלול trixie-security במקורות שלו — אחרת ה-pool
+# (וכל שרת שיותקן ממנו) קפוא על הגרסאות של יום ההוצאה, והסקריפט נכשל בשמו.
+#
+# ‏--security (‏#1411): רק החבילות מאותה סגירה שהגרסה שלהן מגיעה מ-
+# trixie-security, ארוזות ל-tar אחד (‏imagectl-security-pool-<תאריך>.tar) עם
+# ‏security-pool.json לידו — הגיבוב, הגודל והתאריך. את ה-json מעתיקים ל-
+# ‏install/security-pool.json (קומיט, תג), ו-publish-to-public.sh מצמיד את ה-tar
+# ל-Release של התג. כפתור העדכון מתקין ממנו בלבד (install/security-upgrade.sh).
 #
 # רץ על דביאן 13 עם אינטרנט (שרת המעבדה). **התקנה מה-ISO רצה בלי
 # אינטרנט**, ולכן כל חבילה שחסרה כאן נכשלת רק מול שרת אמיתי — הסקריפט
@@ -22,6 +32,8 @@
 #
 # הפלט (‏--out DIR):
 #   DIR/pool/{main,contrib,...}/imagectl/*.deb   לפי ה-Section של החבילה
+#   DIR/pool-date                                היום (UTC) שבו נלקחו הגרסאות —
+#                                                ‏build-iso.sh כותב אותו למניפסט
 #   DIR/dists/trixie/<רכיב>/binary-amd64/{Packages.gz,Release}
 #   DIR/dists/trixie/Release                     לא חתום — כמו ה-netinst הרשמי
 #                                                עצמו; ‏d-i מוסיף את הדיסק דרך
@@ -35,19 +47,22 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PACKAGES_FILE="$SCRIPT_DIR/packages.txt"
 OUT=""
 INDEX_ONLY=""
+SECURITY=""
 SUITE="trixie"
 ARCH="amd64"
 
 usage() {
     cat <<'EOF'
-ImageCtl — בניית ה-repo המקומי של ה-ISO.
+ImageSrv — בניית ה-repo המקומי של ה-ISO.
 
   sudo tools/iso/make-pool.sh --out DIR [--packages FILE]
   sudo tools/iso/make-pool.sh --index-only DIR
+  sudo tools/iso/make-pool.sh --security --out DIR
 
   --out DIR         לאן להוריד (pool/ + dists/ נכתבים מתחתיו)
   --packages FILE   ברירת מחדל: tools/iso/packages.txt
   --index-only DIR  רק dists/ מעל DIR/pool קיים (בלי apt)
+  --security        רק עדכוני trixie-security של הסגירה, כ-tar + security-pool.json (#1411)
 EOF
 }
 
@@ -56,6 +71,7 @@ while [[ $# -gt 0 ]]; do
         --out)        OUT="${2:?}"; shift 2 ;;
         --packages)   PACKAGES_FILE="${2:?}"; shift 2 ;;
         --index-only) INDEX_ONLY="${2:?}"; shift 2 ;;
+        --security)   SECURITY=1; shift ;;
         -h|--help)    usage; exit 0 ;;
         *) printf 'unknown option: %s  (try --help)\n' "$1" >&2; exit 2 ;;
     esac
@@ -111,7 +127,7 @@ EOF
         printf 'Origin: Debian\nLabel: Debian\nSuite: stable\nCodename: %s\n' "$SUITE"
         printf 'Date: %s\n' "$(date -u -R)"
         printf 'Architectures: %s\nComponents: %s\n' "$ARCH" "${comps% }"
-        printf 'Description: Debian 13 + ImageCtl offline installer repository\n'
+        printf 'Description: Debian 13 + ImageSrv offline installer repository\n'
         # ‏apt מזהה אינדקס לפי השם **הלא-דחוס** (main/binary-amd64/Packages)
         # ורק אז בוחר דחיסה שרשומה. ‏Release שמונה רק את Packages.gz גורם
         # ל-apt לדלג על הרכיב **בשקט** — נמדד 19/09 מול ה-ISO: "Unable to
@@ -144,8 +160,11 @@ fi
 # ---------------------------------------------------------------------------
 [[ -n "$OUT" ]] || { usage >&2; exit 2; }
 [[ -f "$PACKAGES_FILE" ]] || die "אין $PACKAGES_FILE"
-[[ $EUID -eq 0 ]] || die "צריך root (apt-get)"
+[[ "$(id -u)" -eq 0 ]] || die "צריך root (apt-get)"
 command -v apt-get >/dev/null || die "אין apt-get — זה רץ על דביאן"
+if [[ -n "$SECURITY" && -e "$OUT/pool" ]]; then
+    die "$OUT/pool כבר קיים — ‏--security בונה מאגר שלם מאפס, לתיקייה ריקה"
+fi
 
 mapfile -t PKGS < <(sed 's/#.*//' "$PACKAGES_FILE" | tr -s ' \t' '\n' | grep -v '^$' | LC_ALL=C sort -u)
 (( ${#PKGS[@]} )) || die "packages.txt ריק"
@@ -153,6 +172,13 @@ printf 'make-pool: %d חבילות מבוקשות\n' "${#PKGS[@]}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq || die "apt-get update נכשל — בלי רשימות עדכניות אין מה להוריד"
+
+# ‏#1411: בלי trixie-security במקורות, ה-pool הוא של יום ההוצאה — ושרת שמותקן
+# ממנו לא יקבל את התיקונים לעולם (אין לו מקור חי). ראיה חיובית: ‏apt-cache policy
+# מונה רק מקורות שיש להם רשימות, כלומר שה-update למעלה באמת הביא.
+policy=$(apt-cache policy 2>&1) || die "apt-cache policy נכשל — לא נבדק אם trixie-security במקורות: $policy"
+[[ "$policy" == *"n=trixie-security"* ]] \
+    || die "trixie-security אינו במקורות של המארח הבונה (apt-cache policy). הוסף ל-sources.list: deb http://security.debian.org/debian-security trixie-security main contrib — ואז apt-get update (#1411)"
 
 # שלב 1 — לכל שם יש מועמד. שם בלי מועמד (typo, חבילה שירדה, contrib לא
 # מופעל) הוא הכישלון ש-R25 מזהיר ממנו, והוא נעצר כאן ולא מול שרת.
@@ -171,6 +197,63 @@ DL="$OUT/download"
 install -d "$DL/partial" "$OUT/pool"
 EMPTY_STATUS="$OUT/.empty-status"
 : > "$EMPTY_STATUS"
+POOL_DATE=$(date -u +%Y-%m-%d)
+
+# מיון לרכיבים לפי ה-Section שבחבילה עצמה (contrib/fonts → contrib).
+sort_into_pool() {
+    local deb section comp n=0
+    for deb in "$DL"/*.deb; do
+        [[ -e "$deb" ]] || die "לא הורד אף .deb אל $DL"
+        section=$(dpkg-deb -f "$deb" Section)
+        case "$section" in
+            */*) comp="${section%%/*}" ;;
+            *)   comp="main" ;;
+        esac
+        install -d "$OUT/pool/$comp/imagectl"
+        mv -f "$deb" "$OUT/pool/$comp/imagectl/"
+        n=$((n + 1))
+    done
+    rm -rf "$DL" "$EMPTY_STATUS"
+    printf 'make-pool: %d קבצי .deb ב-%s/pool\n' "$n" "$OUT"
+}
+
+# ---------------------------------------------------------------------------
+# ‏--security (‏#1411): עדכוני trixie-security של הסגירה בלבד, כ-tar + json
+# ---------------------------------------------------------------------------
+if [[ -n "$SECURITY" ]]; then
+    # אותה סגירה (status ריק, Recommends), בסימולציה: שורת `Inst` נושאת את מקור
+    # הגרסה ("Debian-Security:13/stable-security"). נשמר רק מה שמגיע משם.
+    sim=$(apt-get -s -o Dir::State::status="$EMPTY_STATUS" -o Debug::NoLocking=1 \
+              -o APT::Install-Recommends=true install "${PKGS[@]}" 2>&1) \
+        || { printf '%s\n' "$sim" | tail -n 5 >&2; die "apt-get -s על הסגירה המלאה נכשל"; }
+    mapfile -t SEC < <(sed -nE 's/^Inst ([^ ]+) (\[[^]]*\] )?\(([^ ]+) [^)]*-[Ss]ecurity[, ][^)]*\).*$/\1=\3/p' <<<"$sim")
+    # אפס הוא כמעט בוודאות פענוח שנשבר, לא "אין עדכונים" (עיקרון 5).
+    (( ${#SEC[@]} )) || die "אף חבילה בסגירה אינה מ-trixie-security — הפענוח של apt-get -s נשבר, או שהמקור לא נקרא"
+    printf 'make-pool: %d חבילות מ-trixie-security\n' "${#SEC[@]}"
+    ( cd "$DL" && apt-get download "${SEC[@]}" ) || die "apt-get download נכשל"
+    for spec in "${SEC[@]}"; do      # ראיה חיובית: קובץ לכל חבילה=גרסה (נקודתיים = %3a)
+        p=${spec%%=*}; v=${spec#*=}
+        found=$(find "$DL" -maxdepth 1 -name "${p}_${v//:/%3a}_*.deb" -print -quit)
+        [[ -n "$found" ]] || die "ההורדה הסתיימה בלי $p $v"
+    done
+    sort_into_pool
+    write_index "$OUT"
+    printf '%s\n' "$POOL_DATE" > "$OUT/pool-date"
+    ASSET="imagectl-security-pool-$POOL_DATE.tar"
+    tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="$POOL_DATE 00:00Z" \
+        -cf "$OUT/$ASSET" -C "$OUT" pool dists pool-date || die "אריזת $ASSET נכשלה"
+    sha=$(sha256sum "$OUT/$ASSET" | cut -d' ' -f1) && size=$(stat -c %s "$OUT/$ASSET") \
+        || die "הגיבוב של $ASSET לא חושב"
+    printf '{\n "asset": "%s",\n "date": "%s",\n "packages": %d,\n "sha256": "%s",\n "size": %d,\n "suite": "trixie-security"\n}\n' \
+        "$ASSET" "$POOL_DATE" "${#SEC[@]}" "$sha" "$size" > "$OUT/security-pool.json"
+    # ראיה חיובית: ה-json נקרא באותו קורא שהשרת והפרסום מריצים.
+    lock_out=$(python3 -I "$SCRIPT_DIR/../../install/security-pool-lock.py" "$OUT/security-pool.json" 2>&1) \
+        || die "security-pool.json שנכתב אינו עובר את install/security-pool-lock.py: $lock_out"
+    printf 'make-pool: %s (%s בתים, sha256 %s)\n' "$OUT/$ASSET" "$size" "$sha"
+    printf 'make-pool: הבא — להעתיק את %s ל-install/security-pool.json (קומיט + תג), ולפרסם עם IMAGECTL_SECURITY_POOL=%s\n' \
+        "$OUT/security-pool.json" "$OUT/$ASSET"
+    exit 0
+fi
 
 printf 'make-pool: מוריד את הסגירה המלאה אל %s\n' "$DL"
 apt-get -y --download-only \
@@ -181,21 +264,8 @@ apt-get -y --download-only \
     install "${PKGS[@]}" \
     || die "apt-get --download-only נכשל"
 
-# שלב 2 — מיון לרכיבים לפי ה-Section שבחבילה עצמה (contrib/fonts → contrib).
-n=0
-for deb in "$DL"/*.deb; do
-    [[ -e "$deb" ]] || die "לא הורד אף .deb אל $DL"
-    section=$(dpkg-deb -f "$deb" Section)
-    case "$section" in
-        */*) comp="${section%%/*}" ;;
-        *)   comp="main" ;;
-    esac
-    install -d "$OUT/pool/$comp/imagectl"
-    mv -f "$deb" "$OUT/pool/$comp/imagectl/"
-    n=$((n + 1))
-done
-rm -rf "$DL" "$EMPTY_STATUS"
-printf 'make-pool: %d קבצי .deb ב-%s/pool\n' "$n" "$OUT"
+# שלב 2 — מיון לרכיבים.
+sort_into_pool
 
 # שלב 3 — ראיה חיובית: לכל שם מבוקש יש קובץ. שם ללא קובץ = כישלון.
 missing=()
@@ -209,4 +279,5 @@ if (( ${#missing[@]} )); then
 fi
 
 write_index "$OUT"
+printf '%s\n' "$POOL_DATE" > "$OUT/pool-date"
 du -sh "$OUT/pool" | awk '{print "make-pool: גודל ה-pool: " $1}'

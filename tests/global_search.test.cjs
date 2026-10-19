@@ -51,7 +51,7 @@ const titles = (t, q) => t.run(`globalSearchGroups(${JSON.stringify(q)})`).map((
 test('admin: images, build/cloner machines (not classroom), users, secondaries and pages — grouped', () => {
   const t = setup(); load(t, 'admin');
   const groups = t.run('globalSearchGroups("win")');
-  assert.deepEqual(groups.map((g) => g.title), ["אימג'ים", 'מחשבים', 'משתמשים', 'שרתים משניים']);
+  assert.deepEqual(groups.map((g) => g.title), ["אימג'ים", 'מחשבים', 'משתמשים', 'שרתי משנה']);
   const machines = groups.find((g) => g.title === 'מחשבים').rows.map((r) => r.label);
   assert.deepEqual(machines, ['win-build', 'win-cloner'], 'a classroom machine is not shown in v1');
   assert.ok(titles(t, 'סקירה').includes('דפים'), 'pages by name');

@@ -45,10 +45,6 @@ def _epoch(iso: str | None) -> float:
     return (when if when.tzinfo else when.replace(tzinfo=timezone.utc)).timestamp()
 
 
-def is_secondary(conn) -> bool:
-    return conn is not None and storage_nodes.role(conn) == storage_nodes.ROLE_SECONDARY
-
-
 def has_parent(conn) -> bool:
     return storage_nodes.has_parent(conn)
 

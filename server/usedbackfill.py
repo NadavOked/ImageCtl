@@ -38,6 +38,7 @@ import zlib
 from pathlib import Path
 
 from .images import _whole, carries_a_stream_file, guarded_image_path
+from .vmdisk import partclone_for_fs
 
 log = logging.getLogger("imagectl.usedbackfill")
 
@@ -48,6 +49,17 @@ assert _LAYOUT.size == HEADER_SIZE
 _MAGIC = b"partclone-image"
 _VERSION = b"0002"
 _ENDIAN = 0xC0DE
+
+
+def captured_raw(part: dict) -> bool:
+    """האם הסוכן קלט את המחיצה ב-`partclone.dd` — ולכן אין בזרם כותרת (‏#1641).
+
+    ‏`partclone.dd` מעתיק בייטים וזהו; כותרת `image_desc_v2` יש רק לשאר
+    הכלים. הכלל הוא `partclone_for_fs` של הסוכן על `fs` שבמניפסט (‏MSR:
+    ‏`fs: ""`) — **לא** שם הקובץ, שהוא `.pcl.zst` בשני המקרים, ולא "לא
+    נמצאה כותרת": מחיצת NTFS/FAT שאין לה כותרת ממשיכה להיכשל בקול.
+    """
+    return partclone_for_fs(part.get("fs") or "") == "partclone.dd"
 
 
 def parse_header(raw: bytes | None) -> dict | None:
@@ -107,7 +119,7 @@ def derive(manifest: dict, *, read=read_head) -> tuple[dict[int, int], list[str]
     problems: list[str] = []
     for part in manifest.get("partitions") or []:
         if not isinstance(part, dict) or part.get("used_bytes") is not None \
-                or not carries_a_stream_file(part):
+                or not carries_a_stream_file(part) or captured_raw(part):
             continue
         index = part.get("index")
         path = guarded_image_path(image_dir, part.get("file"))
@@ -172,6 +184,9 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(part, dict) or not carries_a_stream_file(part):
             continue
         index, name = part.get("index"), part.get("file")
+        if captured_raw(part):
+            print(f"p{index} {name} RAW DD CAPTURE (no partclone header)")
+            continue
         path = guarded_image_path(image_dir, name)
         header = parse_header(read_head(path)) if path is not None else None
         if header is None:

@@ -19,6 +19,36 @@ from . import auth, login_guard, totp, users
 from .api import ServerContext
 from .db import _write_lock, get_setting, journal, now_iso, writing
 
+#: ‏נדב 18/10: "תכלס לא צריך לזה MFA. אם בנוי, אפשר להפעיל או לא". ‏"true" = כל מנהל
+#: שאינו המקומי (is_builtin) חייב לרשום MFA בכניסה ובהחלפת סיסמה — ההתנהגות שהייתה
+#: עד rc6 לכולם. ברירת המחדל "false" (‏db.DEFAULT_SETTINGS): אין חיוב; מי שהפעיל MFA
+#: ממשיך להתבקש לקוד, ומ"החשבון שלי" אפשר להפעיל או לבטל (‏/me/mfa/disable, עם קוד).
+SETTING = "mfa_required_for_admins"
+
+#: הסירוב לביטול עצמי כשהחיוב דלוק — אחרת הכניסה הבאה הייתה מחייבת רישום מחדש.
+SELF_DISABLE_REQUIRED_HE = ("אימות דו-שלבי חובה למנהלים בשרת הזה — כדי לבטל אותו לעצמך, "
+                            "כבו קודם את \"חיוב אימות דו-שלבי למנהלים\" בהגדרות ← אבטחה")
+
+
+def mfa_demanded(conn: sqlite3.Connection, info: dict) -> bool:
+    """האם MFA חובה למשתמש הזה: החיוב הכללי למנהלים דלוק, או שסומן לו "דרוש אימות
+    דו-שלבי" (נדב 18/10, ‏users.mfa_required)."""
+    return get_setting(conn, SETTING) == "true" or bool(info.get("mfa_required"))
+
+
+def enrollment_required(conn: sqlite3.Connection, role: str, info: dict) -> bool:
+    """האם המשתמש חייב לרשום MFA לפני session מלאה. רק מנהל (ל-deploy אין קונסולה,
+    ו-MFA הוא למנהל בלבד), לא המקומי (is_builtin), ורק כש-MFA חובה לו."""
+    return (role == "admin" and not info["is_builtin"] and not info["mfa_enabled"]
+            and mfa_demanded(conn, info))
+
+
+#: ‏409 כשסומן למשתמש "דרוש אימות דו-שלבי" (נדב 18/10).
+SELF_DISABLE_FLAGGED_HE = ('למשתמש שלך מסומן "דרוש אימות דו-שלבי" — מנהל יכול להסיר את הסימון'
+                           ' בדף "משתמשים והרשאות"')
+#: ‏400 לאיפוס של עצמך מדף המשתמשים.
+RESET_SELF_HE = 'את האימות הדו-שלבי שלך מבטלים ב"החשבון שלי" (עם הסיסמה וקוד)'
+
 CHALLENGE_TTL = 5 * 60
 BACKUP_COUNT = 8
 BACKUP_LEN = 10
@@ -188,11 +218,63 @@ def register(router: APIRouter, ctx: ServerContext, current_user, admin_only, tl
         auth.attach_cookie(response, ctx.conn, username, role, tls)
         return {"mfa_enabled": True, "backup_codes": codes}
 
+    @router.post("/me/mfa/disable")
+    async def mfa_disable_self(request: Request, response: Response,
+                               user=Depends(current_user)):
+        """נדב 18/10: מי שהפעיל MFA לעצמו יכול לבטל אותו — עם **הסיסמה הנוכחית וקוד**
+        (TOTP או קוד גיבוי). כשהחיוב דלוק — ‏409: ביטול היה מוביל לרישום כפוי בכניסה הבאה.
+
+        סקירת האבטחה על 7534e0e7: בלי הגבלה, session גנוב יכול לנחש קוד עד שיצליח.
+        עכשיו אותו מונה ואותם ספים כמו ב-`/login/mfa` (‏login_guard — שם משתמש + IP):
+        בדיקה לפני כל אימות, כשל נספר (סיסמה או קוד), הצלחה מאפסת; בזמן נעילה גם
+        סיסמה וקוד נכונים נדחים."""
+        body = await request.json()
+        username, role = user
+        info = users.flags(ctx.conn, username)
+        if info["is_builtin"]:
+            raise HTTPException(403, "builtin_no_mfa")
+        if not info["mfa_enabled"] or not info["mfa_secret"]:
+            raise HTTPException(400, "MFA אינו מופעל")
+        if get_setting(ctx.conn, SETTING) == "true":
+            raise HTTPException(409, SELF_DISABLE_REQUIRED_HE)
+        if info.get("mfa_required"):
+            raise HTTPException(409, SELF_DISABLE_FLAGGED_HE)
+        ip = request.client.host if request.client else "?"
+        try:
+            login_guard.check(ctx.conn, username, ip)
+        except login_guard.LoginBlocked as exc:
+            headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else {}
+            raise HTTPException(exc.status, exc.message, headers=headers)
+        password_ok = users.verify(ctx.conn, username, str(body.get("current_password") or "")) is not None
+        code = str(body.get("code") or "")
+        step = totp.verify_totp(info["mfa_secret"], code) if password_ok else None
+        replay = step is not None and info["mfa_last_step"] is not None and step == info["mfa_last_step"]
+        # קוד גיבוי נצרך רק אחרי סיסמה נכונה — ניחוש סיסמה אינו שורף קודים.
+        if not password_ok or ((step is None or replay)
+                               and not consume_backup(ctx.conn, username, code)):
+            login_guard.record_failure(ctx.conn, username, ip)
+            journal(ctx.conn, "mfa_disable_failed", username, username)
+            raise HTTPException(401, "סיסמה או קוד שגויים — MFA לא בוטל")
+        login_guard.clear(ctx.conn, username, ip)
+        with _write_lock, writing(ctx.conn):
+            ctx.conn.execute(
+                "UPDATE users SET mfa_enabled = 0, mfa_secret = NULL,"
+                " mfa_enrolled_at = NULL, mfa_last_step = NULL WHERE username = ?",
+                (username,),
+            )
+            ctx.conn.execute("DELETE FROM mfa_backup_codes WHERE username = ?", (username,))
+        journal(ctx.conn, "mfa_disabled", username, username)
+        auth.attach_cookie(response, ctx.conn, username, role, tls)
+        return {"ok": True, "mfa_enabled": False}
+
     @router.post("/users/{target}/mfa/disable")
     def mfa_disable(target: str, user=Depends(admin_only)):
+        """נדב 18/10: "איפוס אימות דו-שלבי" למשתמש אחר — הסוד, ההפעלה וקודי הגיבוי נמחקים,
+        וכל ה-sessions שלו מבוטלים (bump_auth_epoch): הוא נכנס מחדש — עם רישום MFA אם
+        הוא חובה לו (`mfa_demanded`), אחרת בסיסמה בלבד. יומן `mfa_reset` (מי, למי, מתי)."""
         actor = user[0]
         if target.strip().lower() == actor.lower():
-            raise HTTPException(400, "אי אפשר לנתק MFA לעצמך")
+            raise HTTPException(400, RESET_SELF_HE)
         row = users.lookup(ctx.conn, target)
         if row is None:
             raise HTTPException(404, "משתמש לא קיים")
@@ -209,7 +291,8 @@ def register(router: APIRouter, ctx: ServerContext, current_user, admin_only, tl
             ctx.conn.execute(
                 "DELETE FROM mfa_backup_codes WHERE username = ?", (stored,),
             )
-        journal(ctx.conn, "mfa_disabled", stored, actor)
+        users.bump_auth_epoch(ctx.conn, stored)
+        journal(ctx.conn, "mfa_reset", stored, actor)
         return {"ok": True, "mfa_enabled": False}
 
     @router.post("/login/mfa")

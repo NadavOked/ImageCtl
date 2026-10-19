@@ -30,6 +30,20 @@ static const char SHRINK_PLAIN_HINT[] =
     "רק אם הכיווץ נכשל, או שכל דיסקי היעד גדולים מהמקור — האימג' לא ייכנס לדיסקים קטנים יותר";
 static const char SHRINK_CANCEL_LABEL[] = "בטל קליטה";
 
+/* #1171 (Nadav 17/10: the direct send asks before it takes the tail, in
+ * Hebrew, with a button): the same dialog, in the direct send's words. Two
+ * answers: "shrink and send" (primary) and "send without shrinking"
+ * (secondary, hinted). There is no third: cancelling the shrink IS sending
+ * at full size, so 3 and Esc still answer cancel and the agent sends the
+ * full layout for it, as for no answer at all (shrink.sh:_shrink_direct). */
+static const char SHRINK_DIRECT_TITLE[] = "ההפצה הישירה תכווץ מחיצה בעותק בזיכרון";
+static const char SHRINK_DIRECT_LEAD[] =
+    "המקור נקרא בלבד ולא נכתב. הפריסה תסתיים 64 מגה-בייט לפני סוף הדיסק, ותיכנס גם לדיסקי יעד קטנים במעט מהמקור.";
+static const char SHRINK_DIRECT_CONTINUE_LABEL[] = "כווץ ושלח";
+static const char SHRINK_DIRECT_PLAIN_LABEL[] = "שלח בלי כיווץ";
+static const char SHRINK_DIRECT_PLAIN_HINT[] =
+    "דיסקי יעד קטנים מהמקור ייפסלו, והסיבה תוצג בכל אחד מהם";
+
 /* The same unit as the text screen (shrinkplan.sh:_shrink_gb): decimal GB,
  * one digit -- the operator sees one number for one partition everywhere. */
 static void shrink_gb(char *out, size_t n, unsigned long long b) {
@@ -47,10 +61,11 @@ void draw_shrink_dialog(App *a, cairo_t *cr, double W, double H) {
 
     double dw = W - 2 * 32 < SHRINK_W_MAX ? W - 2 * 32 : SHRINK_W_MAX;
     double inner = dw - 2 * SHRINK_PAD;
-    Text title = rtl_block_make(cr, 22, 600, "הקליטה תכווץ מחיצות במחשב הזה", inner);
+    int direct = a->st.shrink_direct;   /* #1171 */
+    Text title = rtl_block_make(cr, 22, 600, direct ? SHRINK_DIRECT_TITLE : "הקליטה תכווץ מחיצות במחשב הזה", inner);
     char explanation[1400];
     snprintf(explanation, sizeof explanation, "%s%s%s",
-        "המחיצות מוחזרות לגודלן כשהקליטה מסתיימת. ווינדוס עולה בכל מקרה.",
+        direct ? SHRINK_DIRECT_LEAD : "המחיצות מוחזרות לגודלן כשהקליטה מסתיימת. ווינדוס עולה בכל מקרה.",
         a->st.task_error[0] ? "\n\xE2\x80\x8F" : "", a->st.task_error);   /* #1502: RLM -- a new paragraph, "sda: ..." */
     Text lead = rtl_block_make(cr, 14, 400, explanation, inner);
     Text rows[MAX_SHRINK_PARTS];
@@ -63,9 +78,9 @@ void draw_shrink_dialog(App *a, cairo_t *cr, double W, double H) {
         rows[i] = rtl_block_make(cr, 15, 500, line, inner);
         rows_h += rows[i].h + 6;
     }
-    Text hint = text_make(cr, FONT_SANS, SHRINK_HINT_PX, 400, SHRINK_PLAIN_HINT, (int)inner, DIR_RTL);
+    Text hint = text_make(cr, FONT_SANS, SHRINK_HINT_PX, 400, direct ? SHRINK_DIRECT_PLAIN_HINT : SHRINK_PLAIN_HINT, (int)inner, DIR_RTL);
     pango_layout_set_alignment(hint.layout, PANGO_ALIGN_CENTER);
-    double answers_h = SHRINK_BTN_H + SHRINK_GAP + SHRINK_BTN_H + SHRINK_HINT_GAP + hint.h + SHRINK_GAP + SHRINK_BTN_H;
+    double answers_h = SHRINK_BTN_H + SHRINK_GAP + SHRINK_BTN_H + SHRINK_HINT_GAP + hint.h + (direct ? 0 : SHRINK_GAP + SHRINK_BTN_H);
     double dh = SHRINK_PAD + title.h + 8 + lead.h + 18 + rows_h + 18 + answers_h + SHRINK_PAD;
     if (dh > usable - 24) dh = usable - 24;   /* MAX_SHRINK_PARTS keeps this from clipping on 768 */
     Rect box = { (W - dw) / 2, (usable - dh) / 2, dw, dh };
@@ -82,21 +97,23 @@ void draw_shrink_dialog(App *a, cairo_t *cr, double W, double H) {
         text_free(&rows[i]);
     }
     y = box.y + box.h - SHRINK_PAD - answers_h;
-    Text l = btn_label(cr, SHRINK_CONTINUE_LABEL);
+    Text l = btn_label(cr, direct ? SHRINK_DIRECT_CONTINUE_LABEL : SHRINK_CONTINUE_LABEL);
     draw_btn(a, cr, (Rect){ box.x + SHRINK_PAD, y, inner, SHRINK_BTN_H }, &l, BTN_PRIMARY, HIT_SHRINK_CONTINUE);
     text_free(&l);
     y += SHRINK_BTN_H + SHRINK_GAP;
 
     /* the secondary answer: a bordered button like "cancel", the hint under it */
-    l = btn_label(cr, SHRINK_PLAIN_LABEL);
+    l = btn_label(cr, direct ? SHRINK_DIRECT_PLAIN_LABEL : SHRINK_PLAIN_LABEL);
     draw_btn(a, cr, (Rect){ box.x + SHRINK_PAD, y, inner, SHRINK_BTN_H }, &l, BTN_PLAIN, HIT_SHRINK_PLAIN);
     text_free(&l);
     y += SHRINK_BTN_H + SHRINK_HINT_GAP;
     text_draw(cr, &hint, box.x + SHRINK_PAD, y, t->muted);
     y += hint.h + SHRINK_GAP;
 
-    l = btn_label(cr, SHRINK_CANCEL_LABEL);
-    draw_btn(a, cr, (Rect){ box.x + SHRINK_PAD, y, inner, SHRINK_BTN_H }, &l, BTN_PLAIN, HIT_SHRINK_CANCEL);
-    text_free(&l);
+    if (!direct) {   /* #1171: the direct send has no third answer */
+        l = btn_label(cr, SHRINK_CANCEL_LABEL);
+        draw_btn(a, cr, (Rect){ box.x + SHRINK_PAD, y, inner, SHRINK_BTN_H }, &l, BTN_PLAIN, HIT_SHRINK_CANCEL);
+        text_free(&l);
+    }
     text_free(&title); text_free(&lead); text_free(&hint);
 }

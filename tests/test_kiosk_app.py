@@ -69,6 +69,8 @@ EXPECTED_KIOSK_ROUTES = frozenset({
     # ‏#65 (הכרעת נדב 05/09: הבחירה במחשב הבנייה): "כבה אותו" — מכונה **אחת**
     # שהגל הפתוח מראה כחסרה. כיבוי כל החדר (`/room/poweroff`) נשאר בקונסולה בלבד.
     ("POST", "/api/console/room/missing/{mac}/poweroff"),
+    # ‏#1386: "בטל דיסק זה" ממסך ההפצה במחשב הבנייה — מגירה אחת בגל חי.
+    ("POST", "/api/console/room/drawer/cancel"),
 })
 
 #: נתיבי התחנה (`create_station_router`) שחיים על הסוכן — הגואי הנייטיב צורך.

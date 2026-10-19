@@ -56,7 +56,7 @@ def test_enroll_preview_unreachable_secondary_is_hebrew(server):
                                     json={"url": f"https://127.0.0.1:{port}"})
     assert response.status_code == 502, response.text
     detail = response.json()["detail"]
-    assert _hebrew(detail) and "השרת המשני לא עונה" in detail and str(port) in detail
+    assert _hebrew(detail) and "שרת המשנה לא עונה" in detail and str(port) in detail
     assert not RAW.search(detail), detail
 
 

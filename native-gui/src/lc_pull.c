@@ -25,7 +25,8 @@
 int lc_pull_active(const App *a) { return a->force_cloner && a->st.lc.screen == LC_SCREEN_PULL; }
 
 int lc_pull_selectable(const App *a, int port) {
-    return port >= 1 && port <= MAX_DRAWERS && idle_for_port(&a->st, port) != NULL;
+    const IdleDisk *d = port >= 1 && port <= MAX_DRAWERS ? idle_for_port(&a->st, port) : NULL;
+    return d != NULL && smart_level(d->smart) < 2;   /* #1732: red (SMART fail) is never written */
 }
 
 /* The ticked drawers that are still attached, ascending: "1,3" into out (may
@@ -107,26 +108,31 @@ double lc_pull_drawers(App *a, cairo_t *cr, Rect area, int draw) {
     int n = 0;
     for (int i = 0; i < s->nidisks; i++) {
         const IdleDisk *d = &s->idisks[i];
-        if (!lc_pull_selectable(a, d->port)) continue;
+        if (d->port < 1 || d->port > MAX_DRAWERS || idle_for_port(s, d->port) != d) continue;
+        int can = lc_pull_selectable(a, d->port);   /* #1732: a red drawer is drawn, dimmed, and takes no click */
         int row = n / per, col = n % per; n++;
         if (!draw) continue;
         Rect c = { area.x + area.w - cw - col * (cw + gap), area.y + row * (ch + gap), cw, ch };
-        int on = a->pull_sel[d->port];
+        int on = can && a->pull_sel[d->port];
         draw_fill_rrect(cr, c, t->radius, on ? t->indigo_soft : t->surface);
         cairo_save(cr); draw_rrect_path(cr, c, t->radius); cairo_clip(cr);
         cairo_rectangle(cr, c.x, c.y, c.w, 3); draw_set(cr, smart_color(t, d->smart)); cairo_fill(cr);
         cairo_restore(cr);
-        draw_border_rrect(cr, c, t->radius, on ? t->indigo : hovered(a, c) ? t->indigo : t->hair, on ? 2 : 1);
-        char label[SLOT_NAME_MAX + 16], sub[64], size[32];
+        draw_border_rrect(cr, c, t->radius, on ? t->indigo : can && hovered(a, c) ? t->indigo : t->hair, on ? 2 : 1);
+        /* sub: RLM (3) + size (<32) + " · " (4) + the longest second half, #1732's
+         * "SMART נכשל — לא כותבים עליו" (45 bytes) + NUL = 84; 64 cut it (-Wformat-truncation) */
+        char label[SLOT_NAME_MAX + 16], sub[96], size[32];
         cloner_slot_label(s, d->port, label, sizeof label);
         disk_size(d->size, size, sizeof size);
-        snprintf(sub, sizeof sub, RLM "%s · %s", size, smart_he(d->smart));
+        /* #1732: a red drawer says it is not written; #1742: a read-only one says why */
+        snprintf(sub, sizeof sub, RLM "%s · %s", size, can || !strcmp(d->cause, "readonly")
+                 ? smart_he_why(d->smart, d->cause) : "SMART נכשל — לא כותבים עליו");
         Text l1 = rtl_block_make(cr, 14, 600, label, c.w - 20);
         Text l2 = rtl_block_make(cr, 11, 400, sub, c.w - 20);
         text_draw_r(cr, &l1, c.x + c.w - 10, c.y + 9, t->ink);
         text_draw_r(cr, &l2, c.x + c.w - 10, c.y + 31, smart_level(d->smart) ? smart_color(t, d->smart) : t->muted);
         text_free(&l1); text_free(&l2);
-        hit_add(a, c, HIT_PULL_DRAWER_BASE + d->port);
+        if (can) hit_add(a, c, HIT_PULL_DRAWER_BASE + d->port);
         if (a->pull_focus == d->port && !a->confirm) draw_focus_ring(a, cr, c);
     }
     if (!n) return 0;

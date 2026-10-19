@@ -37,7 +37,7 @@ def create_alive_app(*, name: Callable[[], str], version: Callable[[], str | Non
     ``name``/``version`` נקראים בכל בקשה (שם השרת יכול להשתנות בקונסולה,
     והגרסה אחרי עדכון); ``version`` ‏``None`` = לא נקראה — נאמר כ-``null``,
     לא כמחרוזת ריקה."""
-    app = FastAPI(title="ImageCtl primary alive", docs_url=None, redoc_url=None,
+    app = FastAPI(title="ImageSrv primary alive", docs_url=None, redoc_url=None,
                   openapi_url=None)
 
     @app.get(ALIVE_PATH)

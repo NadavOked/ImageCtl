@@ -10,12 +10,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac as hmaclib
 import socket
 import struct
 import threading
 
+import anyio.from_thread
 import pytest
 
 pytest.importorskip("OpenSSL", reason="pyOpenSSL נדרש ל-mTLS הבין-שרתי (#740)")
@@ -243,7 +245,7 @@ def test_remote_monitor_rejection_arrives_after_accept(server, secondary, paired
     with server["admin"].websocket_connect(_ws_path("nope")) as ws:
         with pytest.raises(WebSocketDisconnect) as e:
             ws.receive_bytes()
-    assert (e.value.code, e.value.reason) == (4404, "שרת משני לא קיים")
+    assert (e.value.code, e.value.reason) == (4404, "שרת משנה לא קיים")
     assert not machine.connected.is_set()
 
 
@@ -406,6 +408,24 @@ def test_remote_monitor_tunnel_close_is_journaled_with_a_reason(server, secondar
 
 # --- #1129: כוח למכונה של המשני — האישור בראשי, מול השם שהמשני מדווח ------
 
+@contextlib.contextmanager
+def _one_event_loop(client):
+    """‏#1480: כל בקשה של ``TestClient`` שאינו בתוך ``with`` פותחת portal משלה —
+    לולאת אירועים ותהליכון קצר-חיים משלה — ולכן ``POST`` בזמן ש-WS פתוח רץ
+    על **לולאה אחרת** מזו שמחזיקה את מנהרת ה-TLS. ‏``writer.write`` ממנו הוא
+    ``WSASend`` שנשלח מתהליכון שמסתיים מיד אחרי הבקשה, וב-Windows (proactor)
+    ההשלמה שלו לא מגיעה לעולם: ‏``proactor.close()`` של לולאת ה-WS ממתין לה
+    בלי תקרה והטסט תקוע. בייצור יש לולאה אחת (uvicorn), וזה מה שהבלוק הזה
+    משחזר — בלי ה-lifespan של ``with client`` (שעון חדר, auto-reboot).
+    יציאה מהבלוק ממתינה לסיום ה-handler, כך שהיומן כבר נכתב אחריה."""
+    with anyio.from_thread.start_blocking_portal(**client.async_backend) as portal:
+        client.portal = portal
+        try:
+            yield
+        finally:
+            client.portal = None
+
+
 def test_remote_power_verifies_the_secondarys_name_and_writes_through_the_tunnel(
         server, secondary, paired, machine):
     """‏`POST /storage-nodes/{nid}/monitor/{mac}/power`: השם מושווה לרשימת
@@ -418,16 +438,18 @@ def test_remote_power_verifies_the_secondarys_name_and_writes_through_the_tunnel
     assert admin.post(path, json={"action": "reboot", "confirm": "Remote"}).status_code == 409
     assert admin.post(path, json={"action": "reboot", "confirm": "remote"}).status_code == 403
     assert server["deploy"].post(path, json={"action": "reboot", "confirm": "Remote"}).status_code == 403
-    with admin.websocket_connect(_ws_path(paired)) as ws:
-        _browser_handshake(ws)
-        assert ws.receive_bytes() == SERVER_INIT
-        assert admin.post(path, json={"action": "reboot", "confirm": "remote"}).status_code == 403
-        ok = admin.post(path, json={"action": "reboot", "confirm": "Remote"})
-        assert ok.status_code == 200, ok.text
-        assert ws.receive_bytes() == b"echo:" + monitor.power_frame("reboot")
-        ws.send_bytes(monitor.power_frame("poweroff"))
-        with pytest.raises(WebSocketDisconnect) as e:
-            ws.receive_bytes()
+    with _one_event_loop(admin):
+        assert admin.portal is not None                    # ‏#1480: לולאה אחת ל-WS ול-POST
+        with admin.websocket_connect(_ws_path(paired)) as ws:
+            _browser_handshake(ws)
+            assert ws.receive_bytes() == SERVER_INIT
+            assert admin.post(path, json={"action": "reboot", "confirm": "remote"}).status_code == 403
+            ok = admin.post(path, json={"action": "reboot", "confirm": "Remote"})
+            assert ok.status_code == 200, ok.text
+            assert ws.receive_bytes() == b"echo:" + monitor.power_frame("reboot")
+            ws.send_bytes(monitor.power_frame("poweroff"))
+            with pytest.raises(WebSocketDisconnect) as e:
+                ws.receive_bytes()
     assert e.value.code == monitor.WS_FORBIDDEN
     assert machine.closed.wait(5)
     assert monitor.power_frame("reboot") in machine.writes

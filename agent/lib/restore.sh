@@ -31,7 +31,7 @@ manifest_plan() {
     # שנגמרת בשלום אחריה מכריזה done על מחיצות שאיש לא כתב (#51). לכן
     # התוכנית מחומרנת לקובץ, ה-rc נבדק, ומספר השורות מושווה למה שהמניפסט
     # מצהיר עליו — ורק אז היא נקראת. גם tmpfs שנגמר נתפס כאן.
-    _pf="$RUN_DIR/plan.txt"
+    _pf="$RUN_DIR/plan.$$${PREP_TAG:-}.txt"   # per process (the kiosk, once a second); per drawer in a parallel table write (#1704)
     jq -r '.partitions[] | [.index, .type_guid, .role, .fs, .start_sector, .size_bytes,
         .file, .sha256, .expandable, (.unique_guid // ""), (.uuid // ""), (.attrs // "")] | join("|")' \
         "$1" > "$_pf" 2>> "$LOG_FILE" || { log "plan: jq failed on $1" >&2; return 1; }
@@ -48,27 +48,27 @@ manifest_plan() {
 validate_restore_plan() {
     # $1=disk, $2=manifest. Validate every row and ask sgdisk to parse the
     # complete table without writing it; this must run before --zap-all.
-    _vp="$RUN_DIR/preflight.plan"
-    _vdisk=$1; _vman=$2   # ‏#1418: `set --` למטה דורס את $1/$2
+    _vp="$RUN_DIR/preflight${PREP_TAG:-}.plan"; _vimg="$RUN_DIR/preflight${PREP_TAG:-}.disk"   # PREP_TAG: #1704; ‏#1545: ההדמיה על קובץ דליל — על הדיסק החי טבלה ישנה פגומה = sgdisk מתעלם מ--n ויוצא 2
+    _vman=$2   # ‏#1418: `set --` למטה דורס את $1/$2
     manifest_plan "$2" > "$_vp" || { PLAN_ERROR="תוכנית השחזור פגומה — הדיסק לא שונה"; return 1; }
     _vsectors=$(blockdev --getsz "$DEVROOT/$1" 2>> "$LOG_FILE")
     case "$_vsectors" in ''|*[!0-9]*) PLAN_ERROR="לא ניתן לקרוא את גודל דיסק היעד — הדיסק לא שונה"; return 1 ;; esac
-    awk -F'|' -v cap="$_vsectors" '
-        BEGIN { n = 0 }
-        NF < 11 || NF > 12 { exit 1 }
-        $1 !~ /^[0-9]+$/ || $1 < 1 || $1 > 128 || seen[$1]++ { exit 1 }
-        $2 !~ /^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$/ { exit 1 }
-        $3 !~ /^(esp|msr|windows|recovery|linux|swap|data)$/ { exit 1 }
-        $4 !~ /^(ntfs|vfat|ext4|btrfs|swap|unknown)?$/ { exit 1 }
-        $5 !~ /^[0-9]+$/ || $6 !~ /^[0-9]+$/ || $5 < 1 || $6 < 512 || $6 % 512 { exit 1 }
-        $5 + $6 / 512 > cap { exit 1 }
-        { for (i=0; i<n; i++) if ($5 < e[i] && $5 + $6/512 > s[i]) exit 1; s[n]=$5; e[n++]=$5+$6/512 }
+    _vwhy=$(awk -F'|' -v cap="$_vsectors" '   # #1435: הכלל שנכשל, בשם
+        function bad(r) { printf "%s: %s", ($1 ~ /^[0-9]+$/ ? "מחיצה " $1 : "שורה " NR), r; exit 1 } BEGIN { n = 0 }
+        NF < 11 || NF > 12 { bad("מספר שדות שגוי (" NF ")") }
+        $1 !~ /^[0-9]+$/ || $1 < 1 || $1 > 128 || seen[$1]++ { bad("מספר המחיצה אינו חוקי או כפול") }
+        $2 !~ /^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$/ { bad("סוג ה-GPT אינו GUID חוקי") }
+        $3 !~ /^(esp|msr|windows|recovery|linux|swap|data)$/ { bad("תפקיד לא מוכר") }
+        $4 !~ /^(ntfs|vfat|ext4|btrfs|swap|unknown)?$/ { bad("מערכת קבצים לא מוכרת") }
+        $5 !~ /^[0-9]+$/ || $6 !~ /^[0-9]+$/ || $5 < 1 || $6 < 512 || $6 % 512 { bad("התחלה או גודל לא חוקיים") }
+        $5 + $6 / 512 > cap { bad("חורגת מסוף הדיסק") }
+        { for (i=0; i<n; i++) if ($5 < e[i] && $5 + $6/512 > s[i]) bad("חופפת למחיצה אחרת"); s[n]=$5; e[n++]=$5+$6/512 }
         { bare = ($4 == "swap" && $7 == "" && $8 == "") || ($7 ~ /^local:p[0-9]+$/ && $8 == "") }   # ‏#1433: swap בלי קובץ; שיכפול מקומי בלי sha
-        (!bare && ($7 == "" || index($7, "/") || index($7, "\\") || $7 ~ /[[:cntrl:]]/ || length($8) != 64 || $8 !~ /^[0-9a-f]+$/)) || $9 !~ /^(true|false)$/ { exit 1 }
-        $10 != "" && $10 !~ /^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$/ { exit 1 }
-        $11 ~ /[[:cntrl:]|]/ || ($11 != "" && $11 !~ /^([0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9A-F]{4}-[0-9A-F]{4}|[0-9A-F]{16})$/) { exit 1 }
-        $12 !~ /^([0-9A-F]{16})?$/ { exit 1 }
-        END { if (NR < 1) exit 1 }' "$_vp" || { PLAN_ERROR="תוכנית השחזור פגומה — הדיסק לא שונה"; return 1; }
+        (!bare && ($7 == "" || index($7, "/") || index($7, "\\") || $7 ~ /[[:cntrl:]]/ || length($8) != 64 || $8 !~ /^[0-9a-f]+$/)) { bad("קובץ או sha256 חסרים או לא חוקיים") }; $9 !~ /^(true|false)$/ { bad("ערך expandable אינו true/false") }
+        $10 != "" && $10 !~ /^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$/ { bad("ה-GUID הייחודי אינו חוקי") }
+        $11 ~ /[[:cntrl:]|]/ || ($11 != "" && $11 !~ /^([0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9A-F]{4}-[0-9A-F]{4}|[0-9A-F]{16})$/) { bad("ה-UUID של מערכת הקבצים אינו חוקי") }
+        $12 !~ /^([0-9A-F]{16})?$/ { bad("מאפייני ה-GPT אינם חוקיים") }
+        END { if (NR < 1) { printf "אין מחיצות בתוכנית"; exit 1 } }' "$_vp") || { PLAN_ERROR="תוכנית השחזור פגומה (${_vwhy:-סיבה לא ידועה}) — הדיסק לא שונה"; return 1; }
     set -- sgdisk -a 1 --pretend --clear   # ‏#1434: --zap-all בהדמיה משאיר את הטבלה הקיימת בזיכרון
     while IFS='|' read -r _i _g _r _fs _s _z _f _h _e _u _uuid _a; do
         _last=$((_s + _z / 512 - 1)); set -- "$@" -n "$_i:$_s:$_last" -t "$_i:$_g"
@@ -76,7 +76,8 @@ validate_restore_plan() {
         [ -z "$_a" ] || set -- "$@" -A "$_i:=:0x$_a"
     done < "$_vp"
     _dg=$(json_get "$_vman" ".disk_guid"); [ -z "$_dg" ] || [ "$_dg" = null ] || set -- "$@" -U "$_dg"
-    "$@" "$DEVROOT/$_vdisk" >> "$LOG_FILE" 2>&1 || { PLAN_ERROR="sgdisk דחה את תוכנית השחזור — הדיסק לא שונה"; return 1; }
+    rm -f "$_vimg"; dd if=/dev/zero of="$_vimg" bs=512 count=0 seek="$_vsectors" 2>> "$LOG_FILE" || { PLAN_ERROR="לא ניתן להכין את בדיקת התוכנית — הדיסק לא שונה"; return 1; }
+    "$@" "$_vimg" >> "$LOG_FILE" 2>&1; _vrc=$?; rm -f "$_vimg"; [ "$_vrc" -eq 0 ] || { PLAN_ERROR="sgdisk דחה את תוכנית השחזור — הדיסק לא שונה"; return 1; }
 }
 
 partclone_for_fs() {
@@ -166,7 +167,7 @@ restore_partition() {
     fi
 
     next_stream_ceiling   # #957: אחרי ה-swap — נספרים רק זרמים
-    rm -f "$_tdir/feed" "$_tdir/sha.out" "$_tdir/pipe.rc" "$_tdir/fanout.rc"
+    rm -f "$_tdir/feed" "$_tdir/sha.out" "$_tdir/pipe.rc" "$_tdir/fanout.rc" "$_tdir/fanout.out"
     mkfifo "$_tdir/feed"
     # הצינור רץ ברקע כדי שתהיה עין שמסתכלת עליו: המונה (‏-P, פורמט pv -n)
     # הוא ההוכחה היחידה שמשהו זז, ו-wait_progress מודד בדיוק אותו. ‏#1444:
@@ -180,7 +181,7 @@ restore_partition() {
         _wpid=$!
         stream_source "$1" "$2" "$3" "$7" "$STREAM_START_CEILING" \
             | fanout -S "$_tdir/sha.out" -P "$_tdir/bytes.raw" 16777216 "$_tdir/feed" \
-                > /dev/null 2>> "$LOG_FILE"
+                > "$_tdir/fanout.out" 2>> "$LOG_FILE"   # #1601: restore_blame reads it
         echo "$?" > "$_tdir/fanout.rc"
         grep -qx 0 "$_tdir/fanout.rc" || unblock_fifo "$_tdir/feed"   # מת לפני open (#49)
         wait_pid "$_wpid" "$WAIT_DRAWER_S" "כתיבת מחיצה $5 על $4"
@@ -197,7 +198,7 @@ restore_partition() {
     rm -f "$_tdir/feed" "$_tdir/feed.bytes"
 
     if [ "$_rc" -ne 0 ]; then
-        log "partition $5 ($7): write failed (rc=$_rc)"
+        restore_blame "$_tdir" "$8"; log "partition $5 ($7): write failed (rc=$_rc${RESTORE_BLAME:+, blamed on the stream})"   # #1601
         return 1
     fi
 
@@ -207,10 +208,10 @@ restore_partition() {
     _got=$(awk '{print $1}' "$_tdir/sha.out" 2>/dev/null)
     if ! is_sha256 "$_got"; then
         log "partition $5 ($7): ה-sha256 לא חושב -- אין ראיה שהזרם הגיע שלם"
-        return 1
+        RESTORE_BLAME=stream; return 1   # #1601: of the stream, not the disk
     elif [ "$_got" != "$8" ]; then
         log "partition $5 ($7): sha256 mismatch"
-        return 1
+        RESTORE_BLAME=stream; return 1
     fi
     ntfs_boot_target "$4" "$5" "$6" && target_partition_done "$4"   # #1487
 }
@@ -279,16 +280,16 @@ run_restore() {
         fail_written_target "$2" "לא הצלחנו לספור את המחיצות בתוכנית השחזור"
         echo "failed" > "$RUN_DIR/state"; return 1
     fi
-    _written=0; STREAMED_PARTITIONS=0   # #957: הזרם הראשון של השחזור הזה
+    _written=0; STREAMED_PARTITIONS=0; RESTORE_BLAME=""   # #957: הזרם הראשון של השחזור הזה; #1601
     while IFS='|' read -r _idx _guid _role _fs _start _size _f _sha _exp _uguid _uuid _attrs <&3; do
-        log "partition $_idx ($_role, $_fs): receiving $_f"
+        log "partition $_idx ($_role, $_fs): receiving $_f"; echo "$_idx" > "$RUN_DIR/targets/$2/partition"   # the GUI's "מחיצה N" (srgui.sh)
         restore_partition "$1" "$3" "$4" "$2" "$_idx" "$_fs" "$_f" "$_sha" "$_uuid" \
             || break
         _written=$((_written + 1))
     done 3< "$_plan"
 
     if [ "$_expected" -lt 1 ] || [ "$_written" -ne "$_expected" ]; then
-        fail_written_target "$2" "נכתבו $_written מתוך $_expected מחיצות"
+        fail_written_target "$2" "נכתבו $_written מתוך $_expected מחיצות" "$RESTORE_BLAME"
         echo "failed" > "$RUN_DIR/state"
         return 1
     fi

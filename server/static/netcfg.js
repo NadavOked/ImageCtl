@@ -21,14 +21,6 @@ let NETCFG_TICK = null;
 const MASKS = ["255.255.255.0", "255.255.255.128", "255.255.254.0",
                "255.255.252.0", "255.255.0.0", "255.0.0.0", "255.255.255.252"];
 
-/* שלושה מצבים, ולא שניים: לא מנוהל (אפור) · תואם (ירוק) · לא תואם
-   (אדום). כרטיס שלא הצלחנו לקרוא עליו כלום נופל ל"לא תואם" בכוונה. */
-function netLight(row) {
-  if (!NETCFG.live.checked) return "bad";
-  if (row.mode === "manual") return "off";
-  return row.mismatches.length ? "bad" : "ok";
-}
-
 /* --- הבאנר של ההחזרה: הדבר היחיד שחשוב יותר מהטבלה ------------------------ */
 
 function rollbackBanner(rb) {

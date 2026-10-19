@@ -337,6 +337,8 @@ if [ "$WITH_INSTALLER" -eq 1 ]; then
     install -m 0755 "$INSTALLER_SRC/imagectl-install"   "$ROOT/usr/lib/imagectl/installer/imagectl-install"
     install -m 0755 "$INSTALLER_SRC/imagectl-installer" "$ROOT/usr/lib/imagectl/installer/imagectl-installer"
     install -m 0644 "$INSTALLER_SRC"/lib/*.sh           "$ROOT/usr/lib/imagectl/installer/lib/"
+    # #1447: the zone list answers.sh checks the timezone against (not a .sh)
+    install -m 0644 "$INSTALLER_SRC/lib/zones.txt"      "$ROOT/usr/lib/imagectl/installer/lib/zones.txt"
     if [ -f "$INSTALLER_SRC/gui-bridge.sh" ]; then
         install -m 0755 "$INSTALLER_SRC/gui-bridge.sh" "$ROOT/usr/lib/imagectl/installer/gui-bridge.sh"
     else
@@ -557,6 +559,17 @@ if [ "$WITH_GUI" -eq 1 ]; then
     # a machine -- so stop here.
     [ -x "$ROOT/usr/bin/nice" ] \
         || { echo "--with-gui: no nice binary packed ($ROOT/usr/bin/nice); the GUI starts under it (#1493)" >&2; exit 1; }
+    # 17/10 (owner): the last-resort screen when the GUI is not coming back --
+    # rendered here by the GUI itself, painted on the machine by
+    # agent/lib/splash.sh, which reads the size from the file name. After the
+    # closure, font and nice gates: the binary needs its libraries and fonts.
+    SPLASH_W=640 SPLASH_H=240
+    SPLASH_RAW="$ROOT/usr/share/imagectl/splash-${SPLASH_W}x$SPLASH_H.raw"
+    mkdir -p "$ROOT/usr/share/imagectl"
+    "$GUI_BIN" --splash-raw "$SPLASH_RAW" --size "${SPLASH_W}x$SPLASH_H" \
+        || { echo "--with-gui: the last-resort screen did not render" >&2; exit 1; }
+    [ -f "$SPLASH_RAW" ] && [ "$(stat -c %s "$SPLASH_RAW")" -eq $((SPLASH_W * SPLASH_H * 4)) ] \
+        || { echo "--with-gui: $SPLASH_RAW is not ${SPLASH_W}x$SPLASH_H XRGB8888" >&2; exit 1; }
 
     cat > "$ROOT/usr/bin/imagectl-kiosk" << 'EOF'
 #!/bin/sh
@@ -670,7 +683,8 @@ REQUIRED_MODULES=(hv_netvsc   hv_storvsc      # Hyper-V
                   vmxnet3     vmw_pvscsi      # VMware ESXi
                   virtio_net  virtio_blk      # KVM / Proxmox
                   xen-netfront xen-blkfront   # Xen
-                  dm-mod dm-snapshot dm-bufio brd)   # #1466: local clone, read-only source
+                  dm-mod dm-snapshot dm-bufio brd   # #1466: local clone, read-only source
+                  af_alg algif_hash sha256-ssse3)   # #1596: fanout's SHA-256 in the kernel
 
 # מערכות הקבצים שהמערכת נשענת עליהן — מוצהרות, ולא נוכחות במקרה. עד
 # כאן הן הגיעו כתוצר לוואי של `MODULE_SUBDIRS` וסגירת התלויות, ולכן
@@ -993,6 +1007,12 @@ _phy_mods=$(find "$ROOT/lib/modules/$KVER/kernel/drivers/net/phy" \
     # נכשל ב-"unknown symbol" כשאין ספק רשום, ו-busybox modprobe אינו מכבד
     # את ה-softdep. נמדד ב-QEMU 24/09: ‏xfs לבד rc=1, ‏crc32c_generic לפניו rc=0.
     printf '%s\n' crc32c_generic crc32c-intel efivarfs fat vfat nls_cp437 nls_ascii ext4 btrfs xfs
+    # #1596: fanout hashes the stream through AF_ALG. sha256-generic is built
+    # in, so the kernel never asks for sha256-ssse3 by itself -- it is loaded
+    # here, by name. A CPU without SSSE3 refuses it and fanout gets the generic
+    # one (same digest); without AF_ALG fanout hashes in-process and says so in
+    # the log. Neither is fatal, so neither is in modules.required.
+    printf '%s\n' af_alg algif_hash sha256-ssse3
     [ -n "$_phy_mods" ] && printf '%s\n' "$_phy_mods"
     find "$ROOT/lib/modules/$KVER/kernel/drivers/net" -name '*.ko*' 2>/dev/null \
         | sed 's|.*/||; s|\.ko.*||' | sort
@@ -1001,6 +1021,21 @@ _phy_mods=$(find "$ROOT/lib/modules/$KVER/kernel/drivers/net/phy" \
         printf '%s\n' i915 amdgpu nouveau simpledrm evdev uinput
     fi
 } | awk '!seen[$0]++' > "$ROOT/etc/imagectl/modules"
+
+# #1702: the same list, split so agent/init (lib/initmods.sh) can load by
+# hardware instead of by name. `modules` stays complete and ordered -- it is
+# both the old behaviour (an initramfs without these files loads all of it)
+# and the fallback. phy = loaded first; nic = every other NIC driver, loaded
+# only for a PCI network device that is present (or all of them if no NIC
+# shows up); gpu = loaded only for a PCI display device that is present.
+printf '%s\n' "$_phy_mods" | awk 'NF' > "$ROOT/etc/imagectl/modules.phy"
+find "$ROOT/lib/modules/$KVER/kernel/drivers/net" -name '*.ko*' 2>/dev/null \
+    | sed 's|.*/||; s|\.ko.*||' | sort \
+    | awk 'FILENAME == ARGV[1] { phy[$0]; next } !($0 in phy)' \
+          "$ROOT/etc/imagectl/modules.phy" - > "$ROOT/etc/imagectl/modules.nic"
+if [ "$WITH_GUI" -eq 1 ]; then
+    printf '%s\n' i915 amdgpu nouveau > "$ROOT/etc/imagectl/modules.gpu"
+fi
 
 # ‏מודולי החובה, בנפרד: מערכות הקבצים שהמערכת נשענת עליהן בכל מכונה. אלה
 # מודולי תוכנה טהורים שנטענים בכל פלטפורמה, ולכן כישלון טעינה שלהם הוא
@@ -1052,6 +1087,30 @@ if [ -n "${EXTRA_OVERLAY:-}" ]; then
     rm -f "$ROOT/.binaries"
     echo "overlay: $EXTRA_OVERLAY copied over the image"
 fi
+
+# --- third-party licenses (#1707) ---------------------------------------------
+# Work from a snapshot of the final file set: this is after every binary,
+# ldd closure, firmware directory, GUI font and site overlay has been copied.
+# Files built by ImageCtl itself have no Debian owner and need no Debian notice.
+# Every file that does have an owner must bring that package's copyright file;
+# a missing notice is a failed build, never an image with silent omissions.
+mapfile -d '' -t PACKED_FILES < <(find "$ROOT" -type f -print0)
+mkdir -p "$ROOT/usr/share/doc/licenses"
+for _packed in "${PACKED_FILES[@]}"; do
+    _host_file="${_packed#"$ROOT"}"
+    [ -e "$_host_file" ] || continue
+    _host_file=$(readlink -f "$_host_file")
+    _owner=$(dpkg-query -S "$_host_file" 2>/dev/null \
+        | sed -n '1{s/: \/.*//;p;}') || true
+    [ -n "$_owner" ] || continue
+    _pkg="${_owner%%:*}"
+    _copyright="/usr/share/doc/$_pkg/copyright"
+    [ -f "$_copyright" ] || {
+        echo "license: package $_pkg owns packed file $_host_file but has no $_copyright" >&2
+        exit 1
+    }
+    cp -L "$_copyright" "$ROOT/usr/share/doc/licenses/$_pkg.copyright"
+done
 
 # --- pack --------------------------------------------------------------------
 # Reproducible (#1125, feeding #1078 -- the initrd hash in grub.cfg): the

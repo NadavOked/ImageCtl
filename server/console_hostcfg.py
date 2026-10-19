@@ -131,6 +131,27 @@ def create_hostcfg_router(ctx: ServerContext, data_dir, running_tls,
                                      f"לתוקף באתחול הבא של השירות")
         return {"ok": True, "restarting": True, "certificate": info}
 
+    @router.post("/tls/reissue")
+    def tls_reissue(user=Depends(admin_only)):
+        if running_tls is None:
+            raise HTTPException(409, "הקונסולה רצה בלי TLS (loopback) — אין תעודה להחליף")
+        _not_during_round()
+        try:
+            info = console_tls.reissue_self_signed(data_dir, hooks["hostname"]())
+        except console_tls.UploadRefused as exc:
+            journal(ctx.conn, "console_tls_refused", str(exc), user[0])
+            raise HTTPException(400, str(exc)) from None
+        journal(ctx.conn, "console_tls_reissued",
+                f"{info['subject']} עד {info['not_after'][:10]} "
+                f"SHA-256 {info['fingerprint_sha256'][:23]}…", user[0])
+        error = hooks["restart_server"]()
+        if error:
+            journal(ctx.conn, "console_tls_restart_failed", error, user[0])
+            raise HTTPException(500, f"התעודה נכתבה לדיסק אך אינה בשימוש — "
+                                     f"האתחול לא תוזמן: {error}. היא תיכנס "
+                                     f"לתוקף באתחול הבא של השירות")
+        return {"ok": True, "restarting": True, "certificate": info}
+
     @router.get("/hostname")
     def hostname_status(user=Depends(admin_only)):
         return {"hostname": hooks["hostname"]()}

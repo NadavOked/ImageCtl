@@ -23,6 +23,8 @@ EVENTS_HE = {
     "mfa_setup": "הקמת MFA",
     "mfa_enabled": "MFA הופעל",
     "mfa_disabled": "MFA נוטרל",
+    "mfa_disable_failed": "ביטול MFA נדחה — קוד שגוי",   # נדב 18/10: ביטול עצמי
+    "mfa_reset": "אימות דו-שלבי אופס למשתמש",   # נדב 18/10: מנהל איפס למשתמש אחר; הפירוט = למי
     "sessions_revoked": "הפעלות בוטלו",
     "agent_login": "כניסה ממסך תחנה",
     "local_clone": "שיכפול מקומי במחשב שיכפול (דיווח המחשב)",   # #1322
@@ -50,6 +52,8 @@ EVENTS_HE = {
     "session_image_bound": "פתיחת סבב נדחתה — האימג' קשור למכונה אחרת",
     "pull_open": "משיכת יוניקאסט התחילה",
     "pull_done": "משיכת יוניקאסט הסתיימה",
+    # ‏#1573: כישלון שהמכונה דיווחה, או שתיקה מעבר לתקרה — הסיבה בפירוט.
+    "pull_failed": "משיכת יוניקאסט נכשלה",
     "pull_refused": "משיכת יוניקאסט נדחתה",
     "client_done": "מחשב סיים לכתוב",
     "client_failed": "כתיבה נכשלה במחשב",
@@ -62,9 +66,16 @@ EVENTS_HE = {
     "room_wave": "גל חדש בחדר השיכפולים",
     "room_wave_lost": "הגל של סבב החדר נסגר לפני הזמן — ממתין לגל הבא",
     "room_drawer_changed": "המגירה הוחלפה אחרי סיום הכתיבה",
+    # ‏#1386: "בטל דיסק זה" — הבקשה, ואחריה הראיה מהסוכן (המגירה דיווחה cancelled).
+    "room_drawer_cancel_requested": "התבקש ביטול הכתיבה לדיסק אחד בגל",
+    "room_drawer_cancelled": "הכתיבה לדיסק בוטלה — טבלת המחיצות נמחקה, שאר הדיסקים ממשיכים",
     # ‏#105: כונן בלי serial שסיים — לא הוחלף, פשוט אין זהות לספור.
     "room_drawer_unidentified": "לא ניתן לזהות את הכונן (אין serial) — הכתיבה לא נספרה",
     "room_done": "סבב חדר השיכפולים הושלם",
+    "room_failed": "סבב חדר השיכפולים נכשל — אף מגירה לא נכתבה בגל",   # 17/10
+    # ‏#1721: ה-WoL של הגל נבלע (המשכפל עוד היה בספירת הכיבוי) — נשלח שוב, עם תקרה.
+    "room_rewake": "מחשב שיכפול לא חזר לגל הפתוח — נשלח WoL חוזר",
+    "room_wake_failed": "סבב חדר השיכפולים נכשל — מחשב שיכפול לא התעורר לגל",
     "room_close": "סבב חדר השיכפולים נסגר",
     # ‏#980: כיבוי החדר עובר דרך הסוכן (hello) — בקשה, מסירה, או פקיעה.
     # ‏#977 §4: אותו ערוץ לאתחול מחשב אחד; הפעולה עצמה בטקסט (כיבוי/אתחול).
@@ -77,6 +88,10 @@ EVENTS_HE = {
     "power_delivered": "בקשה מהקונסולה נמסרה לסוכן",
     "power_expired": "בקשה מהקונסולה פגה — המכונה לא ענתה בזמן, והבקשה בוטלה",
     "send_start": "השידור יצא לדרך",
+    # ברזל 17/10: מחשב שיכפול בגל עומד על שאלת SMART — השולח לא מתחיל עד התשובה.
+    "send_held_smart": "השידור ממתין לתשובה על דיסק (SMART) — הזמן לא נספר",
+    "send_hold_released": "אין עוד שאלה פתוחה על דיסק — השידור ממשיך",
+    "smart_ask_expired": "שאלת SMART לא נענתה בזמן — המכונה שוחררה מהגל, השאר ממשיכים",
     "wave_rate": "נקבע קצב לגל",
     "machine_nic_speed": "מהירות כרטיס הרשת של מכונה נקבעה ידנית",
     "drive_rates_failed": "קצב אוטומטי: בחירה או רישום נכשלו — בחירה שנכשלה יוצאת בקצב הפתיחה",
@@ -90,6 +105,7 @@ EVENTS_HE = {
     "direct_done": "השידור ממחשב הבנייה הסתיים",
     "direct_failed": "השידור ממחשב הבנייה נכשל",
     "direct_cancel": "השידור ממחשב הבנייה בוטל",
+    "task_boot_cancel": "משימה מהגואי בוטלה: המכונה אותחלה לפני תחילתה",
     "unknown_mac": "מחשב לא רשום ניסה לעלות",
     "disk_failure": "דיסק נכשל בכתיבה — נרשם לזיכרון הכשלים",
     "disk_failure_cleared": "רשומת כשל דיסק נוקתה",
@@ -104,18 +120,18 @@ EVENTS_HE = {
     "identity_unverifiable": "זהות מחשב לא ניתנת לבדיקה — סורבה",
     "setting_change": "הגדרה שונתה",
     "auto_reboot": "הפעלה מחדש אוטומטית",
-    "storage_group_create": "קבוצת סניפים נוצרה",
-    "storage_group_edit": "שם קבוצת סניפים שונה",
-    "storage_group_reorder": "סדר קבוצות הסניפים שונה",
-    "storage_group_delete": "קבוצת סניפים נמחקה",
-    "storage_node_edit": "שרת סניף עודכן",
-    "storage_node_disable": "שרת סניף הושבת",
-    "storage_node_enable": "שרת סניף הופעל מחדש",
-    "storage_node_delete": "שרת סניף הוסר",
-    "storage_node_enroll": "שרת סניף נרשם",
-    "storage_transfer_start": "העברת אימג' לסניף התחילה",
-    "storage_transfer_done": "העברת אימג' לסניף הושלמה",
-    "storage_transfer_failed": "העברת אימג' לסניף נכשלה",
+    "storage_group_create": "קבוצת שרתי משנה נוצרה",
+    "storage_group_edit": "שם קבוצת שרתי משנה שונה",
+    "storage_group_reorder": "סדר קבוצות שרתי המשנה שונה",
+    "storage_group_delete": "קבוצת שרתי משנה נמחקה",
+    "storage_node_edit": "שרת משנה עודכן",
+    "storage_node_disable": "שרת משנה הושבת",
+    "storage_node_enable": "שרת משנה הופעל מחדש",
+    "storage_node_delete": "שרת משנה הוסר",
+    "storage_node_enroll": "שרת משנה נרשם",
+    "storage_transfer_start": "העברת אימג' לשרת המשנה התחילה",
+    "storage_transfer_done": "העברת אימג' לשרת המשנה הושלמה",
+    "storage_transfer_failed": "העברת אימג' לשרת המשנה נכשלה",
     "storage_image_received": "אימג' התקבל מהשרת הראשי",
     "storage_monitor_tunnel": "מוניטור למכונה נפתח מהשרת הראשי",
     "monitor_connected": "מוניטור נפתח למכונה",
@@ -142,6 +158,7 @@ EVENTS_HE = {
     "vmupdate_lease": "ה-VM לעדכון קיבל כתובת מה-DHCP",
     "vmupdate_no_lease": "ה-VM לעדכון לא קיבל כתובת — ה-VM נכבה",
     "vmupdate_net_teardown_failed": "פירוק הרשת של ה-VM לעדכון לא הושלם",
+    "vmupdate_leftover_failed": "עדכון ב-VM: שאריות של שמירה קודמת לא נוקו",   # #1649
     "vmupdate_control_request": "עדכון ב-VM: בקשת שליטה",
     "vmupdate_control_granted": "עדכון ב-VM: השליטה הועברה באישור",
     "vmupdate_control_denied": "עדכון ב-VM: בקשת שליטה נדחתה",
@@ -152,11 +169,16 @@ EVENTS_HE = {
     "logo_refused": "העלאת לוגו נדחתה",
     "logo_clear": "הלוגו הוסר",
     "console_tls_uploaded": "תעודת TLS לקונסולה הועלתה",
+    "console_tls_reissued": "תעודת TLS עצמית חדשה הונפקה לקונסולה",
     "console_tls_refused": "העלאת תעודת TLS נדחתה",
     "console_tls_restart_failed": "תעודת TLS נכתבה אך אתחול השרת לא תוזמן",
     "console_tls_regenerated": "תעודת TLS של הקונסולה חודשה עבור שם השרת",
     "hostname_changed": "שם המארח של השרת שונה",
     "hostname_change_failed": "שינוי שם המארח נכשל",
+    "timezone_changed": "אזור הזמן של השרת שונה",
+    "timezone_change_failed": "שינוי אזור הזמן של השרת נכשל",
+    "timezone_applied": "אזור הזמן של המערכת יושר להגדרה בעליית השרת",
+    "timezone_apply_failed": "יישור אזור הזמן של המערכת בעליית השרת נכשל",
     "hostname_restart_failed": "שם המארח שונה אך אתחול השרת לא תוזמן",
     "image_edit": "אימג' עודכן",
     "image_delete": "אימג' נמחק",
@@ -170,6 +192,8 @@ EVENTS_HE = {
     "capture_cancel": "קליטת אימג' בוטלה",
     "work_area_swept": "אזורי עבודה יתומים נמחקו",
     "work_area_kept": "אזורי עבודה נשארו — לא הוכח שהם יתומים",
+    "retention_purged": "ניקוי יומי: רשומות ישנות נמחקו (#1737)",
+    "retention_failed": "ניקוי יומי: חלק לא בוצע (#1737)",
     "image_download": "אימג' הורד למחשב",
     "image_upload": "אימג' הועלה מהמחשב",
     "driver_upload": "חבילת דרייברים יובאה",
@@ -178,6 +202,7 @@ EVENTS_HE = {
     "drivers_staged": "דרייברים הונחו על הדיסק המשוחזר",
     "drivers_failed": "השחזור הושלם, דרייברים לא הונחו",
     "boot_storage_failed": "השחזור הושלם, דרייבר האחסון לא הוגדר לעלייה",   # #1331
+    "linux_initramfs_warning": "השחזור הושלם, ה-initramfs של הלינוקס לא אומת לדיסק הזה",   # #1331
     "folder_create": "תיקייה נוצרה",
     "folder_reorder": "סדר התיקיות שונה",
     "folder_edit": "תיקייה עודכנה",
@@ -208,6 +233,8 @@ EVENTS_HE = {
     "admin_password_reset_dcui": "סיסמת המנהל אופסה ממסך השרת (DCUI)",
     "bind_address_changed": "כתובת ההאזנה של השרת השתנתה",
     "client_lost": "מכונה אבדה באמצע גל — לא דיווחה בזמן",
+    # ‏#1728: אתחול באמצע הזרם — יצא מהגל וממתין לגל הבא.
+    "room_rejoin": "מחשב שיכפול אותחל באמצע הזרם — ממתין לגל הבא",
     "console_tls_by_name_only": "תעודת הקונסולה תקפה לשם בלבד, לא לכתובת",
     "dcui_auth_failure": "ניסיון כניסה כושל במסך השרת (DCUI)",
     "dcui_auth_locked": "מסך השרת ננעל אחרי ניסיונות כושלים",
@@ -243,6 +270,7 @@ EVENTS_HE = {
     "report_on_closed_task": "דיווח הגיע למשימה שכבר נסגרה",
     "room_role_denied": "פעולה בחדר המשכפלים נדחתה — התפקיד אינו רשאי",
     "room_tick_failed": "שעון חדר המשכפלים נכשל — החדר אינו מתקדם",
+    "pull_sweep_failed": "סגירת משיכות ברקע נכשלה — משיכה תקועה עלולה לחסום",
     "session_dedupe": "סבב כפול אוחד",
     "session_role_denied": "פעולה בסבב נדחתה — התפקיד אינו רשאי",
     "shrink_cleared": "רשומת כיווץ נוקתה",
@@ -256,12 +284,12 @@ EVENTS_HE = {
     "storage_location_format": "מיקום אחסון פורמט",
     "storage_location_mount": "מיקום אחסון עוגן",
     "storage_location_unreachable": "מיקום אחסון אינו נגיש",
-    "storage_monitor_tunnel_closed": "מנהרת מוניטור למכונה בסניף נסגרה",
-    "storage_pairing_open": "צימוד שרת משני נפתח",
+    "storage_monitor_tunnel_closed": "מנהרת מוניטור למכונה בשרת המשנה נסגרה",
+    "storage_pairing_open": "צימוד שרת משנה נפתח",
     "storage_pairing_closed": "קוד הצימוד בוטל במסך השרת",            # DCUI F4, 16/10
-    "storage_parent_cert_renewed": "תעודת השרת הראשי חודשה במשני",
-    "storage_parent_unbind": "השרת המשני נותק מהראשי",
-    "peer_write": "פעולת כתיבה בשרת משני מהקונסולה של הראשי",   # #1179
+    "storage_parent_cert_renewed": "תעודת השרת הראשי חודשה בשרת המשנה",
+    "storage_parent_unbind": "שרת המשנה נותק מהראשי",
+    "peer_write": "פעולת כתיבה בשרת משנה מהקונסולה של הראשי",   # #1179
     "smart_answered": "שאלת SMART על דיסק נענתה",               # #989
     "task_token_refused": "אסימון משימה נדחה",
     "settings_backup_downloaded": "גיבוי ההגדרות הורד",
@@ -284,23 +312,23 @@ SEVERITY_LEVELS = ("info", "ok", "warn", "err")
 _SEVERITY_ERR = {
     "login_failed", "login_refused_console", "login_lockout",
     "agent_login_failed", "agent_role_refused", "class_deploy_refused",
-    "session_image_bound", "pull_refused", "cloner_round_refused", "client_failed", "wol_failed",
-    "room_wave_lost", "send_failed", "direct_failed", "disk_failure",
+    "session_image_bound", "pull_refused", "pull_failed", "pull_sweep_failed", "cloner_round_refused", "client_failed", "wol_failed",
+    "room_wave_lost", "room_failed", "room_wake_failed", "send_failed", "direct_failed", "disk_failure",
     "session_orphaned", "identity_refused", "storage_transfer_failed", "logo_refused",
     "capture_failed", "drivers_failed", "boot_storage_failed", "dhcp_apply_failed", "nic_services_apply_failed",
-    "known_macs_apply_failed", "vmupdate_failed", "vmupdate_firewall_lost",
+    "known_macs_apply_failed", "vmupdate_failed", "vmupdate_firewall_lost", "retention_failed",
     "vmupdate_no_lease", "vmupdate_net_teardown_failed",
 }
 _SEVERITY_WARN = {
     "unknown_mac", "drive_rates_failed", "boot_loop_local", "boot_loop_unverified", "agent_loop",
-    "agent_loop_unverified", "report_from_nonmember", "identity_unverifiable",
-    "capture_cancel", "direct_cancel", "send_stopped", "dhcp_proxy_risk",
+    "agent_loop_unverified", "report_from_nonmember", "identity_unverifiable", "room_rejoin",
+    "capture_cancel", "direct_cancel", "task_boot_cancel", "send_stopped", "dhcp_proxy_risk",
     "net_config_unverified", "net_rollback_armed", "net_rollback",
     "net_rollback_unreadable", "work_area_kept", "nic_services_armed", "nic_services_reverted",
     "storage_node_disable",
-    "room_drawer_changed", "room_drawer_unidentified",
+    "room_drawer_changed", "room_drawer_unidentified", "room_rewake",
     "power_expired", "gui_failed", "wol_arm_failed", "vmupdate_force_off", "vmupdate_expired", "vmupdate_control_auto",
-    "vmupdate_mac_created",
+    "vmupdate_mac_created", "vmupdate_leftover_failed", "linux_initramfs_warning",
 }
 _SEVERITY_OK = {
     "login", "capture_done", "client_done", "pull_done", "room_done",
@@ -320,12 +348,25 @@ def severity(event: str) -> str:
     return "info"
 
 
+def idle_minutes_he(seconds: str) -> str:
+    """‏`console_idle_seconds` כמו שהקונסולה מציגה אותו: "כבוי" (0), "אחרי N דקות"."""
+    try:
+        n = int(seconds)
+    except ValueError:
+        return seconds
+    if n <= 0:
+        return "כבוי"
+    minutes = max(1, round(n / 60))
+    return "אחרי דקה אחת" if minutes == 1 else f"אחרי {minutes} דקות"
+
+
 SETTINGS_HE = {
     "recovery_require_login": "שחזור בודד דורש כניסה",
     "session_wait_seconds": "המתנה מהמצטרף האחרון (שניות)",
-    "console_idle_seconds": "ניתוק אוטומטי בחוסר פעילות (שניות)",
+    "console_idle_seconds": "ניתוק אוטומטי בחוסר פעילות",   # נדב 18/10: בדקות, 0 = כבוי
     "class_deploy_enabled": "הפצה לכיתות ממחשב הבנייה",
     "learned_rate_enabled": "קצב שידור אוטומטי",
+    "mfa_required_for_admins": "חיוב אימות דו-שלבי למנהלים",   # נדב 18/10
     "crc_warn_threshold": "סף שגיאות CRC לאזהרה",   # #1366
     "min_free_gb": "מינימום מקום פנוי אחרי שחזור (GB)",   # #1354
     "intersite_rate_cap_mbps": "הגבלת קצב בין אתרים (Mb/s)",   # #1473
@@ -420,10 +461,13 @@ class JournalTranslator:
             if m:
                 image = self._images.get(m.group(3), m.group(3))
                 text = f'{m.group(4)} — "{image}"'
-        elif event == "pull_done":
+        elif event in ("pull_done", "pull_failed"):
             text = _SES.sub(lambda m: self._sessions.get(m.group(1), m.group(1)), detail)
-        elif event in ("client_done", "client_failed", "report_from_nonmember"):
+        elif event in ("client_done", "client_failed", "report_from_nonmember", "room_rejoin"):
             text = self._names(_SES.sub("הסבב", detail)).replace(" in ", " בתוך ")
+        elif event in ("send_held_smart", "send_hold_released", "smart_ask_expired"):
+            text = self._names(_SES.sub(lambda m: self._sessions.get(m.group(1), m.group(1)),
+                                        detail))
         elif event in ("session_start_auto", "session_start_manual", "session_close",
                        "send_done", "send_stopped"):
             text = _SES.sub(lambda m: self._sessions.get(m.group(1), m.group(1)), detail)
@@ -503,7 +547,12 @@ class JournalTranslator:
             if m:
                 name = SETTINGS_HE.get(m.group(1), m.group(1))
                 value = {"true": "פעיל", "false": "כבוי"}.get(m.group(2), m.group(2))
+                if m.group(1) == "console_idle_seconds":   # נדב 18/10: דקות, לא שניות
+                    value = idle_minutes_he(m.group(2))
                 text = f"{name}: {value}"
+                rest = detail[m.end():].strip(" —")
+                if rest:                               # שורה עם הסבר (השדרוג של MFA, 18/10)
+                    text += f" — {rest}"
         elif event in ("power_delivered", "power_expired"):
             # ‏"<mac> <poweroff|reboot>" — המכונה בשמה, הפעולה בעברית.
             m = re.match(r"(\S+) (\S+)$", detail)

@@ -22,12 +22,40 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import struct
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 AGENT_LIB = Path(__file__).resolve().parents[1] / "agent" / "lib"
+
+#: ‏#1610: מעבר/קריאה למשתמש ה-VM **בשמו** (ACL), לא דרך קבוצה ולא דרך
+#: `os.chmod`. ‏CodeQL (‏`py/overly-permissive-file`) מסמן כל ביט שאינו של
+#: הבעלים — גם 0o710 — וההערה `codeql[...]` אינה סוגרת התראה בשער (נמדד
+#: 17/10: ‏#341 נשארה פתוחה). ‏ACL עם ערך אחד בשם ה-uid הוא גם **מינימלי
+#: יותר** מקבוצה: חבר אחר בקבוצה של משתמש ה-VM אינו עובר.
+ACL_X, ACL_R = 1, 4
+_ACL_XATTR = "system.posix_acl_access"
+_ACL_USER_OBJ, _ACL_USER, _ACL_GROUP_OBJ, _ACL_MASK, _ACL_OTHER = 0x01, 0x02, 0x04, 0x10, 0x20
+_ACL_NO_ID = 0xFFFFFFFF
+
+
+def grant_user(path: str | Path, uid: int, perm: int) -> None:
+    """`uid` (בלבד) מקבל `perm` (‏`ACL_X`/`ACL_R`) על `path`. הבעלים והקבוצה
+    הבעלת נשארים כפי שהם, והקבוצה ו"אחרים" — אפס. ביטי הבעלים נשמרים.
+
+    כשל — ‏OSError עם הסיבה, לא הרשאה רחבה יותר בשקט (עיקרון 5): מערכת קבצים
+    בלי ACL אינה ממשיכה בלי הגנה."""
+    owner = (os.lstat(path).st_mode >> 6) & 7
+    entries = [(_ACL_USER_OBJ, owner, _ACL_NO_ID), (_ACL_USER, perm, uid),
+               (_ACL_GROUP_OBJ, 0, _ACL_NO_ID), (_ACL_MASK, perm, _ACL_NO_ID),
+               (_ACL_OTHER, 0, _ACL_NO_ID)]
+    blob = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *e) for e in entries)
+    try:
+        os.setxattr(path, _ACL_XATTR, blob, follow_symlinks=False)
+    except OSError as exc:
+        raise OSError(exc.errno, f"{path}: לא ניתן לתת למשתמש {uid} גישה (ACL): {exc.strerror}") from exc
 
 #: מה שנטען, בסדר הזה. אותה רשימה ש-`tests/test_restore_evidence.py`
 #: טוענת מול הזיופים, ועוד ארבעת קובצי הקליטה. אף אחד מהם אינו מריץ דבר
@@ -36,6 +64,7 @@ LIBS = (
     "common.sh", "waits.sh", "jsonq.sh", "progress.sh", "restore.sh",
     "expand.sh", "grow.sh", "failmark.sh", "diskfit.sh", "manifest.sh",
     "hibernation.sh", "shrinkplan.sh", "shrink.sh", "bootca.sh",
+    "lcsnap.sh",    # ‏#1491: ‏`_lc_relocs` — כמה `ntfsresize -n` אומר שיוזז
 )
 
 #: משתני הסיבה שהסוכן ממלא, והגשר מחזיר.
@@ -121,8 +150,10 @@ def fresh_user_dir(parent: Path, uid: int, gid: int) -> Path:
     ה-fd שנפתח ב-`O_NOFOLLOW|O_DIRECTORY` — לא על נתיב."""
     parent = Path(parent)
     if not parent.exists():
-        parent.mkdir(parents=True, mode=0o755)
-        os.chmod(parent, 0o755)          # לא לפי ה-umask של מי שקרא
+        # ‏#1535/#1610: המשתמש רק **עובר** דרך ההורה אל הילד שלו — בשמו (ACL),
+        # לא כ"אחרים" ולא לפי ה-umask. ‏root נשאר הבעלים.
+        parent.mkdir(parents=True, mode=0o700)
+        grant_user(parent, uid, ACL_X)
     st = os.lstat(parent)
     if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid()
             or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):

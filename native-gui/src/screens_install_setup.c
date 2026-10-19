@@ -1,7 +1,54 @@
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "screens_install.h"
+#include "screens_rounds.h"   /* bidi_isolate */
+
+/* "ext4, unknown, unknown" -> every exact "unknown" token in Hebrew (#1566) */
+static void display_part_types(const char *in,char *out,size_t n){
+    size_t used=0;
+    out[0]=0;
+    while(*in&&used<n){
+        const char *end=strstr(in,", ");
+        size_t len=end?(size_t)(end-in):strlen(in);
+        int unk=len==7&&!strncmp(in,"unknown",7);
+        int w=snprintf(out+used,n-used,"%s%.*s",used?", ":"",unk?(int)strlen("לא ידוע"):(int)len,unk?"לא ידוע":in);
+        if(w<0)break;
+        used+=(size_t)w;
+        if(!end)break;
+        in=end+2;
+    }
+}
+
+static void display_disk_contents(const char *raw,char *out,size_t n){
+    if(!strcmp(raw,"empty")){snprintf(out,n,"ריק");return;}
+    if(!strcmp(raw,"unknown")){snprintf(out,n,"לא ידוע");return;}
+    const char *colon=strchr(raw,':'),*parts=colon?strstr(colon+1," partitions"):NULL;
+    if(colon&&parts){
+        char scheme[32],scheme_i[40],types[128],types_he[160],types_i[168];
+        size_t sn=(size_t)(colon-raw);
+        if(sn>=sizeof scheme)sn=sizeof scheme-1;
+        memcpy(scheme,raw,sn);
+        scheme[sn]=0;
+        bidi_isolate(scheme,scheme_i,sizeof scheme_i);
+        int count=atoi(colon+1);
+        const char *open=strchr(parts,'('),*close=open?strrchr(open,')'):NULL;
+        if(open&&close&&close>open+1){
+            size_t tn=(size_t)(close-open-1);
+            if(tn>=sizeof types)tn=sizeof types-1;
+            memcpy(types,open+1,tn);
+            types[tn]=0;
+            display_part_types(types,types_he,sizeof types_he);
+            bidi_isolate(types_he,types_i,sizeof types_i);
+            snprintf(out,n,"%s:%d מחיצות (%s)",scheme_i,count,types_i);
+        }
+        else snprintf(out,n,"%s:%d מחיצות",scheme_i,count);
+        return;
+    }
+    if(!strncmp(raw,"filesystem ",11)){char type_i[136];bidi_isolate(raw+11,type_i,sizeof type_i);snprintf(out,n,"מערכת קבצים %s",type_i);return;}
+    snprintf(out,n,"%s",raw);
+}
 
 static void disk_head(cairo_t *cr,const Theme *t,Rect r){
     draw_fill_rrect(cr,r,0,t->field);
@@ -20,8 +67,10 @@ static void disk_row(App *a,cairo_t *cr,Rect r,int i){
     install_text_ltr(cr,d->model[0]?d->model:d->path,13,600,r.x+r.w-285,r.y+9,220,d->iso?t->muted:t->ink);
     install_text_ltr(cr,d->path,11,400,r.x+r.w-285,r.y+31,220,t->muted);
     char size[32];snprintf(size,sizeof size,"%.1f GiB",d->size_bytes/1073741824.0);install_text_ltr(cr,size,12,500,r.x+r.w*.46,r.y+19,r.w*.14,d->iso?t->muted:t->ink);
-    install_text_ltr(cr,d->bus[0]?d->bus:"—",12,400,r.x+r.w*.30,r.y+19,r.w*.12,t->muted);
-    install_text_r(cr,t,d->iso?"מדיית ההתקנה":(d->has[0]?d->has:"—"),11,400,r.x+r.w*.28,r.y+(selected?9:14),r.w*.24,t->muted);
+    if(!strcmp(d->bus,"unknown"))install_text_r(cr,t,"לא ידוע",12,400,r.x+r.w*.42,r.y+19,r.w*.12,t->muted);
+    else install_text_ltr(cr,d->bus[0]?d->bus:"—",12,400,r.x+r.w*.30,r.y+19,r.w*.12,t->muted);
+    char has[256];display_disk_contents(d->has[0]?d->has:"—",has,sizeof has);
+    install_text_r(cr,t,d->iso?"מדיית ההתקנה":has,11,400,r.x+r.w*.28,r.y+(selected?9:14),r.w*.24,t->muted);
     if(selected)install_text_r(cr,t,"יימחק",11,600,r.x+r.w*.28,r.y+33,r.w*.24,t->danger_fg);   /* ui-audit: was r.x+68, on top of "has" at 1024 */
     if(!d->iso)hit_add(a,r,HIT_INSTALL_DISK_BASE+i);
 }
@@ -49,8 +98,8 @@ static void result_box(App *a,cairo_t *cr,Rect r){InstallState *s=&a->install;co
 
 void install_draw_role(App *a,cairo_t *cr,InstallLayout l){InstallState *s=&a->install;const Theme *t=a->theme;double w=l.body.w,x=l.body.x,y=l.body.y;   /* the one column (mockup 10/10) */
     install_text_r(cr,t,"נבחר בתפריט ההתקנה",12,500,x+w,y,w,t->muted);y+=24;
-    install_radio(a,cr,(Rect){x,y,w,74},"שרת ראשי","מנהל את הספרייה, השיכפול והשרתים המשניים.",!s->secondary,HIT_INSTALL_PRIMARY);y+=86;
-    install_radio(a,cr,(Rect){x,y,w,74},"שרת משני","שרת באתר נוסף; הראשי יוזם אליו חיבור מאובטח בפורט 8443.",s->secondary,HIT_INSTALL_SECONDARY);y+=96;
+    install_radio(a,cr,(Rect){x,y,w,74},"שרת ראשי","מנהל את הספרייה, השיכפול ושרתי המשנה.",!s->secondary,HIT_INSTALL_PRIMARY);y+=86;
+    install_radio(a,cr,(Rect){x,y,w,74},"שרת משנה","שרת באתר נוסף; הראשי יוזם אליו חיבור מאובטח בפורט 8443.",s->secondary,HIT_INSTALL_SECONDARY);y+=96;
     if(s->secondary){install_field_draw(a,cr,(Rect){x,y,w-150,56},"כתובת השרת הראשי",s->primary_url,0,HIT_INSTALL_PRIMARY_URL,1);Text check=btn_label(cr,"בדוק חיבור");Rect cb={x+w-138,y+19,138,36};draw_btn(a,cr,cb,&check,BTN_PLAIN,HIT_INSTALL_CHECK_PRIMARY);install_focus_ring(a,cr,cb,HIT_INSTALL_CHECK_PRIMARY);text_free(&check);y+=60;install_text_r(cr,t,"כתובת ה-IP של השרת הראשי, כפי שהיא נראית מאתר זה",12,400,x+w,y,w-150,t->muted);y+=26;result_box(a,cr,(Rect){x,y,w,70});y+=82;}
     if(s->error[0])install_text_r(cr,t,s->error,13,600,x+w,y,w,t->danger_fg);
     install_footer(a,cr,l,"הבא",HIT_INSTALL_NEXT,1,install_role_ready(s));   /* #1310: no green, no next */
@@ -60,8 +109,10 @@ static void table_head(cairo_t *cr,const Theme *t,Rect r){draw_fill_rrect(cr,r,0
 
 static void nic_row(App *a,cairo_t *cr,Rect r,int i){InstallState *s=&a->install;InstallNic *n=&s->nics[i];const Theme *t=a->theme;int sel=i==s->nic;draw_fill_rrect(cr,r,0,sel?t->indigo_soft:t->surface);cairo_rectangle(cr,r.x,r.y+r.h-1,r.w,1);draw_set(cr,t->hair);cairo_fill(cr);
     double cx=r.x+r.w-22,cy=r.y+r.h/2;cairo_arc(cr,cx,cy,7,0,6.283);draw_set(cr,sel?t->indigo:t->hair);cairo_set_line_width(cr,2);cairo_stroke(cr);if(sel){cairo_arc(cr,cx,cy,3.5,0,6.283);draw_set(cr,t->indigo);cairo_fill(cr);}
-    install_text_ltr(cr,n->name,13,600,r.x+r.w-210,r.y+9,145,t->ink);char model[150];snprintf(model,sizeof model,"%s · %s",n->model[0]?n->model:"כרטיס רשת",n->mac);install_text_ltr(cr,model,11,400,r.x+r.w-210,r.y+31,180,t->muted);
-    install_text_r(cr,t,n->link,12,600,r.x+r.w*.56,r.y+20,r.w*.15,!strcmp(n->link,"מחובר")?t->success_ink:t->muted);
+    char identity[180];snprintf(identity,sizeof identity,"%s · %s",n->name,n->model[0]?n->model:"כרטיס רשת");
+    install_text_ltr(cr,identity,13,600,r.x+r.w-210,r.y+9,145,t->ink);install_text_ltr(cr,n->mac,11,400,r.x+r.w-210,r.y+31,180,t->muted);
+    char link[40];if(!strcmp(n->link,"unknown"))snprintf(link,sizeof link,"לא ידוע");else snprintf(link,sizeof link,"%s",n->link);
+    install_text_r(cr,t,link,12,600,r.x+r.w*.56,r.y+20,r.w*.15,!strcmp(link,"מחובר")?t->success_ink:t->muted);
     install_text_ltr(cr,n->current[0]?n->current:"—",12,400,r.x+r.w*.21,r.y+20,r.w*.18,t->ink);
     install_text_r(cr,t,n->source[0]?n->source:"—",11,400,r.x+r.w*.19,r.y+15,r.w*.18,t->muted);if(a->focus==HIT_INSTALL_NIC_BASE+i)draw_border_rrect(cr,(Rect){r.x+3,r.y+3,r.w-6,r.h-7},4,t->indigo,2);hit_add(a,r,HIT_INSTALL_NIC_BASE+i);}
 

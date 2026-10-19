@@ -28,6 +28,17 @@ CAPTURE_THREADS="${CAPTURE_THREADS:-0}"
 # נבדלים בעשרות ג'יגה. מי שיודע את המספר הוא מי שמדד כונן יעד אמיתי.
 CAPTURE_TARGET_BYTES="${CAPTURE_TARGET_BYTES:-}"
 
+capture_pcl_flags() {
+    # $1 = partclone tool, $2 = fs. ONE place for both reads of a direct send
+    # (directsend.sh): its receivers hash pass 2 against pass 1, and #1472 gave
+    # pass 1 alone -a0 -z -- every direct send failed on partition 1 (#1574).
+    # -I: the preflight already refused dirty/hibernated NTFS; still read-only.
+    # ‏#1472: ‏-a0 -z 524288 כמו lccopy.sh (נמדד שם); ‏fanout -S מגבב את כל הזרם.
+    _cf=""; [ "$2" = ntfs ] && _cf="-I"
+    [ "$1" = partclone.dd ] || _cf="$_cf -a0 -z 524288"
+    echo "$_cf"
+}
+
 capture_disk() {
     # $1 = task id, $2 = disk name. Emits the manifest path on success.
     _task="$1"; _disk="$2"
@@ -185,12 +196,7 @@ capture_disk() {
             "$RUN_DIR/zstd.$_idx.rc" "$RUN_DIR/fanout.$_idx.rc" "$_out.bytes" \
             "$RUN_DIR/targets/$_disk/partclone.err"   # ‏#1254: האחוז של המחיצה הזו בלבד (progress.sh)
         _pcl=$(partclone_for_fs "$_fs")
-        # The read-only preflight above has already refused dirty/hibernated
-        # NTFS. -I remains read-only and partclone's rc still decides success.
-        _ignore=""
-        [ "$_fs" = ntfs ] && _ignore="-I"
-        # ‏#1472: ‏-a0 -z 524288 כמו lccopy.sh:116-119 (נמדד שם); ‏fanout -S מגבב את כל הזרם.
-        [ "$_pcl" = partclone.dd ] || _ignore="$_ignore -a0 -z 524288"
+        _ignore=$(capture_pcl_flags "$_pcl" "$_fs")
         # ה-rc של כל שלב נלכד במפורש: ב-busybox ash אין pipefail, ו-$? של
         # הצינור הוא של השלב האחרון בלבד — ‏sha256sum שמצליח גם על קלט ריק
         # הפך כשל אמצע לקובץ "מוצלח" (מעבדה #12, קליטה קטועה #776).
@@ -259,7 +265,7 @@ capture_disk() {
     done < "$_parts"
     # ‏#1466: הבייטים עברו; העותק בזיכרון משוחרר (המקור לא נכתב). כשל = אזהרה בלבד.
     capture_stage restore_size
-    shrink_restore_source "$_disk"
+    [ "${CAPTURE_SINK:-upload}" = discard ] || shrink_restore_source "$_disk"   # #1171: a direct send reads the view again; direct_send_task releases it
 
     _json_parts=${_json_parts%,}
     _json_parts=$(_mark_expandable "$_json_parts")

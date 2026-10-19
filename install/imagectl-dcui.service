@@ -1,7 +1,7 @@
 # ImageCtl physical operations console (#910 part 2).
 # The installer must mask getty@tty1.service before enabling this unit.
 [Unit]
-Description=ImageCtl DCUI (physical console on tty1)
+Description=ImageSrv DCUI (physical console on tty1)
 After=imagectl-server.service network-online.target
 Wants=network-online.target
 Conflicts=getty@tty1.service

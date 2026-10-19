@@ -27,7 +27,7 @@ verify_table() {
     # המצב שבו partclone פותח **קובץ רגיל** ב-devtmpfs, כותב את המחיצה
     # ל-RAM ויוצא 0 — וה-sha256 עובר, כי הוא נלקח על הבייטים שהתקבלו
     # ולא על מה שיושב על הדיסק (#51). "לא צעק" אינו "נכתב".
-    _plan="$RUN_DIR/table.plan"
+    _plan="$RUN_DIR/table${PREP_TAG:-}.plan"   # PREP_TAG: one file per drawer when they run at once (#1704)
     manifest_plan "$2" > "$_plan" \
         || { log "$1: no partition plan to check the table against"; return 1; }
     _want=$(awk 'END { print NR }' "$_plan")
@@ -101,10 +101,10 @@ apply_gpt() {
     # מרנדר JSON null כמחרוזת `null`, ולכן שתי הצורות נבדקות. ‏PLAN_ERROR
     # נושא את הסיבה אל `targets/<dev>/error`, כי "לא הצלחנו לכתוב טבלה"
     # אינו אומר לטכנאי איזו מחיצה ולמה (עיקרון 4).
-    manifest_plan "$2" > "$RUN_DIR/gate.plan" || return 1
+    manifest_plan "$2" > "$RUN_DIR/gate${PREP_TAG:-}.plan" || return 1
     validate_restore_plan "$1" "$2" || return 1
     _bad=$(awk -F'|' '$4 != "swap" && ($7 == "" || $7 == "null") {
-        printf "%s%s (%s)", (n++ ? ", " : ""), $1, $4 }' "$RUN_DIR/gate.plan")
+        printf "%s%s (%s)", (n++ ? ", " : ""), $1, $4 }' "$RUN_DIR/gate${PREP_TAG:-}.plan")
     if [ -n "$_bad" ]; then
         PLAN_ERROR="למחיצה $_bad אין קובץ והיא אינה swap — המניפסט פגום, הדיסק לא שונה"
         log "$1: $PLAN_ERROR"
@@ -112,32 +112,31 @@ apply_gpt() {
     fi
 
     target_write_started "$1" || { PLAN_ERROR="לא הצלחנו לתעד את זהות היעד לפני הכתיבה"; return 1; }
-    sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || return 1
-    manifest_plan "$2" | while IFS='|' read -r _idx _guid _role _fs _start _size _f _sha _exp _uguid _uuid _attrs; do
-        _end=$((_start + _size / 512 - 1))
-        # ה-GUID הייחודי משוחזר כשיש: ה-BCD של Windows מאתר את מחיצת
-        # המערכת לפי זוג ה-GUIDים (דיסק+מחיצה) — טבלה עם GUIDים חדשים
-        # נגמרת ב-winload.efi 0xc000000e על כל מחשב משוחזר (#26).
-        _u=""; _a=""
-        if [ -n "$_uguid" ]; then _u="-u $_idx:$_uguid"; fi
-        if [ -n "$_attrs" ]; then _a="-A $_idx:=:0x$_attrs"; fi
-        # shellcheck disable=SC2086 # הפיצול של $_u/$_a מכוון
-        sgdisk -a 1 -n "$_idx:$_start:$_end" -t "$_idx:$_guid" $_u $_a "$DEVROOT/$1" \
-            >> "$LOG_FILE" 2>&1 || exit 1
-    done || return 1
+    # ‏#1545: על טבלה ישנה פגומה --zap-all מוחק ויוצא 2 (gptcl.cc); השני רץ על דיסק נקי וחייב 0
+    sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || { log "$1: zap-all exited non-zero (damaged old table?) -- again on the wiped disk"; sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1; } || return 1
+    # #1714: the whole table in ONE sgdisk call -- every writing sgdisk sleeps 1s
+    # (DiskSync, diskio-unix.cc). Same operations, same order (gptcl.cc runs them
+    # in command-line order), `-a 1` before every `-n` (#1448). The lines are the
+    # plan checked above: every field passed validate_restore_plan (digits, GUID,
+    # hex), so splitting $_gpt is safe. The unique GUID when there is one (BCD
+    # pairs disk+partition GUIDs, #26 #1212), the attributes (#1130), -U, then -e
+    # (backup to the real end, check 2.5). Its exit code is the one write: != 0 = no table.
+    _gpt="-a 1"
+    while IFS='|' read -r _idx _guid _role _fs _start _size _f _sha _exp _uguid _uuid _attrs; do
+        _gpt="$_gpt -n $_idx:$_start:$((_start + _size / 512 - 1)) -t $_idx:$_guid"
+        [ -z "$_uguid" ] || _gpt="$_gpt -u $_idx:$_uguid"
+        [ -z "$_attrs" ] || _gpt="$_gpt -A $_idx:=:0x$_attrs"
+    done < "$RUN_DIR/gate${PREP_TAG:-}.plan" || return 1
     _dguid=$(json_get "$2" ".disk_guid")
-    if [ -n "$_dguid" ] && [ "$_dguid" != "null" ]; then
-        sgdisk -U "$_dguid" "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 \
-            || { log "$1: could not set the disk GUID"; return 1; }
-    fi
+    if [ -n "$_dguid" ] && [ "$_dguid" != "null" ]; then _gpt="$_gpt -U $_dguid"; fi
     # מכאן ומטה כל שורה היא ראיה, ואף אחת מהן אינה מסתיימת ב-`|| true`:
-    # ‏sgdisk -e הוא לב ההרחבה (בדיקה 2.5), ‏rereadpt הוא הסימן היחיד
-    # שהקרנל קיבל את הטבלה ובנה את /dev/sdaN, ו-verify_table קורא את
-    # שניהם בחזרה מהדיסק. עד כאן הפונקציה נגמרה ב-`sleep 1` ולכן החזירה
-    # תמיד 0 — טבלה שנכשלה לגמרי הייתה נראית כמו טבלה שנכתבה (#51).
-    sgdisk -e "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 \
-        || { log "$1: could not move the GPT backup to the end of the disk"; return 1; }
-    blockdev --rereadpt "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 \
+    # ‏rereadpt הוא הסימן היחיד שהקרנל קיבל את הטבלה ובנה את /dev/sdaN,
+    # ו-verify_table קורא בחזרה מהדיסק. עד כאן הפונקציה נגמרה ב-`sleep 1`
+    # ולכן החזירה תמיד 0 — טבלה שנכשלה נראתה כמו טבלה שנכתבה (#51).
+    # shellcheck disable=SC2086 # הפיצול של $_gpt מכוון
+    sgdisk $_gpt -e "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 \
+        || { log "$1: sgdisk refused the table (one call: partitions, disk GUID, backup to the end): $_gpt -e"; return 1; }
+    reread_table "$DEVROOT/$1" \
         || { log "$1: the kernel refused to re-read the partition table"; return 1; }
     verify_table "$1" "$2"
 }
@@ -185,20 +184,20 @@ expand_last() {
     [ $((_disk_sectors - _table_end - _tailsec)) -gt 2097152 ] || return 0
 
     log "expanding partition $_idx to fill the disk"
-    _move_to_tail "$1" "$_tail" "$_disk_sectors" || return 1
-    # ההרחבה בונה את המחיצה מחדש — ה-GUID הייחודי חייב לשרוד גם אותה,
-    # אחרת ה-BCD מאבד את מחיצת המערכת שהרגע שוחזרה (#26).
-    _u=""; _a=""
-    if [ -n "$_uguid" ]; then _u="-u $_idx:$_uguid"; fi
-    if [ -n "$_attrs" ]; then _a="-A $_idx:=:0x$_attrs"; fi
+    # #1714: the tail's move and the candidate's rebuild are ONE sgdisk call, in
+    # the order the separate calls ran. The unique GUID survives the rebuild,
+    # or the BCD loses the system partition just restored (#26).
+    _gpt="-a 1$(_move_to_tail "$_tail" "$_disk_sectors") -d $_idx -n $_idx:$_start:0 -t $_idx:$_guid"
+    [ -z "$_uguid" ] || _gpt="$_gpt -u $_idx:$_uguid"
+    [ -z "$_attrs" ] || _gpt="$_gpt -A $_idx:=:0x$_attrs"
     # ‏0 בסוף = סוף השטח הפנוי הגדול ביותר, כלומר עד תחילת ה-swap החדשה.
-    # shellcheck disable=SC2086 # הפיצול של $_u/$_a מכוון
-    sgdisk -a 1 -d "$_idx" -n "$_idx:$_start:0" -t "$_idx:$_guid" $_u $_a "$DEVROOT/$1" \
-        >> "$LOG_FILE" 2>&1 || return 1
+    # shellcheck disable=SC2086 # הפיצול של $_gpt מכוון
+    sgdisk $_gpt "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 \
+        || { log "$1: sgdisk refused the expanded table (one call): $_gpt"; return 1; }
     # ההרחבה בנתה טבלה **שונה** מזו של apply_gpt, ולכן היא נקראת בחזרה
     # שוב: מי שכתב לא מעיד על עצמו. ‏rereadpt שנכשל היה `|| true` עד כאן,
     # והוא הסימן היחיד שהקרנל בכלל קיבל את הטבלה החדשה (#51).
-    blockdev --rereadpt "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 \
+    reread_table "$DEVROOT/$1" \
         || { log "$1: the kernel refused to re-read the expanded table"; return 1; }
     verify_table "$1" "$2" || return 1
     # מערכת הקבצים גדלה רק כשיהיה בה מה להגדיל — grow_expanded, אחרי הזרם.
@@ -264,21 +263,19 @@ _expand_candidate() {
 }
 
 _move_to_tail() {
-    # $1 = disk name, $2 = the plan lines that sit after the candidate, in
-    # any order (may be empty). Deleted first, then recreated from the disk's
-    # last one inwards, so that their order on the platter survives the move.
-    # $3 = disk sectors. Start aligned down to 2048 (SSD speed), size EXACT
-    # (#1467): `-n i:-N:0` let sgdisk align the start and keep the end, so
+    # $1 = the plan lines that sit after the candidate, in any order (may be
+    # empty); $2 = disk sectors. PRINTS the sgdisk options that move them --
+    # expand_last runs them in its one call (#1714). Deleted first, then
+    # recreated from the disk's last one inwards, so that their order on the
+    # platter survives the move. Start aligned down to 2048 (SSD speed), size
+    # EXACT (#1467): `-n i:-N:0` let sgdisk align the start and keep the end, so
     # the partition came out up to 2047 sectors larger than the source's.
     # The index is kept: it is what the stream writes by (and mkswap).
-    printf '%s\n' "$2" | while IFS='|' read -r _si _rest; do
-        [ -n "$_si" ] || continue
-        sgdisk -d "$_si" "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || exit 1
-    done || return 1
+    printf '%s\n' "$1" | awk -F'|' '$1 != "" { printf " -d %s", $1 }'
     # הסדר נקבע כאן, לפי start_sector יורד — ולא ב-sort(1), שאינו בשימוש
     # בשום מקום אחר בסוכן. הרשימה שמגיעה לכאן היא בסדר אינדקסים, ובאימג'
     # ענן זה אינו הסדר על הדיסק; מיון שגוי היה מחליף שתי מחיצות בשקט.
-    printf '%s\n' "$2" \
+    printf '%s\n' "$1" \
         | awk -F'|' '{ a[NR] = $0; k[NR] = $5 + 0 }
              END { for (i = 1; i <= NR; i++) for (j = i + 1; j <= NR; j++)
                        if (k[j] > k[i]) { t = k[i]; k[i] = k[j]; k[j] = t
@@ -286,14 +283,11 @@ _move_to_tail() {
                    for (i = 1; i <= NR; i++) print a[i] }' \
         | while IFS='|' read -r _si _sg _sr _sf _ss _sb _sfile _ssha _sexp _su _suuid _sa; do
         [ -n "$_si" ] || continue
+        _sx=$(( (${_sx_end:-$(($2 - 34))} - _sb / 512 + 1) / 2048 * 2048 ))
+        printf ' -n %s:%s:%s -t %s:%s' "$_si" "$_sx" "$((_sx + _sb / 512 - 1))" "$_si" "$_sg"
         # ה-GUID הייחודי שורד גם את ההזזה: ‏/etc/fstab עשוי להפנות ל-PARTUUID.
-        _su_arg=""; _sa_arg=""
-        if [ -n "$_su" ]; then _su_arg="-u $_si:$_su"; fi
-        if [ -n "$_sa" ]; then _sa_arg="-A $_si:=:0x$_sa"; fi
-        # shellcheck disable=SC2086 # הפיצול של $_su_arg/$_sa_arg מכוון
-        _sx=$(( (${_sx_end:-$(($3 - 34))} - _sb / 512 + 1) / 2048 * 2048 ))
-        sgdisk -a 1 -n "$_si:$_sx:$((_sx + _sb / 512 - 1))" -t "$_si:$_sg" $_su_arg $_sa_arg "$DEVROOT/$1" \
-            >> "$LOG_FILE" 2>&1 || exit 1
+        [ -z "$_su" ] || printf ' -u %s:%s' "$_si" "$_su"
+        [ -z "$_sa" ] || printf ' -A %s:=:0x%s' "$_si" "$_sa"
         _sx_end=$((_sx - 1))
-    done || return 1
+    done
 }

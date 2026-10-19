@@ -164,9 +164,9 @@ def test_the_cloner_state_numbers_the_round_drawers_by_the_mapping(tmp_path):
     out = sh(env(run, gui) + PRELUDE + PORTS + "cloner_gui_state")
     assert out.returncode == 0, out.stderr
     lines = (gui / "state").read_text(encoding="utf-8").splitlines()
-    assert "drawer=1|sda|writing|45|100||-1|-1|2|SATA 0" in lines
-    assert "drawer=2|sdb|waiting|0|100||-1|-1|0|SATA 1" in lines, "port 2 is not mapped"
-    assert "drawer=3|sdc|waiting|0|100||-1|-1|1|SATA 2" in lines
+    assert "drawer=1|sda|writing|45|100||-1|-1|2|SATA 0||" in lines
+    assert "drawer=2|sdb|waiting|0|100||-1|-1|0|SATA 1||" in lines, "port 2 is not mapped"
+    assert "drawer=3|sdc|waiting|0|100||-1|-1|1|SATA 2||" in lines
     assert [l for l in lines if l.startswith("cdrawer_slot=")] == [
         "cdrawer_slot=1|SATA 2|", "cdrawer_slot=2|SATA 0|"]
 

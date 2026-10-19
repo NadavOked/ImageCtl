@@ -37,7 +37,7 @@ def secondary_unreachable(exc: BaseException, port=None) -> str:
     ההפעלה ([WinError 10061], connection refused) הולך ללוג בלבד; הכישלון
     עצמו נשאר גלוי (עיקרון 5)."""
     log.warning("secondary unreachable: %s: %s", type(exc).__name__, exc)
-    return ("השרת המשני לא עונה בכתובת הזו — בדקו כתובת, פורט "
+    return ("שרת המשנה לא עונה בכתובת הזו — בדקו כתובת, פורט "
             f"{port if port else 8443} וחומת אש")
 
 
@@ -54,7 +54,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         עוד לפני שמגיעים לכאן; משני נופל כאן ב-409."""
         if storage_nodes.role(ctx.conn) != storage_nodes.ROLE_STANDALONE:
             raise HTTPException(
-                409, "ניהול שרתים משניים אפשרי רק בשרת ראשי (standalone)")
+                409, "ניהול שרתי משנה אפשרי רק בשרת ראשי (standalone)")
         return user
 
     # --- קבוצות אחסון -------------------------------------------------------
@@ -157,9 +157,12 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
     @router.post("/storage-nodes/{nid}/transfer")
     async def start_transfer(nid: str, request: Request,
                              user=Depends(require_standalone)):
-        image_id = str((await request.json()).get("image_id") or "")
+        body = await request.json()
+        image_id = str(body.get("image_id") or "")
+        location_id = str(body.get("location_id") or "loc_local")
         try:
-            tid = storage_transfer.start_transfer(ctx, data_dir, nid, image_id, user)
+            tid = storage_transfer.start_transfer(
+                ctx, data_dir, nid, image_id, user, location_id=location_id)
         except storage_transfer.TransferError as exc:
             raise HTTPException(exc.status, exc.detail)
         return {"id": tid}
@@ -206,9 +209,9 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         משני מושבת אינו נשאל (ואינו נרשם כ"לא ענה")."""
         node = storage_nodes.node_row(ctx.conn, nid)
         if node is None:
-            raise HTTPException(404, "שרת משני לא קיים")
+            raise HTTPException(404, "שרת משנה לא קיים")
         if node["disabled_at"]:
-            return {"connected": False, "error": "השרת המשני מושבת",
+            return {"connected": False, "error": "שרת המשנה מושבת",
                     "checked_at": now_iso(), "node_id": None, "protocol_version": None,
                     **storage_nodes.contact_fields(ctx.conn, node["id"])}
         try:
@@ -221,7 +224,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
                     "node_id": None, "protocol_version": None,
                     **_contact(node, error)}
         if not isinstance(answer, dict) or answer.get("ok") is not True:
-            error = "תשובה לא צפויה מהמשני"
+            error = "תשובה לא צפויה משרת המשנה"
             return {"connected": False, "error": error, "checked_at": now_iso(),
                     "node_id": None, "protocol_version": None,
                     **_contact(node, error)}
@@ -236,9 +239,9 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         """פרוקסי ל-``GET /images`` של המשני. כשל חיבור = ``connected:false``."""
         node = storage_nodes.node_row(ctx.conn, nid)
         if node is None:
-            raise HTTPException(404, "שרת משני לא קיים")
+            raise HTTPException(404, "שרת משנה לא קיים")
         if node["disabled_at"]:
-            return {"connected": False, "error": "השרת המשני מושבת", "images": [],
+            return {"connected": False, "error": "שרת המשנה מושבת", "images": [],
                     **storage_nodes.contact_fields(ctx.conn, node["id"])}
         try:
             client, token = storage_nodes.node_client(ctx.conn, data_dir, node)
@@ -249,7 +252,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
             return {"connected": False, "error": error, "images": [],
                     **_contact(node, error)}
         if not isinstance(answer, list):
-            error = "תשובה לא צפויה מהמשני"
+            error = "תשובה לא צפויה משרת המשנה"
             return {"connected": False, "error": error, "images": [],
                     **_contact(node, error)}
         return {"connected": True, "error": None, "images": answer,
@@ -265,9 +268,9 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
     def node_machines(nid: str, user=Depends(require_standalone)):
         node = storage_nodes.node_row(ctx.conn, nid)
         if node is None:
-            raise HTTPException(404, "שרת משני לא קיים")
+            raise HTTPException(404, "שרת משנה לא קיים")
         if node["disabled_at"]:
-            return {"connected": False, "error": "השרת המשני מושבת", "machines": [],
+            return {"connected": False, "error": "שרת המשנה מושבת", "machines": [],
                     **storage_nodes.contact_fields(ctx.conn, node["id"])}
         try:
             client, token = storage_nodes.node_client(ctx.conn, data_dir, node)
@@ -279,7 +282,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
                     **_contact(node, error)}
         machines = answer.get("machines")
         if not isinstance(machines, list):
-            error = "תשובה לא צפויה מהמשני"
+            error = "תשובה לא צפויה משרת המשנה"
             return {"connected": False, "error": error, "machines": [],
                     **_contact(node, error)}
         storage_nodes.record_version(ctx.conn, node["id"], answer)   # #1300
@@ -301,11 +304,11 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         sub = "/" + path
         kind = interserver_api.console_get_type(sub)
         if kind is None:
-            raise HTTPException(404, "הנתיב אינו זמין דרך השרת המשני")
+            raise HTTPException(404, "הנתיב אינו זמין דרך שרת המשנה")
         node = storage_nodes.node_row(ctx.conn, nid)
         if node is None:
-            raise HTTPException(404, "שרת משני לא קיים")
-        label = node["label"] or "השרת המשני"
+            raise HTTPException(404, "שרת משנה לא קיים")
+        label = node["label"] or "שרת המשנה"
         if node["disabled_at"]:
             raise HTTPException(409, f"{label} מושבת — לא נשאל")
         query = request.url.query
@@ -326,7 +329,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
             raise HTTPException(502, f"{label} לא ענה: {error}")
         if (not isinstance(answer, dict) or not isinstance(answer.get("status"), int)
                 or isinstance(answer.get("status"), bool) or "body" not in answer):
-            _contact(node, "תשובה לא צפויה מהמשני")
+            _contact(node, "תשובה לא צפויה משרת המשנה")
             raise HTTPException(502, f"{label}: תשובה לא צפויה מהמשני")
         _contact(node, None)
         inner, body = answer["status"], peer_safe.defang(answer["body"])
@@ -364,11 +367,11 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         import json
         method, sub = request.method, "/" + path
         if not interserver_api.console_write_allowed(method, sub):
-            raise HTTPException(404, "הפעולה אינה זמינה על השרת המשני מכאן")
+            raise HTTPException(404, "הפעולה אינה זמינה על שרת המשנה מכאן")
         node = storage_nodes.node_row(ctx.conn, nid)
         if node is None:
-            raise HTTPException(404, "שרת משני לא קיים")
-        label = node["label"] or "השרת המשני"
+            raise HTTPException(404, "שרת משנה לא קיים")
+        label = node["label"] or "שרת המשנה"
         what = f"{label} ({nid}): {method} {sub}"
         if node["disabled_at"]:
             raise HTTPException(409, f"{label} מושבת — לא נשאל")
@@ -382,7 +385,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         tainted = peer_safe.carries_defanged(body)
         if tainted is not None:
             raise HTTPException(409, (
-                "הערך כולל תו שהוחלף בתצוגה מהשרת המשני (‹ › ” ’ ˋ ＆) — שמירה מכאן הייתה "
+                "הערך כולל תו שהוחלף בתצוגה משרת המשנה (‹ › ” ’ ˋ ＆) — שמירה מכאן הייתה "
                 f"משנה אותו בשקט במשני: \"{tainted[:80]}\". תקנו את הערך בקונסולה של {label}."))
         query = request.url.query
         target = "/console" + sub + (f"?{query}" if query else "")
@@ -390,6 +393,9 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         def send() -> tuple[int, object]:
             try:
                 client, token = storage_nodes.node_client(ctx.conn, data_dir, node)
+                slow = interserver_api.CONSOLE_WRITE_TIMEOUTS.get(sub)   # #1776
+                if slow is not None:
+                    client.request_timeout = slow
                 client.open()
             except Exception as exc:                         # noqa: BLE001
                 raise _NotSent(interserver_auth.redact_secrets(str(exc)))
@@ -416,7 +422,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         if status != 200 or not isinstance(answer, dict) or not isinstance(
                 answer.get("status"), int) or isinstance(answer.get("status"), bool):
             detail = answer.get("detail") if isinstance(answer, dict) else ""
-            error = f"הערוץ סירב ({status}): {detail}" if status != 200 else "תשובה לא צפויה מהמשני"
+            error = f"הערוץ סירב ({status}): {detail}" if status != 200 else "תשובה לא צפויה משרת המשנה"
             _contact(node, error)
             journal(ctx.conn, "peer_write", f"{what} → {error}", user[0])
             raise HTTPException(502, f"{label}: {error}")
@@ -453,7 +459,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         import asyncio
         node = storage_nodes.node_row(ctx.conn, nid)
         if node is None:
-            raise HTTPException(404, "שרת משני לא קיים")
+            raise HTTPException(404, "שרת משנה לא קיים")
         canonical = registry.normalize_mac(mac)
         if canonical is None:
             raise HTTPException(404, "מכונה לא מוכרת")
@@ -474,10 +480,10 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
         try:
             name = await asyncio.to_thread(remote_name)
         except Exception as exc:                             # noqa: BLE001
-            raise HTTPException(502, "השרת המשני אינו זמין: "
+            raise HTTPException(502, "שרת המשנה אינו זמין: "
                                 + interserver_auth.redact_secrets(str(exc)))
         if name is None:
-            raise HTTPException(404, "המכונה אינה רשומה במשני")
+            raise HTTPException(404, "המכונה אינה רשומה בשרת המשנה")
         if body.get("confirm") != name:
             raise HTTPException(403, "השם שהוקלד אינו זהה לשם המחשב")
         writer = tunnels.get(f"{nid}/{canonical}")
@@ -505,14 +511,14 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
             await websocket.close(code=monitor.WS_FORBIDDEN, reason="פעולה למנהל בלבד")
             return
         if storage_nodes.role(ctx.conn) != storage_nodes.ROLE_STANDALONE:
-            await websocket.close(code=4409, reason="צפייה במשני אפשרית רק משרת ראשי")
+            await websocket.close(code=4409, reason="צפייה בשרת המשנה אפשרית רק משרת ראשי")
             return
         node = storage_nodes.node_row(ctx.conn, nid)
         if node is None:
-            await websocket.close(code=4404, reason="שרת משני לא קיים")
+            await websocket.close(code=4404, reason="שרת משנה לא קיים")
             return
         if node["disabled_at"]:
-            await websocket.close(code=4409, reason="השרת המשני מושבת")
+            await websocket.close(code=4409, reason="שרת המשנה מושבת")
             return
         canonical = registry.normalize_mac(mac)
         if canonical is None:
@@ -650,7 +656,7 @@ def create_storage_router(ctx: ServerContext, data_dir=None) -> APIRouter:
             raise HTTPException(426, f"גרסת פרוטוקול חייבת להיות {interserver_auth.PROTOCOL_VERSION}")
         expected_spki = str(body.get("expected_secondary_spki") or "")
         if not expected_spki:
-            raise HTTPException(400, "חסר expected_secondary_spki (הצמד את ה-SPKI של המשני)")
+            raise HTTPException(400, "חסר expected_secondary_spki (הצמד את ה-SPKI של שרת המשנה)")
         try:
             _host, enroll_port, _ = interserver_auth.parse_interserver_url(url)
         except interserver_auth.InterserverURLError as exc:

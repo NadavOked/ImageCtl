@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+import hygiene
 from native import requires_native
 from test_agent import BASH, SH_FILES, posix
 
@@ -52,6 +53,9 @@ def run_sh(script: str, timeout: int = TEST_TIMEOUT) -> str:
     כשתקרה נאכפת. בלי זה הבדיקה הייתה מודדת את היתומים ולא את המסלול,
     ומכריזה על "תקיעה" גם כשהסוכן דיווח ויצא כשורה תוך שניות.
 
+    ‏#1736: התהליך ראש session משלו וכל הקבוצה נהרגת בסוף (`hygiene.run_group`)
+    -- stub ב-`&` או `sleep` שהסקריפט השאיר אחריו לא שורד את הטסט.
+
     ‏stdin=DEVNULL: בריצה רב-קבצית של pytest בווינדוס ה-handle של stdin
     נשבר תחת capture, וכל subprocess שיורש אותו נופל ב-WinError 50 (#14).
 
@@ -68,7 +72,7 @@ def run_sh(script: str, timeout: int = TEST_TIMEOUT) -> str:
     script_file = out_file.with_name("script.sh")
     script_file.write_text(wrapped, encoding="utf-8", newline="\n")
     try:
-        subprocess.run(
+        hygiene.run_group(
             [BASH, posix(script_file)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             cwd=str(REPO), stdin=subprocess.DEVNULL, timeout=timeout,

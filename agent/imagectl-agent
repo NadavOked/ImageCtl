@@ -21,24 +21,24 @@ LIB_DIR="${LIB_DIR:-/usr/lib/imagectl}"
 . "$LIB_DIR/pull.sh"   # אחרי progress.sh: pull_close קורא ל-report_final (#562)
 . "$LIB_DIR/expand.sh"; . "$LIB_DIR/grow.sh"   # ההרחבה: לפני הזרם ואחריו (#478); diskfit calls _expand_candidate (#1354)
 . "$LIB_DIR/bootcadb.sh"; . "$LIB_DIR/restore.sh"; . "$LIB_DIR/diskfit.sh"; . "$LIB_DIR/writecheck.sh"   # #672/#1217/#1366: restore preflights
-. "$LIB_DIR/drawers.sh"; . "$LIB_DIR/verdict.sh"; . "$LIB_DIR/failmark.sh"; . "$LIB_DIR/slotnames.sh"; . "$LIB_DIR/ntfsboot.sh"   # (#704 slot names; #1487 NTFS backup boot) הזרם, הפסק עליו (#520), והראיה על כשל (#874)
+. "$LIB_DIR/drawers.sh"; . "$LIB_DIR/verdict.sh"; . "$LIB_DIR/cancel.sh"; . "$LIB_DIR/failmark.sh"; . "$LIB_DIR/slotnames.sh"; . "$LIB_DIR/ntfsboot.sh"   # (#704 slot names; #1487 NTFS backup boot) הזרם, הפסק עליו (#520), והראיה על כשל (#874)
 . "$LIB_DIR/manifest.sh"
 . "$LIB_DIR/bootca.sh"; . "$LIB_DIR/hibernation.sh"; . "$LIB_DIR/shrinkplan.sh"; . "$LIB_DIR/shrink.sh"; . "$LIB_DIR/shrinkmem.sh"; . "$LIB_DIR/shrinkoffer.sh"   # לפני capture.sh: capture_disk קורא להם (#85, #651, #87, #926, #929)
 . "$LIB_DIR/capturedetail.sh"; . "$LIB_DIR/capture.sh"; . "$LIB_DIR/capturesink.sh"; . "$LIB_DIR/directsend.sh"   # #715: pass 1 is capture_disk with the sink discarded; #1217: the sink split from capture.sh
-. "$LIB_DIR/hostname.sh"; . "$LIB_DIR/hostname_linux.sh"; . "$LIB_DIR/bootentry.sh"; . "$LIB_DIR/bootstorage.sh"; . "$LIB_DIR/postdeploy.sh"   # #720: driver staging, after the name; #433: Boot#### before it; #1331: boot-start storage
+. "$LIB_DIR/hostname.sh"; . "$LIB_DIR/hostname_linux.sh"; . "$LIB_DIR/bootentry.sh"; . "$LIB_DIR/bootstorage.sh"; . "$LIB_DIR/linuxdrivers.sh"; . "$LIB_DIR/postdeploy.sh"   # #720: driver staging, after the name; #433: Boot#### before it; #1331: boot-start storage + Linux initramfs check
 . "$LIB_DIR/sitehooks.sh"   # #1266: a site/lab overlay's start hooks; the product ships none
 . "$LIB_DIR/watchdog.sh"; . "$LIB_DIR/monitor.sh"; . "$LIB_DIR/installer_boot.sh"   # #690: RFB, role+flag gated; #1190: init-only (inert here, load gate #84)
-. "$LIB_DIR/ui.sh"
+. "$LIB_DIR/ui.sh"; . "$LIB_DIR/failscreen.sh"   # #1569: the one failure screen behind ui_error_hold and die_local
 . "$LIB_DIR/attended.sh"; . "$LIB_DIR/smart.sh"; . "$LIB_DIR/smartgate.sh"; . "$LIB_DIR/crcdelta.sh"   # hello בזמן המתנה לאדם (#906); שער SMART בצד השחזור (#652) והפרש CRC בסבב (#872); אחרי ui.sh/progress.sh
-. "$LIB_DIR/single_restore.sh"   # #706: the write behind the GUI restore screen
+. "$LIB_DIR/single_restore.sh"; . "$LIB_DIR/srgui.sh"   # #706: the write behind the GUI restore screen; its progress on the GUI
 . "$LIB_DIR/buildmenuitems.sh"; . "$LIB_DIR/buildmenu.sh"   # #1073: the GUI menu gates; the console session
 . "$LIB_DIR/buildcapture.sh"
 . "$LIB_DIR/roomflow.sh"   # the room round the GUI opens (#418)
 . "$LIB_DIR/hold.sh"; . "$LIB_DIR/task.sh"   # #1217: do_task, split from this file
 . "$LIB_DIR/poll.sh"; . "$LIB_DIR/idle.sh"   # #434: idle power-off, beats inside poll_sleep
-. "$LIB_DIR/guiparent.sh"; . "$LIB_DIR/localboot.sh"   # 11/10: no GUI -> BootNext to the local disk + told to the server
-. "$LIB_DIR/clonergui.sh"
-. "$LIB_DIR/lcinv.sh"; . "$LIB_DIR/lcplan.sh"; . "$LIB_DIR/lcsnap.sh"; . "$LIB_DIR/lccopy.sh"; . "$LIB_DIR/localclone.sh"; . "$LIB_DIR/lcwait.sh"; . "$LIB_DIR/lcgui.sh"; . "$LIB_DIR/lcpull.sh"   # #1322: local clone (lcgui.sh runs in the kiosk); 16/10: restore from the server
+. "$LIB_DIR/guiparent.sh"; . "$LIB_DIR/localboot.sh"; . "$LIB_DIR/splash.sh"   # 11/10: no GUI -> BootNext to the local disk + told to the server; 17/10: the static screen
+. "$LIB_DIR/clonergui.sh"; . "$LIB_DIR/drvgui.sh"   # #1331: a drawer's drivers outcome for the cloner screen (run in the kiosk)
+. "$LIB_DIR/lcinv.sh"; . "$LIB_DIR/lcsize.sh"; . "$LIB_DIR/lcplan.sh"; . "$LIB_DIR/lcsnap.sh"; . "$LIB_DIR/lctune.sh"; . "$LIB_DIR/lccopy.sh"; . "$LIB_DIR/localclone.sh"; . "$LIB_DIR/lcwait.sh"; . "$LIB_DIR/lcgui.sh"; . "$LIB_DIR/lcpull.sh"   # #1322: local clone (lcgui.sh runs in the kiosk); 16/10: restore from the server
 . "$LIB_DIR/shrinkgui.sh"; . "$LIB_DIR/askgui.sh"   # #928: the shrink question; 11/10: grow-back / end-of-capture dialogs
 . "$LIB_DIR/guibridge.sh"   # run in imagectl-kiosk; sourced here for the load gate
 . "$LIB_DIR/cpufreq.sh"   # #1441: called from init; sourced here for the load gate
@@ -89,11 +89,12 @@ build_console_screen() {
         gui_unavailable_local build   # GUI only (11/10): no text menu behind it
     fi
     shrink_offer_pending   # #926: a disk left shrunk is offered back once per boot -- a GUI dialog (11/10)
+    build_round_end        # #1560: a round opened from this GUI ended -- power off, or the menu
 }
 do_restore_drawers() {
     # $1 = image id, $2 = session id. Cloning room: 2-3 drawers at once.
     resolve_target_drawers          # #695: sets $_disks; die_local on a bad mapping
-    rm -f "$RUN_DIR/server-restarted-wave"
+    rm -f "$RUN_DIR/server-restarted-wave" "$RUN_DIR/session-closed"   # 17/10: progress_loop's mark (verdict.sh)
     [ -n "$_disks" ] || { log "no drawers detected -- waiting"; sleep 5; return 0; }
 
     http_get "$SERVER/api/v1/images/$1/manifest" > "$RUN_DIR/manifest.json" \
@@ -108,9 +109,10 @@ do_restore_drawers() {
 
     # שער SMART לפני כתיבה (#652); rc=2 = "החלף" -> כיבוי לפני שנכתב בייט.
     # shellcheck disable=SC2086 # the disk list is a word list on purpose
-    _disks=$(smart_gate "$2" $_disks); _gr=$?
+    _all=$_disks; _disks=$(smart_gate "$2" $_disks); _gr=$?   # #1760: _all = the end count's, red skips included
     [ "$_gr" = 2 ] && smart_replace_stop   # #1222: never returns
-    [ "$_gr" = 0 ] || { ui_error_hold "all drawers skipped" hold_beat; return 1; }
+    # #1560: a round where every drawer was skipped ended too -- reported, the count, power-off
+    [ "$_gr" = 0 ] || { end_failed_round "all drawers skipped" "$2" "$_ppid"; return 1; }
     log "writing $(echo "$_disks" | wc -w) drawers: $_disks"
 
     # shellcheck disable=SC2086 # the disk list is a word list on purpose
@@ -120,19 +122,23 @@ do_restore_drawers() {
     [ "$_rc" -eq 0 ] && stage_drawer_drivers "$2" "$RUN_DIR/manifest.json" $_disks
 
     if [ "$_rc" -eq 0 ]; then
+        # Nadav 17/10: a cloner powers off in every state, an unconfirmed
+        # "done" too. The report goes on until the power-off.
         report_final "$_ppid" "$2" "$MAC" "$SERVER" \
-            || { hold_unheard "$2"; return 1; }
+            || { log "the done report was not confirmed -- the count runs all the same"; progress_loop "$2" "$MAC" "$SERVER" & }
         # Drawers are swapped with the machine off (spec appendix A), so
         # powering down IS the next step of the round, not a failure.
         log "drawers complete -- powering off for the swap"
         [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
-        finish_and_stop
-        # #1222/#1483: returns only when it stayed on (WoL, or poweroff came back) -- still done.
-        task_done_stays_on "Drawers complete. The drives were written."; return 0
+        # #1560: 20 s on the screen, or "כבה עכשיו"; some drawers failed = the results first
+        # shellcheck disable=SC2086 # (Nadav 17/10). #1222/#1483: returns only when it stayed on -- still done.
+        end_tally $_all; _k=drawers; [ "$_et_ok" = "$_et_n" ] || _k=partial
+        end_countdown "$_k" "drawers complete ($_et_ok of $_et_n)" "$_et_ok" "$_et_n" || task_done_stays_on "Drawers complete. The drives were written."; return 0
     fi
-    # ‏progress_loop ממשיך לרוץ, בדיוק כמו במסלול התחנה: הקונסולה חייבת
-    # להוסיף לראות 'failed'. הריגתו כאן היא שהשתיקה את המכונה (#64).
-    ui_error_hold "no drawer completed" hold_beat
+    # #1560 (ברזל 17/10): משכפל שנשאר דלוק אחרי כשל לא הצטרף לסבב הבא. הכשל
+    # מדווח ל-'failed' (הקונסולה רואה אותו), מוצג לספירה, והמכונה נכבית.
+    _why="no drawer completed"; round_closed && _why="the server closed this round -- writing stopped"
+    end_failed_round "$_why" "$2" "$_ppid"
 }
 
 do_restore() {

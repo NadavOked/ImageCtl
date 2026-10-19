@@ -10,6 +10,34 @@
 #   confirmed it over the warning (lc_power_during_copy -- Nadav 14/10).
 # POSIX sh (busybox ash).
 
+#: Metal 18/10 (rc6, cloner 2): the boot choice's count starts with its first
+#: frame on the display -- the GUI's stamp, $GUI_DIR/lcboot.shown (main.c) --
+#: never before it: the agent said "on screen" and counted while the GUI was
+#: still opening the display, and the 20 s were gone before the picture came.
+#: 60 = three counts: a first start of the GUI (font check, the display's
+#: mode) took more than the whole 20 s there, and a cloner with no screen at
+#: all still goes on from the server within about a minute and a half.
+LC_SHOWN_WAIT_S="${LC_SHOWN_WAIT_S:-60}"
+
+lc_boot_due() {
+    # 0 = the boot choice's count is over. Not started yet (_bc_dl=0): it
+    # starts at the stamp's second, or at the offer (_bc_w0) when the frame
+    # came first. A stamp that cannot be read is no frame; after
+    # LC_SHOWN_WAIT_S the count starts without it, aloud (principle 1).
+    if [ "${_bc_dl:-0}" = 0 ]; then
+        _bd_t=$(cat "${GUI_DIR:-$RUN_DIR/gui}/lcboot.shown" 2>/dev/null)
+        case "$_bd_t" in
+            ''|*[!0-9]*) [ $(( $(date +%s) - _bc_w0 )) -ge "$LC_SHOWN_WAIT_S" ] || return 1
+                log "local clone: the boot choice was not on the screen after ${LC_SHOWN_WAIT_S}s -- the ${LC_BOOT_S}s count starts without it"
+                _bd_t=$(date +%s) ;;
+            *) log "local clone: boot choice on screen (${LC_BOOT_S}s to the server unless touched)" ;;
+        esac
+        [ "$_bd_t" -ge "$_bc_w0" ] || _bd_t=$_bc_w0
+        _bc_dl=$((_bd_t + LC_BOOT_S)); echo "$_bc_dl|0" > "$LC/boot"
+    fi
+    [ "$(date +%s)" -ge "$_bc_dl" ]
+}
+
 lc_quiet_reset() { _lq_at=$(date +%s); touch "$LC/quiet.mark"; }   # touch: a truncate may keep the mtime
 
 lc_quiet_over() {
@@ -22,6 +50,36 @@ lc_quiet_over() {
         lc_quiet_reset; return 1
     fi
     [ $(( $(date +%s) - ${_lq_at:-0} )) -ge "${_lq_max:-600}" ]
+}
+
+lc_round_calls() {
+    # #1560 (metal 17/10: cloner 2 sat on a menu while a round was opened for
+    # it; WoL wakes nothing that is on). The beat's answer (attended.sh keeps
+    # .session.state) names a wave offered to THIS machine -- the server
+    # offers one only to a machine in its roster with fresh drawers
+    # (hello.py). A screen with no local work running leaves for it, as if
+    # woken by WoL, and the main loop's hello joins. Unread = no round.
+    # #1703: the main loop's own answer counts too -- it said "open" a moment
+    # ago, and the boot choice waited a sleep and the beat's round trip to hear
+    # it again. Stale only where it cannot say "open": a choice that saw it
+    # left for the server at once, so the local screens never start with it.
+    case "${D_SESSION_STATE:-}" in open|running) return 0 ;; esac
+    case "$(cat "$RUN_DIR/attended.round" 2>/dev/null)" in open|running) return 0 ;; esac
+    return 1
+}
+
+lc_end_count() {
+    # #1560 (Nadav 17/10): a copy that ran to its end ("done" -- not stopped
+    # by hand, which goes back to the choice) counts to the power-off, done
+    # or failed (idle.sh end_countdown): every target written, some, none.
+    # shellcheck disable=SC2046 # the target list is a word list on purpose
+    end_tally $(cat "$LC/run/targets" 2>/dev/null)
+    if [ "$_et_n" -gt 0 ] && [ "$_et_ok" = "$_et_n" ]; then _lk=localclone
+    elif [ "$_et_ok" -gt 0 ]; then _lk=partial; else _lk=failed; fi
+    # the result screen's own buttons (end.req: power off, again, back) stay the person's
+    END_ABORT_FILE="$LC/end.req"
+    end_countdown "$_lk" "local clone ended ($_et_ok of $_et_n)" "$_et_ok" "$_et_n"; _lk=$?
+    END_ABORT_FILE=""; return "$_lk"
 }
 
 lc_copy_busy() {

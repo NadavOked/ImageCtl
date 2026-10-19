@@ -11,7 +11,7 @@ from .app import render_demo, run
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="ImageCtl physical server console")
+    parser = argparse.ArgumentParser(description="ImageSrv physical server console")
     parser.add_argument("--data-dir", type=Path, default=Path("/var/lib/imagectl"))
     parser.add_argument("--render-demo", action="store_true",
                         help="print the five approved 80x25 screens")

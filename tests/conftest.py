@@ -15,6 +15,8 @@ import pytest
 import hostguard
 import hygiene
 import native
+import orphan_guard as _orphan_guard
+from orphan_guard import orphan_guard  # noqa: F401 -- autouse fixture (#1736)
 
 try:
     from fastapi.testclient import TestClient
@@ -38,6 +40,10 @@ WINDOWS_ALLOWED_FAILURES: frozenset[str] = frozenset()
 _win_failed: list[str] = []
 
 
+def pytest_report_header(config) -> str:
+    return _orphan_guard.header_line()
+
+
 def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers", f"{native.MISSING_MARK}(tools): כלי מקומי חסר במקום שנדרש"
@@ -47,12 +53,20 @@ def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers", "uinput: דורש /dev/uinput כתיב וקריאת /dev/input — root או sudo"
     )
+    # ‏#1737: הרזרבה למערכת (‏10GiB) — רק בטסטים שבודקים אותה; ראו `_host_free_space`.
+    config.addinivalue_line(
+        "markers", "system_reserve: הטסט בודק את הרזרבה של disk_reserve — היא נשארת 10GiB"
+    )
     # ‏#1334: אינטגרציית ה-VM (‏qemu, ‏ovmf, ‏guestfs, ‏root) — opt-in במעבדה בלבד.
     # ב-CI הציבורי היא **מוסרת במפורש** (-m "not vm_it"), לא "מדולגת": דילוג
     # תחת REQUIRE_NATIVE=1 הוא כישלון, וזה מה שהפיל את tests מאז v0.73.2.
     config.addinivalue_line(
         "markers", "vm_it: אינטגרציית עדכון ה-VM — IMAGECTL_VM_IT=1, root וכלי השרת"
     )
+    # לפני האיסוף: ‏`requires_native(("sgdisk", which("sgdisk")))` נקבע ביבוא
+    # המודול, ו-busybox ash של הטסט מוצא את sgdisk באותו PATH (#1594).
+    if os.name != "nt":
+        os.environ["PATH"] = native.with_sbin(os.environ.get("PATH", ""))
     hygiene.block_real_processes()
     # ‏portbase גבוה ואקראי לכל הריצה: יתום של ריצה שנקטעה לא ינקה איש,
     # ולכן ההגנה היא שלא יהיה לו במה להתנגש (#156).
@@ -365,6 +379,22 @@ def _classrooms_restore():
     before = capabilities.CLASSROOMS
     yield
     capabilities.CLASSROOMS = before
+
+
+@pytest.fixture(autouse=True)
+def _host_free_space(request, monkeypatch):
+    """‏#1737: השרת שומר ‏10GiB פנויים למערכת (‏`disk_reserve.reserve()`), והם
+    נמדדים על הדיסק **של המארח**. ב-Testrunner יש 3.5–7GB פנויים, ולכן כל
+    קליטה, העלאה, העברה ומשיכה בחבילה נדחתה "אין מקום" (rc6, ‏5a9a0cf4) — טסט
+    שנכשל לפי מצב הדיסק של המכונה שמריצה אותו אינו בודק את הקוד.
+
+    כאן הרזרבה היא 0, כמו לפני #1737 — חוץ מטסט שמסומן `system_reserve`: שם
+    היא הערך האמיתי, והטסט מזייף את המקום הפנוי בעצמו. הקוד לא משתנה; רק
+    הקלט של הבדיקה (‏`reserve()` נקרא בזמן הקריאה בדיוק בשביל זה)."""
+    if request.node.get_closest_marker("system_reserve"):
+        return
+    from server import disk_reserve                        # noqa: PLC0415
+    monkeypatch.setattr(disk_reserve, "reserve", lambda: 0)
 
 
 @pytest.fixture()

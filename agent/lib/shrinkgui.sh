@@ -38,16 +38,18 @@ gui_shrink_choice() {
     printf '%s\n' "$_sg_seq" > "$GUI_DIR/shrink-seq" || return 1
     _sg_nonce="$_sg_seq-0"
     # Validate the complete plan before publishing, never silently omit a row.
-    awk -F'|' -v nonce="$_sg_nonce" -v max="$SHRINK_GUI_MAX_ROWS" '
+    # #1171: a direct send asks the same question in its own words (|direct).
+    _sg_kind=""; [ "${CAPTURE_SINK:-upload}" = discard ] && _sg_kind="|direct"
+    awk -F'|' -v nonce="$_sg_nonce" -v max="$SHRINK_GUI_MAX_ROWS" -v kind="$_sg_kind" '
         NF != 7 || $1 !~ /^[0-9]+$/ || $6 !~ /^[0-9]+$/ || $7 !~ /^[0-9]+$/ ||
         $1 < 1 || $6 + 0 <= $7 + 0 || $7 + 0 <= 0 || seen[$1]++ { bad = 1; exit }
         { rows[++n] = $1 "|" $6 "|" $7 }
         END { if (bad || n < 1 || n > max) exit 1
-              print nonce "|" n; for (i = 1; i <= n; i++) print rows[i] }
+              print nonce "|" n kind; for (i = 1; i <= n; i++) print rows[i] }
     ' "$1" > "$GUI_DIR/shrink-request.next" || { gui_shrink_clear; return 1; }
     mv "$GUI_DIR/shrink-request.next" "$GUI_DIR/shrink-request" || { gui_shrink_clear; return 1; }
     _sg_waited=0
-    while kill -0 "$_gui_pid" 2>/dev/null; do
+    while kill -0 "$_gui_pid" 2>/dev/null && [ -e "$GUI_DIR/shrink-request" ]; do   # #1726: a bridge that died took the question with it
         attended_power_check
         if [ -s "$GUI_DIR/shrink-decision" ]; then
             IFS='|' read -r _sg_answer_nonce _sg_answer < "$GUI_DIR/shrink-decision" || {

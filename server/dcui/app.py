@@ -121,6 +121,8 @@ def render_main(snapshot: Snapshot, message: str = "") -> list[str]:
     plural = "secondary" if snapshot.secondary_count == 1 else "secondaries"
     canvas.put(15, 4, "Storage Role:")
     canvas.put(15, 23, f"{snapshot.storage_role}  ({snapshot.secondary_count} {plural} paired)")
+    canvas.put(16, 4, "System updates:")   # #1411
+    canvas.put(16, 23, f"from {snapshot.system_updates}" if snapshot.system_updates else "date unknown")
     canvas.put(17, 4, "Deploy round:")
     round_text = "none"
     if snapshot.deploy_round:
@@ -262,8 +264,9 @@ def render_menu(snapshot: Snapshot, selected: int = 0, seconds: int = 90) -> lis
          "(HTTPS 8081). DHCP client or a static", "address, gateway and DNS.",
          f"Current: {snapshot.management.name}  {snapshot.management.address or 'no IPv4'}  {snapshot.management.mode.upper()}",
          "Changes have a 60 s rollback window."),
-        ("Restart Management Network", "Re-applies the saved configuration for", f"{snapshot.management.name} with rollback armed.",
-         "Live state is read back before success."),
+        ("Restart Management Network", f"ifdown/ifup {snapshot.management.name} with its saved",
+         "configuration. Nothing changes, so", "nothing is armed or confirmed.",
+         "Success = the address read back live."),
         ("Restart Services", "Restarts imagectl-server and dnsmasq only", "when dnsmasq is enabled, then reads back", "each service state."),
         ("Display TLS Certificate", "Shows SHA-256, certificate SANs and", "the not-after date read from the cert."),
         ("Primary-Visible Address", "The address at which the primary", "server reaches this secondary (port",

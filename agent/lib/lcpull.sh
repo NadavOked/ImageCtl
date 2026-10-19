@@ -103,6 +103,8 @@ lc_pull_session() {
         if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi
         lc_gui_alive || { log "pull: the GUI is gone -- from the server"; LC_END=gone; return 0; }
         lc_power_check
+        # #1560: a round opened for this machine meanwhile (not by this screen: that one returns "opened")
+        lc_round_calls && { log "pull: a round is open for this machine -- from the server"; LC_END=round; return 0; }
         if [ -f "$LC/pull.req" ]; then
             IFS='|' read -r _ps_img _ps_ports < "$LC/pull.req"; rm -f "$LC/pull.req" "$LC/pull.error"; lc_quiet_reset
             case "$_ps_img" in ''|*[!A-Za-z0-9_.-]*) _ps_img="" ;; esac

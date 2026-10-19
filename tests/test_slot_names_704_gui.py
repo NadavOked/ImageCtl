@@ -157,7 +157,8 @@ def test_room_drawer_carries_the_slot_name_as_field_eleven(tmp_path):
     rows = [l.split("=", 1)[1].split("|") for l in lines if l.startswith("room_drawer=")]
     assert [(r[1], r[10]) for r in rows] == [("1", "עליונה"), ("0", "דיסק מיוחד"), ("2", "")], rows
     # #432: field 12 = link state, after the name; #1366: 13 = CRC; #1495: 14 = drawer, 15 = connection
-    assert all(len(r) == 15 for r in rows), rows
+    # 17/10: 16-17 = the drawer's own progress in the wave (pct, target state)
+    assert all(len(r) == 23 for r in rows), rows   # #1386: 18-20 = dev, "בוטל על ידי …", reported; #1331: 21-23 = drivers.boot
 
 
 @JQ
@@ -188,8 +189,7 @@ def test_the_parser_reads_all_three_records():
     state_c = _src("state.c")
     assert 'KEY("room_slot_name")' in state_c and 'KEY("cslot_name")' in state_c
     # #432 added field 12 (link state) after the name; the floor is still 8
-    assert "int nf = split(val, f, 15);" in state_c and "if (nf < 8) continue;" in state_c, \
-        "room_drawer: fields 11-15 optional (an older agent sends 8-14)"
+    assert "int nf = split(val, f, 27);" in state_c and "if (nf < 8) continue;" in state_c,         "room_drawer: fields 11-27 optional (an older agent sends 8-17; #1386: 18-20; #1331: 21-23; T8: 24-26; #1742: 27)"
     assert "m->slot_names[actual_port - 1]" in state_c
     assert re.search(r"fallback.*port == \(int\)port", state_c), \
         "a port-0 drawer drawn in a borrowed slot must not take that slot's name"
@@ -203,9 +203,11 @@ def test_buffers_are_sized_for_the_longest_name():
     assert "char slot_names[MAX_DRAWERS][SLOT_NAME_MAX];" in ui
     assert "char cslot_names[MAX_DRAWERS][SLOT_NAME_MAX];" in ui
     room = _src("screens_room.c")
-    assert "named[SLOT_NAME_MAX + 128]" in room and "label[SLOT_NAME_MAX + 128]" in room   # #1495: + "(לא ממופה)"
+    assert "named[SLOT_NAME_MAX + 128]" in room   # #1495: + "(לא ממופה)"
+    # 17/10: the live rows (both screens) name the disk in LcBay.name
+    assert "char name[SLOT_NAME_MAX + 64], sub[200];" in _src("lcui.h")
     cloner = _src("screens_cloner.c")
-    assert "disk_name[SLOT_NAME_MAX + 16]" in cloner and "head[SLOT_NAME_MAX + 16 + 160]" in cloner
+    assert "pdisk[SLOT_NAME_MAX + 16]" in cloner and "head[SLOT_NAME_MAX + 16 + 160]" in cloner
     standby = _src("screens_standby.c")   # #1304: the standby moved out of screens.c
     assert "name[SLOT_NAME_MAX + 16], sub[SLOT_NAME_MAX + 48]" in standby
     assert "label[SLOT_NAME_MAX + 16], msg[SLOT_NAME_MAX + 120]" in standby
@@ -225,7 +227,7 @@ def test_the_room_grid_uses_the_name_and_falls_back_to_disk_n():
     room = _src("screens_room.c")
     assert "m->slot_names[port - 1]" in room
     # #1495: the live row is room_drawer_label + size; no name = "דיסק N" as before
-    assert 'room_drawer_label(m, d, base, sizeof base); snprintf(label, sizeof label, "%s  %s", base, size);' in room
+    assert "room_drawer_label(m, d, y->name, sizeof y->name);" in room   # 17/10: the live row
     rounds = _src("screens_rounds.c")
     label = rounds[rounds.index("void room_drawer_label("):].split("\n}")[0]
     assert '"דיסק %d", drawer' in label

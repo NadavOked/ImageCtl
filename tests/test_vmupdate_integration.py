@@ -39,13 +39,13 @@ from pathlib import Path
 
 import pytest
 
-from server import vmdisk, vmupdate
+from server import agent_shell, vmdisk, vmupdate
 from server.db import connect, set_setting
 from server.images import ImageLibrary, required_bytes
 
 TOOLS = ("losetup", "sgdisk", "partclone.fat", "partclone.ntfs", "mkfs.vfat", "mkntfs",
          "ntfsresize", "ntfsfix", "zstd", "jq", "blkid", "mount", "nft", "setpriv",
-         "qemu-system-x86_64", "ip")
+         "qemu-system-x86_64", "ip", "dmsetup")
 SBIN = os.environ.get("PATH", "") + ":/usr/sbin:/sbin"
 MISSING = [t for t in TOOLS if shutil.which(t, path=SBIN) is None]
 if not Path("/usr/share/OVMF/OVMF_CODE_4M.fd").exists():
@@ -305,3 +305,120 @@ def test_open_boot_payload_save_and_reopen(tmp_path, library_root):
             sh("umount", str(mnt))
     finally:
         sh("losetup", "-d", loop)
+
+
+def _sha_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while chunk := fh.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def test_save_shrinks_a_copy_and_never_writes_the_vm_disk(tmp_path, library_root):
+    """‏#1491: שמירה שמכווצת את C: — ה-sha256 של `disk.raw` אחריה זהה לזה
+    שלפניה, ובכל זאת הגרסה החדשה מכווצת (‏`shrunk_from_bytes`) ונפתחת. ובסוף
+    לא נשאר עותק: לא ‏dm, לא loop על הדיסק, ולא קובץ copy-on-write."""
+    source = capture_source(tmp_path, library_root)
+    work = library_root.parent / "work"
+    work.mkdir()
+    built = vmdisk.build_disk(vmdisk.Host(), source, library_root / "img_1334aa", work,
+                              lambda n: None)
+    assert built.warnings == []
+    disk = work / "disk.raw"
+    grown = int(table_of(disk)[2]["Partition size"]) * 512
+    before = _sha_of(disk)
+
+    out = library_root.parent / "out"
+    captured = vmdisk.capture_disk(vmdisk.Host(), work, out, lambda n: None,
+                                   user=vmupdate.Machine().vm_user())
+
+    assert _sha_of(disk) == before, "the save wrote to the VM's own disk"
+    c_drive = next(p for p in captured["partitions"] if p["index"] == 2)
+    assert "shrunk_from_bytes" in c_drive and c_drive["size_bytes"] < grown
+    assert vmdisk.VIEW_NAME not in sh("dmsetup", "ls")
+    assert sh("losetup", "-j", str(disk)).strip() == ""
+    assert not (work / "run" / "shrink.cow").exists()
+
+    # מה שנשמר הוא הכיווץ: נפתח באותו מסלול, וה-marker שבמקור שם.
+    new = {**source, **captured}
+    for part in new["partitions"]:
+        if part.get("file"):
+            (out / part["file"]).rename(library_root / "img_1334aa" / f"new.{part['file']}")
+            part["file"] = f"new.{part['file']}"
+    again = tmp_path / "reopen"
+    again.mkdir()
+    vmdisk.build_disk(vmdisk.Host(), new, library_root / "img_1334aa", again, lambda n: None)
+    loop = sh("losetup", "--find", "--show", "--partscan", "--read-only",
+              str(again / "disk.raw")).strip()
+    mnt = tmp_path / "check"
+    mnt.mkdir()
+    try:
+        sh("mount", "-t", "ntfs-3g", "-o", "ro", f"{loop}p2", str(mnt))
+        try:
+            assert (mnt / "marker.txt").read_text() == MARKER
+        finally:
+            sh("umount", str(mnt))
+    finally:
+        sh("losetup", "-d", loop)
+
+
+def _leave_a_cut_save_behind(disk: Path, cow: Path) -> None:
+    """מה ש-`shrink_view` משאיר כשהשרת אותחל באמצע כיווץ (‏#1649) — אותם
+    חלקים, בלי `finally`: loop לקריאה בלבד על הדיסק, loop על ה-COW, והעותק."""
+    origin = sh("losetup", "--find", "--show", "--read-only", str(disk)).strip()
+    with cow.open("wb") as fh:
+        fh.truncate(64 * MIB)
+    store = sh("losetup", "--find", "--show", str(cow)).strip()
+    sectors = disk.stat().st_size // 512
+    sh("dmsetup", "create", vmdisk.VIEW_NAME, "--table",
+       f"0 {sectors} snapshot {origin} {store} N {vmdisk.VIEW_CHUNK}")
+
+
+class NoShrinkHost(vmdisk.Host):
+    """אותו מארח אמיתי, ותוכנית הזנב של הסוכן ריקה: אין מה לכווץ, ולכן השמירה
+    לא עוברת ב-`shrink_view` (שמנקה לבדו שאריות) — המסלול ש-#1649 שבר."""
+
+    def agent(self, func, *args, **kw):
+        if func == "_shrink_tail":
+            return agent_shell.Call(0, "", "")
+        return super().agent(func, *args, **kw)
+
+
+@pytest.mark.parametrize("shrinks", [False, True], ids=["nothing-to-shrink", "shrinks-c-drive"])
+def test_a_save_after_a_cut_save_clears_the_leftovers_and_succeeds(tmp_path, library_root, shrinks):
+    """‏#1649: אחרי אתחול באמצע כיווץ נשארים העותק ושני loop. ה-`detach_all`
+    (של ביטול, ושל סוף כל שמירה) נכשל עליהם — והשמירה הבאה מנקה ומצליחה, גם
+    כשאין מה לכווץ (שם `shrink_view` לא רץ)."""
+    source = capture_source(tmp_path, library_root)
+    work = library_root.parent / "work"
+    work.mkdir()
+    vmdisk.build_disk(vmdisk.Host(), source, library_root / "img_1334aa", work, lambda n: None)
+    disk = work / "disk.raw"
+    cow = work / "run" / "shrink.cow"
+    before = _sha_of(disk)
+    _leave_a_cut_save_behind(disk, cow)
+    try:
+        assert vmdisk.VIEW_NAME in sh("dmsetup", "ls")
+        with pytest.raises(vmdisk.DiskError) as stuck:      # הכשל כפי שדווח ב-discard
+            vmdisk.detach_all(vmdisk.Host(), disk)
+        assert stuck.value.reason == "loop"
+
+        out = library_root.parent / "out"
+        captured = vmdisk.capture_disk(vmdisk.Host() if shrinks else NoShrinkHost(), work, out,
+                                       lambda n: None, user=vmupdate.Machine().vm_user())
+    finally:
+        subprocess.run(["dmsetup", "remove", "--retry", vmdisk.VIEW_NAME], env=ENV,
+                       capture_output=True, stdin=subprocess.DEVNULL)
+        for backing in (cow, disk):
+            if not backing.exists():
+                continue
+            for line in sh("losetup", "-j", str(backing)).splitlines():
+                subprocess.run(["losetup", "-d", line.split(":", 1)[0]], env=ENV,
+                               capture_output=True, stdin=subprocess.DEVNULL)
+
+    assert any("shrunk_from_bytes" in p for p in captured["partitions"]) == shrinks
+    assert _sha_of(disk) == before, "the save wrote to the VM's own disk"
+    assert vmdisk.VIEW_NAME not in sh("dmsetup", "ls")
+    assert sh("losetup", "-j", str(disk)).strip() == ""
+    assert not cow.exists()          # נמחק רק אחרי שה-loop שלו נקרא בחזרה כמנותק
