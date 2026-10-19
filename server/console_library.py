@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -15,7 +16,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from . import auth, minfree
+from . import auth, disk_reserve, minfree
 from .api import ServerContext
 from .images import validate_display_name
 from .library_scrub import forget_scrub, last_scrubs, scrub_library
@@ -24,6 +25,9 @@ from .db import get_setting, journal, set_setting
 from .sessions import ROOM_PREFIX
 
 FOLDERS_KEY = "image_folders"
+#: ‏#1737: הקובץ הזמני של העלאה — בשורש הספרייה, בשם שמתחיל בנקודה
+#: (אזור עבודה: הספרייה מדלגת עליו, ‏`work_areas` סוחף אותו כשננטש).
+UPLOAD_PREFIX = ".upload-"
 #: חלון "סבבים לאחרונה" במגירת האימג' (#972, המוקאפ: "ב-30 הימים האחרונים").
 ROUNDS_WINDOW = timedelta(days=30)
 
@@ -60,6 +64,11 @@ def recent_rounds(conn, now: datetime | None = None) -> dict[str, int | None]:
         elif when >= since and counts.get(image_id, 0) is not None:
             counts[image_id] = counts.get(image_id, 0) + 1
     return counts
+
+
+def _library_free(root: Path) -> int:
+    """נקודת ההזרקה של הבדיקות — אותה שאלה כמו `capture._free_bytes`."""
+    return shutil.disk_usage(root).free
 
 
 def _checked_name(value: str, what: str) -> str:
@@ -165,18 +174,43 @@ def create_library_router(ctx: ServerContext) -> APIRouter:
         נכתב לדיסק תוך כדי קבלה — אימג' שוקל עשרות ג'יגה ואסור שייכנס
         לזיכרון.
         """
-        ctx.library.root.mkdir(parents=True, exist_ok=True)
+        root = ctx.library.root
+        root.mkdir(parents=True, exist_ok=True)
+        # ‏#1737: הרזרבה למערכת. השיא הוא פעמיים הארכיון — הקובץ הזמני והחילוץ
+        # שלו (‏`import_tar`) — ולכן אורך מוצהר נבדק פעמיים. בלעדיו: תוך כדי הזרם
+        # (‏`StreamGuard`), ושוב לפני החילוץ, מול הגודל שהגיע בפועל.
+        def room_for(need: int, what: str) -> None:
+            try:
+                free = _library_free(root)
+            except OSError as exc:      # לא נמדד ≠ יש מקום (עיקרון 5)
+                raise HTTPException(507, f"לא ניתן לקרוא כמה מקום פנוי בשרת: {exc}")
+            refused = disk_reserve.refusal(free, need, what)
+            if refused is not None:
+                raise HTTPException(507, refused)
+
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit():
+            room_for(2 * int(declared), "העלאת האימג' (הקובץ ועוד החילוץ שלו)")
+        guard = disk_reserve.StreamGuard(lambda: _library_free(root), "העלאת האימג'")
+        # שם שמתחיל בנקודה: אזור עבודה, שהסחיפה היומית (‏`work_areas`) מכירה.
         handle = tempfile.NamedTemporaryFile(
-            delete=False, dir=ctx.library.root, suffix=".upload"
+            delete=False, dir=root, prefix=UPLOAD_PREFIX, suffix=".upload"
         )
         temp = Path(handle.name)
         try:
             with handle:
                 async for chunk in request.stream():
                     handle.write(chunk)
-            if temp.stat().st_size == 0:
+                    guard.wrote(len(chunk))
+            size = temp.stat().st_size
+            if size == 0:
                 raise ArchiveError("לא התקבל קובץ")
-            manifest = import_tar(temp, ctx.library.root, set(ctx.library.scan()))
+            room_for(size, "חילוץ האימג' שהועלה")
+            manifest = import_tar(temp, root, set(ctx.library.scan()))
+        except disk_reserve.ReserveReached as exc:
+            raise HTTPException(507, str(exc))
+        except HTTPException:
+            raise
         except ArchiveError as exc:
             raise HTTPException(400, str(exc))
         except Exception as exc:                       # tar פגום, קלט חתוך

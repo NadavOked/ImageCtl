@@ -62,6 +62,7 @@ def _wait(tmp_path, *, gate_at=None, move_after_gate=False, exit_at=None,
             {gate_action}
             {later_move}
         }}
+        poll_tick() {{ sleep; _tk=$((WAIT_POLL_S * 10)); }}   # #1705: one fake tick = one poll
         {gate_vars}
         wait_progress 999 "$counter" 900 300 stream
         echo "result=$? t=$t"
@@ -108,6 +109,7 @@ def test_gate_variables_are_one_shot(tmp_path):
         kill() {{ if [ "$1" = -0 ]; then return 0; fi; echo "killed=$t"; }}
         wait() {{ return 0; }}
         sleep() {{ t=$((t + 10)); [ "$t" -eq 10 ] && echo 1 >> "$counter"; }}
+        poll_tick() {{ sleep; _tk=$((WAIT_POLL_S * 10)); }}   # #1705: one fake tick = one poll
         WAIT_STARTED_LOG="$gate" WAIT_STARTED_TEXT="Starting transfer:"
         wait_progress 999 "$counter" 20 10 first >/dev/null
         : > "$counter"; t=0

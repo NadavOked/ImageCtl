@@ -37,6 +37,7 @@ SERVERS_GW=""
 SERVERS_DNS=""
 NO_FIREWALL=0
 ADMIN_USER=""
+TIMEZONE=""            # #1447: --timezone; ריק = ההגדרה לא נכתבת (ברירת המחדל של השרת)
 ADMIN_PASS=""
 ADMIN_PASS_FD=""
 # Storage Nodes (#655/#723): תפקיד ההתקנה. standalone (ברירת מחדל) או
@@ -179,7 +180,7 @@ function try_local {
 # GRUB fills net_default_mac from the interface that PXE-booted, already in
 # lowercase-with-colons form -- the canonical format from the interface spec.
 if [ -z "$net_default_mac" ]; then
-    echo "ImageCtl: no network interface reported."
+    echo "ImageSrv: no network interface reported."
     sleep --interruptible 3
     try_local
 fi
@@ -215,7 +216,7 @@ done
 # about its own MAC, so it cannot know it is a cloning machine -- and with
 # the server down there is nobody to ask. $grub_platform is the one thing
 # it does know (#323).
-echo "ImageCtl: server $imagectl_server unreachable."
+echo "ImageSrv: server $imagectl_server unreachable."
 sleep --interruptible 3
 try_local
 GRUBCFG
@@ -278,7 +279,7 @@ require_ifname() {   # require_ifname <שם> <מה-זה>
 
 usage() {
     cat <<'EOF'
-ImageCtl — התקנה מלאה על שרת דביאן: שרשרת אתחול, שרת וקונסולה.
+ImageSrv — התקנה מלאה על שרת דביאן: שרשרת אתחול, שרת וקונסולה.
 
   sudo ./setup-boot-server.sh
 
@@ -301,6 +302,7 @@ DHCP לא נדלק כאן בכלל — מגדירים אותו אחר כך מה�
   --admin-user NAME    מדלג על שאלת המשתמש
   --admin-pass PASS    מדלג על שאלות הסיסמה (נשאר ברשימת התהליכים — לדיבאג בלבד)
   --admin-pass-fd FD   קורא את הסיסמה מ-FD שכבר פתוח (האשף משתמש ב-3; אינו argv/env/log)
+  --timezone ZONE      אזור הזמן של השרת (tzdata, למשל Asia/Jerusalem) — נכתב להגדרה (#1447)
   --tftp-root PATH     ברירת מחדל /srv/tftp
   --http-root PATH     ברירת מחדל /srv/imagectl/boot; מועבר לשרת כ---boot-dir
   --storage-role ROLE  standalone (ברירת מחדל) או secondary (#655/#723)
@@ -331,6 +333,7 @@ while [[ $# -gt 0 ]]; do
         --admin-user)  ADMIN_USER="${2:?}"; shift 2 ;;
         --admin-pass)  ADMIN_PASS="${2:?}"; shift 2 ;;
         --admin-pass-fd) ADMIN_PASS_FD="${2:?}"; shift 2 ;;
+        --timezone)    TIMEZONE="${2:?}"; shift 2 ;;
         --tftp-root)   TFTP_ROOT="${2:?}"; shift 2 ;;
         --http-root)   HTTP_ROOT="${2:?}"; shift 2 ;;
         --storage-role) STORAGE_ROLE="${2:?}"; shift 2 ;;
@@ -367,7 +370,7 @@ refuse_if_installed() {
     [[ -f "$UNIT_FILE" ]] && mark="${mark:-$UNIT_FILE}"
     [[ -n "$mark" ]] || return 0
     (( FORCE )) && { warn "כבר מותקן ($mark) — --force: ממשיך, קבצים קיימים מגובים ל-.pre-imagectl.<זמן>"; return 0; }
-    local msg="ImageCtl כבר מותקן כאן ($mark).
+    local msg="ImageSrv כבר מותקן כאן ($mark).
     עדכון קוד: כפתור \"עדכן\" בקונסולה (tools/server-upgrade.sh) — לא המתקין.
     להריץ את המתקין שוב בכל זאת (דורס תצורה, עם גיבוי .pre-imagectl.<זמן>): --force"
     if (( DRY_RUN )); then warn "$msg"; else die "$msg"; fi
@@ -884,6 +887,23 @@ if not password:
 PYEOF
 fi
 
+# ‏#1447: אזור הזמן שנבחר במתקין הוא ההגדרה של השרת — בלעדיה עליית השרת הייתה
+# מחזירה את המערכת לברירת המחדל (timezone.apply_on_start). שם מחוץ לרשימת
+# tzdata נכשל כאן בשמו, לא נכתב.
+if [[ -n "$TIMEZONE" ]] && (( ! DRY_RUN )); then
+    say "אזור הזמן של השרת: $TIMEZONE"
+    TIMEZONE="$TIMEZONE" python3 - <<PYEOF
+import os, sys
+sys.path.insert(0, "$APP_DIR")
+from server import timezone
+from server.db import connect, set_setting
+zone = os.environ["TIMEZONE"]
+if zone not in timezone.zones():
+    sys.exit("אזור זמן לא מוכר: %s" % zone)
+set_setting(connect("$DATA_DIR/imagectl.db"), timezone.SETTING, zone)
+PYEOF
+fi
+
 # ---------------------------------------------------------------------------
 # ‏#1088: כרטיס השרתים — לקוח DHCP (ברירת מחדל) או סטטי, בקובץ שהקונסולה
 # יודעת לקרוא ולשנות (`interfaces.d/imagectl-<if>`, server/netcfg.py),
@@ -958,6 +978,12 @@ run install -m 0644 "$APP_DIR/install/imagectl-installer-gui.service" \
 run install -m 0644 "$APP_DIR/install/90-imagectl-console.conf" /etc/sysctl.d/90-imagectl-console.conf
 if (( ! DRY_RUN )); then
     sysctl -q -p /etc/sysctl.d/90-imagectl-console.conf || warn "sysctl kernel.printk לא הוחל עכשיו — ייכנס באתחול הבא"
+fi
+# ‏#1737: תקרה ליומן המערכת (1G, ‏90 יום) — האימג'ים, ה-DB והיומן על אותה מחיצה.
+# ההנמקה בקובץ עצמו וב-server/disk_reserve.py. ‏restart — מעכשיו, לא מהאתחול הבא.
+run install -D -m 0644 "$APP_DIR/install/journald-imagectl.conf" /etc/systemd/journald.conf.d/90-imagectl.conf
+if (( ! DRY_RUN )); then
+    systemctl restart systemd-journald || warn "journald לא הופעל מחדש — תקרת היומן תיכנס באתחול הבא"
 fi
 run install -m 0644 "$APP_DIR/install/imagectl-wizard.service" \
     /etc/systemd/system/imagectl-wizard.service

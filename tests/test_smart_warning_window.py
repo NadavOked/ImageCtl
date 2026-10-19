@@ -124,6 +124,7 @@ STATION = {"known": True, "role": "build", "task": None, "allowed_images": [],
 SMART_STUBS = (
     'smart_probe() { echo "$1" >> "$RUN_DIR/probed"; echo fail; }; '
     'smart_field() { echo pending_sectors; }; '
+    'smart_ro_stale() { return 1; }; '   # #1742: the read-only redraw, tested in test_readonly_red_1742
     'disk_serial() { printf "S5Y2|NX0R"; }; '
     'disk_port() { echo 1; }; '
     'gui_get() { echo "[]" > "$2"; }; '
@@ -205,6 +206,7 @@ static int drv_hit(const char *n) {
         {"LC_NEXT", HIT_LC_NEXT}, {"LC_GO", HIT_LC_GO} };
     for (size_t i = 0; i < sizeof T / sizeof T[0]; i++) if (!strcmp(T[i].n, n)) return T[i].id;
     int i, r; if (sscanf(n, "ROLE%d.%d", &i, &r) == 2) return HIT_LC_ROLE_BASE + i * 3 + r;
+    if (sscanf(n, "MACHINE%d", &i) == 1) return HIT_ROOM_MACHINE_BASE + i;   /* 17/10: a cloner's name */
     return -1;
 }
 int main(int argc, char **argv) {
@@ -290,6 +292,8 @@ def states(lines: list[str]) -> list[str]:
 # --- מחשב השיכפול: שאלת ה-SMART ----------------------------------------------------
 
 CLONER = "cloner=Office 2024\nsmart_prompt=7-2|2|fail|pending_sectors|WDC WD5000AAKX|WD-WCC2EVC71234\n"
+#: #1732: only an orange disk is ever written through the window -- the mechanism is tested on it
+CLONER_ORANGE = CLONER.replace("|fail|pending_sectors|", "|failed_last|cable|")
 
 
 @native_gui
@@ -311,9 +315,9 @@ def test_cloner_skip_in_the_window_writes_nothing(driver, tmp_path):
 
 @native_gui
 def test_cloner_only_the_red_button_writes(driver, tmp_path):
-    keys = drive(driver, tmp_path, ["mode:cloner"], CLONER, "key:ENTER", "key:TAB", "key:ENTER")
+    keys = drive(driver, tmp_path, ["mode:cloner"], CLONER_ORANGE, "key:ENTER", "key:TAB", "key:ENTER")
     assert records(keys) == ["smart-rescue|7-2"], keys
-    click = drive(driver, tmp_path, ["mode:cloner"], CLONER, "hit:SMART_RESCUE", "hit:SDLG_GO")
+    click = drive(driver, tmp_path, ["mode:cloner"], CLONER_ORANGE, "hit:SMART_RESCUE", "hit:SDLG_GO")
     assert records(click) == ["smart-rescue|7-2"], click
     # the window owns the keys while open: S and R reach nothing behind it
     shield = drive(driver, tmp_path, ["mode:cloner"], CLONER, "key:ENTER", "char:S", "char:R")
@@ -328,17 +332,30 @@ def test_cloner_window_of_a_request_that_is_gone_answers_nothing(driver, tmp_pat
 
 
 @native_gui
-def test_cloner_red_disk_keeps_enter_as_skip(driver, tmp_path):
-    red = CLONER.replace("|fail|pending_sectors|", "|failed_last|cable|")
-    out = drive(driver, tmp_path, ["mode:cloner"], red, "key:ENTER")
-    assert records(out) == ["smart-skip|7-2"] and "sdlg=0" in states(out)[-1], out
+def test_cloner_red_disk_enter_opens_the_window_and_esc_skips(driver, tmp_path):
+    """אדום (SMART fail, ‏CLONER): Enter פותח את החלון (לא כותב), ו-Esc בו הוא
+    דלג. ‏#1732: החלון הזה אינו מציע כתיבה כלל — ראו הטסט שאחריו."""
+    out = drive(driver, tmp_path, ["mode:cloner"], CLONER, "key:ENTER", "key:ESC")
+    assert records(out) == ["smart-skip|7-2"], out
+
+
+@native_gui
+def test_cloner_orange_retry_writes_only_through_the_window(driver, tmp_path):
+    """‏#1580: נכשל בשיכפול הקודם = כתום, "נסה שוב…" — Enter פותח את החלון,
+    והכפתור האדום שבו (Tab, Enter) שולח rescue."""
+    orange = CLONER.replace("|fail|pending_sectors|", "|failed_last|cable|")
+    out = drive(driver, tmp_path, ["mode:cloner"], orange, "key:ENTER")
+    assert records(out) == [] and "sdlg=1" in states(out)[-1], out
+    out = drive(driver, tmp_path, ["mode:cloner"], orange, "key:ENTER", "key:TAB", "key:ENTER")
+    assert records(out) == ["smart-rescue|7-2"], out
 
 
 # --- מחשב הבנייה: שחזור לדיסק שלו, וקליטה ממנו ------------------------------------
 
 BUILD = ("task=none\nmachine_name=BUILD-01\nimage=img_1|Office 2024|Office\nfolder=Office\n"
          "disk=sda|Samsung SSD 870 EVO|500107862016|1|0\n")
-WARNED = BUILD + "dsmart=sda|fail|pending_sectors|S5Y2NX0R123456|1\n"
+WARNED = BUILD + "dsmart=sda|fail|pending_sectors|S5Y2NX0R123456|1\n"     # red (SMART fail)
+ORANGE = BUILD + "dsmart=sda|warn|crc|S5Y2NX0R123456|1\n"                  # #1732: the only colour written
 CLEAN = BUILD + "dsmart=sda|ok|ok|S5Y2NX0R123456|1\n"
 RESTORE = ["mode:restore", "image:1"]
 CAPTURE = ["mode:capture", "disk:0", "name:Office 2024", "folder:1"]
@@ -350,14 +367,14 @@ def _starts(lines: list[str], token: str) -> int:
 
 @native_gui
 def test_restore_onto_a_warned_disk_opens_the_window_after_the_erase_question(driver, tmp_path):
-    out = drive(driver, tmp_path, RESTORE, WARNED, "key:ENTER", "key:ENTER")
+    out = drive(driver, tmp_path, RESTORE, ORANGE, "key:ENTER", "key:ENTER")
     assert _starts(out, "restore-start") == 0, out                        # the old code restored here
     assert "confirm=0 sdlg=2 go=0" in states(out)[-1], out                # SDLG_RESTORE, on "דלג"
-    skip = drive(driver, tmp_path, RESTORE, WARNED, "key:ENTER", "key:ENTER", "key:ENTER")
+    skip = drive(driver, tmp_path, RESTORE, ORANGE, "key:ENTER", "key:ENTER", "key:ENTER")
     assert _starts(skip, "restore-start") == 0 and "sdlg=0" in states(skip)[-1], skip
-    go = drive(driver, tmp_path, RESTORE, WARNED, "key:ENTER", "key:ENTER", "key:TAB", "key:ENTER")
+    go = drive(driver, tmp_path, RESTORE, ORANGE, "key:ENTER", "key:ENTER", "key:TAB", "key:ENTER")
     assert _starts(go, "restore-start") == 1, go
-    click = drive(driver, tmp_path, RESTORE, WARNED, "hit:RESTORE_START", "hit:CONFIRM_OK", "hit:SDLG_GO")
+    click = drive(driver, tmp_path, RESTORE, ORANGE, "hit:RESTORE_START", "hit:CONFIRM_OK", "hit:SDLG_GO")
     assert _starts(click, "restore-start") == 1, click
 
 
@@ -390,15 +407,18 @@ LC = ("lc_screen=local\nlc_inv=done\nlc_phase=idle\n"
       "lc_src=sdc|none\nlc_fit=sda|fits|480103981056|\nlc_fit=sdb|fits|480103981056|\n")
 
 
+LC_ORANGE = LC.replace("|fail|health_failed|Ubuntu|", "|warn|crc|Ubuntu|")   # #1732: orange is written through the window
+
+
 @native_gui
 def test_local_clone_a_warned_target_only_through_the_window(driver, tmp_path):
-    out = drive(driver, tmp_path, ["mode:cloner"], LC, "hit:ROLE1.2")
+    out = drive(driver, tmp_path, ["mode:cloner"], LC_ORANGE, "hit:ROLE1.2")
     assert "sdb:0," in states(out)[-1] and "sdlg=4" in states(out)[-1], out   # still "דלג", SDLG_LC_TARGET
-    skip = drive(driver, tmp_path, ["mode:cloner"], LC, "hit:ROLE1.2", "key:ENTER")
+    skip = drive(driver, tmp_path, ["mode:cloner"], LC_ORANGE, "hit:ROLE1.2", "key:ENTER")
     assert "sdb:0," in states(skip)[-1] and "sdlg=0" in states(skip)[-1], skip
-    go = drive(driver, tmp_path, ["mode:cloner"], LC, "hit:ROLE1.2", "hit:SDLG_GO")
+    go = drive(driver, tmp_path, ["mode:cloner"], LC_ORANGE, "hit:ROLE1.2", "hit:SDLG_GO")
     assert "sdb:2," in states(go)[-1], go
-    clean = drive(driver, tmp_path, ["mode:cloner"], LC, "hit:ROLE0.0", "hit:ROLE0.2")   # sda: skip, target again
+    clean = drive(driver, tmp_path, ["mode:cloner"], LC_ORANGE, "hit:ROLE0.0", "hit:ROLE0.2")   # sda: skip, target again
     assert "sda:2," in states(clean)[-1] and "sdlg=0" in states(clean)[-1], clean
 
 
@@ -423,23 +443,79 @@ def test_local_clone_a_warned_old_source_is_not_swapped_into_a_target(driver, tm
     assert "sda:1," in states(out)[-1] and "sdc:0," in states(out)[-1], out   # the old source: "דלג", not a target
 
 
-# --- חדר: W/N בלי סבב (נדב 16/10) ----------------------------------------------------
-
-ROOM = "task=none\nroom_label=מחשבי שיכפול\n"
-ROUND = ROOM + "round=Office 2024|1|1|0|3|3|0|-1|-1|-1\n"
+# --- #1732: דיסק אדום (SMART נכשל) לעולם אינו יעד -------------------------------
 
 
 @native_gui
-def test_room_w_and_n_send_nothing_without_a_round(driver, tmp_path):
-    out = drive(driver, tmp_path, ["mode:room"], ROOM, "char:W", "char:w", "char:N", "char:n", "hit:ROOM_WAKE")
-    assert records(out) == [], out                                     # the old code sent room-wake / room-start
-    assert "@ nohit ROOM_WAKE" in out, out                             # the grey button takes no click
+def test_1732_cloner_red_window_offers_no_write(driver, tmp_path):
+    """הבקרה השלילית: על הקוד הישן Tab+Enter בחלון שלח smart-rescue, והלחיצה
+    על הכפתור האדום מצאה אותו."""
+    keys = drive(driver, tmp_path, ["mode:cloner"], CLONER, "key:ENTER", "key:TAB", "key:ENTER")
+    assert records(keys) == ["smart-skip|7-2"], keys
+    click = drive(driver, tmp_path, ["mode:cloner"], CLONER, "hit:SMART_RESCUE", "hit:SDLG_GO")
+    assert "@ nohit SDLG_GO" in click and records(click) == [], click
+
+
+@native_gui
+def test_1732_restore_onto_a_red_disk_never_starts(driver, tmp_path):
+    keys = drive(driver, tmp_path, RESTORE, WARNED, "key:ENTER", "key:ENTER", "key:TAB", "key:ENTER")
+    assert _starts(keys, "restore-start") == 0, keys
+    click = drive(driver, tmp_path, RESTORE, WARNED, "hit:RESTORE_START", "hit:CONFIRM_OK", "hit:SDLG_GO")
+    assert _starts(click, "restore-start") == 0 and "@ nohit SDLG_GO" in click, click
+
+
+@native_gui
+def test_1732_local_clone_a_red_drawer_is_never_a_target(driver, tmp_path):
+    """sdb אדום: "יעד" אפור — אין לחיצה, אין חלון, והחצים מדלגים עליו."""
+    out = drive(driver, tmp_path, ["mode:cloner"], LC, "hit:ROLE1.2")
+    assert "@ nohit ROLE1.2" in out, out
+    assert all("sdb:2," not in s for s in states(out)), out
+    keys = drive(driver, tmp_path, ["mode:cloner"], LC, "key:UP", "key:RIGHT")   # sdb's bay: דלג -> יעד? (the old code opened the window)
+    assert all("sdb:2," not in s for s in states(keys)) and all("sdlg=4" not in s for s in states(keys)), keys
+    # a red disk may still be the SOURCE (reading from it is allowed)
+    src = drive(driver, tmp_path, ["mode:cloner"], LC, "hit:ROLE1.1")   # ROLE<i>.<LCR_*>: 0 skip, 1 source, 2 target
+    assert "sdb:1," in states(src)[-1], src
+
+
+# --- חדר: W/N בלי סבב (נדב 16/10) ----------------------------------------------------
+
+ROOM = "task=none\nroom_label=מחשבי שיכפול\n"
+C_OFF, C_ON = "3c:52:82:a1:00:21", "3c:52:82:a1:00:22"
+CLONERS = (f"machine=1|{C_OFF}|0|0|0||-1|0|\nmachine_drawers=0|2\n"
+           f"machine=2|{C_ON}|1|0|1||-1|0|\nmachine_drawers=1|2\n"
+           "room_drawer=1|1|S1|M|256060514304|passed|1|0||||ok\n")
+ROUND = ROOM + CLONERS + "round=Office 2024|1|1|0|3|3|0|-1|-1|-1\n"
+
+
+def cloners_sent(lines: list[str]) -> list[str]:
+    return [l[len("cloner="):] for l in lines if l.startswith("cloner=")]
+
+
+@native_gui
+def test_room_n_sends_nothing_without_a_round_and_wake_with_no_pick_says_so(driver, tmp_path):
+    """Nadav 17/10 (over 16/10): "הער" is no longer grey -- with nothing picked it
+    takes the click and says so, and sends nothing; N still needs a round."""
+    out = drive(driver, tmp_path, ["mode:room"], ROOM + CLONERS, "char:W", "char:w", "char:N", "char:n", "hit:ROOM_WAKE")
+    assert records(out) == [], out
+    assert "@ nohit ROOM_WAKE" not in out, out                         # the button takes the click now
+
+
+@native_gui
+def test_room_wake_click_sends_exactly_the_picked_cloners(driver, tmp_path):
+    """Metal 17/10: the click sent no POST. Pick the OFF cloner by its name (it has
+    no drawer yet), click "הער": one room-wake carrying only its MAC."""
+    out = drive(driver, tmp_path, ["mode:room"], ROOM + CLONERS, "hit:MACHINE0", "hit:ROOM_WAKE")
+    assert records(out) == ["room-wake"], out
+    assert cloners_sent(out) == [C_OFF], out
+    both = drive(driver, tmp_path, ["mode:room"], ROOM + CLONERS, "hit:MACHINE0", "hit:MACHINE1", "char:W")
+    assert records(both) == ["room-wake"] and cloners_sent(both) == [f"{C_OFF},{C_ON}"], both
 
 
 @native_gui
 def test_room_w_and_n_work_with_a_round(driver, tmp_path):
     out = drive(driver, tmp_path, ["mode:room"], ROUND, "char:W", "char:N")
     assert records(out) == ["room-wake", "room-start"], out
+    assert cloners_sent(out) == [f"{C_OFF},{C_ON}"], out              # a live round: its own cloners
 
 
 # --- ציור: שלושת הכרטיסים בשתי ערכות הנושא ------------------------------------------
@@ -458,6 +534,13 @@ def test_the_window_is_drawn_with_the_red_button_in_both_themes(tmp_path):
         w, h, ch, px = _png_rgb(tmp_path / f"card-{name}-light.png")
         return sum(1 for i in range(0, w * h * ch, ch * 3) if all(abs(px[i + k] - red[k]) <= 30 for k in range(3)))
 
-    for card, plain in (("cloner-smart", "cloner"), ("restore-smart", "restore"), ("pick-smart", "pick")):
-        assert reds(card) > reds(plain) + 300, card
+    # #1732: a write onto a red disk is refused -- the window is drawn (in red: its edge, its
+    # stripe, the "!"), with no red button; reading from one (the capture, "pick") keeps
+    # "קלוט ממנו בכל זאת". Testrunner 18/10: the plain restore card has more red than the refusal
+    # over it (the window dims what is under it), so "more red than plain" is no measure there.
+    for card, plain in (("cloner-smart", "cloner"), ("restore-smart", "restore")):
+        assert reds(card) > 0, card
+        assert (tmp_path / f"card-{card}-light.png").read_bytes() != (tmp_path / f"card-{plain}-light.png").read_bytes(), card
         assert (tmp_path / f"card-{card}-dark.png").exists()
+    assert reds("pick-smart") > reds("pick") + 300
+    assert reds("pick-smart") > reds("restore-smart"), "the capture keeps its red button, the restore has none"

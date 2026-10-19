@@ -3,3 +3,4 @@
 *.png binary
 *.efi binary
 *.cab binary
+*.bin binary

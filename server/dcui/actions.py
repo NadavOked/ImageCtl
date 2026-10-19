@@ -391,14 +391,25 @@ def restart_management_network(conn, interface: str, data_dir: Path,
         journal(conn, "dcui_management_network_restart",
                 f"{interface} ok=false invalid saved configuration", "dcui")
         return ActionResult(False, "The saved management network configuration is invalid.")
-    form = {
-        "interface": cfg.name, "mode": cfg.mode, "address": cfg.address,
-        "netmask": cfg.netmask, "gateway": cfg.gateway, "dns": ",".join(cfg.dns),
-    }
-    result = apply_network(conn, form, data_dir, {interface}, hooks)
-    journal(conn, "dcui_management_network_restart",
-            f"{interface} ok={str(result.ok).lower()}", "dcui")
-    return result
+    # #1537: a restart changes no setting and writes no file, so there is
+    # nothing to roll back and nothing to confirm -- no marker is armed.
+    # Success is the saved address read back live, never the commands' exit.
+    if netcfg_rollback.read_pending(data_dir / "netcfg") is not None:
+        journal(conn, "dcui_management_network_restart",
+                f"{interface} ok=false pending change", "dcui")
+        return ActionResult(False, "A previous network change still awaits confirmation.")
+    active_hooks = {**default_network_hooks(), **(hooks or {})}
+    error = active_hooks["netcfg_apply"](interface)
+    gaps = [] if error else netcfg_host.mismatches(cfg, active_hooks["netcfg_state"]())
+    if error or gaps:
+        journal(conn, "dcui_management_network_restart",
+                f"{interface} ok=false {'apply failed' if error else 'live state mismatch'}",
+                "dcui")
+        return ActionResult(False, "Management network restart was not verified.",
+                            ("ifdown/ifup failed." if error else
+                             "Live read-back did not match the saved configuration.",))
+    journal(conn, "dcui_management_network_restart", f"{interface} ok=true", "dcui")
+    return ActionResult(True, "Management network restarted; the address read back live.")
 
 
 def confirm_network(conn, data_dir: Path, now: float | None = None) -> ActionResult:

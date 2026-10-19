@@ -277,7 +277,7 @@ async function boot() {
   $(`input[name=role][value=${defaults.role}]`).checked = true;
   $(`input[name=mode][value=${defaults.mode}]`).checked = true;
   $("#primary_url").value = defaults.primary_url || "";
-  $("#hostname").value = defaults.hostname || "imagectl-server";
+  $("#hostname").value = defaults.hostname || "imagesrv-server";
   $("#server-name").textContent = defaults.hostname || "";
   $("#current-wrap").classList.toggle("hidden", !initial.rerun);
   toggle();

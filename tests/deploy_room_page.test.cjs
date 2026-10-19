@@ -103,6 +103,7 @@ function balanced(html) {
   assert.deepEqual(stack,[],'Unclosed tags');
 }
 const between=(html,a,b)=>html.slice(html.indexOf(a),b?html.indexOf(b,html.indexOf(a)):undefined);
+const mach=(html,mac)=>html.slice(html.indexOf(`data-mac="${mac}"`)).split(/<div class="mach(?: err| off)?" data-mac=/)[0];
 const card=(html,mac)=>html.slice(html.indexOf(`data-mac="${mac}"`)).split(/<div class="mcard(?: off)?"/)[0];
 const kpi=(html,label)=>between(html,`<div class="l">${label}</div>`,'</div><div class="s">')+between(html,`<div class="l">${label}</div>`).slice(0,600);
 
@@ -117,37 +118,43 @@ test('page registry: deploy is an own page with three tabs, the room first; the 
   for(const r of ['admin','deploy']) { const s=setup({role:r}); assert.equal(s.run("pageAllowed('deploy')"),true,r); }
 });
 
-test('no round: header counters, "no round" pill, Start-round window action, WoL + big-view actions, and the idle grid from /room drawer_list', () => {
+test('no round (mockup console-full.html P.deploy): "סבב הפצה" + "פנוי", "אין סבב פעיל", "התחל סבב" in the header and in the empty state of "חדר המשכפלים"; the room grid lives in the start window', () => {
   const {run}=setup();
   const html=run('deploy(0)'); balanced(html);
-  assert.match(html,/obj-name">חדר המשכפלים</); assert.match(html,/obj-sub"[^>]*>3 משכפלים · 8 חריצים · 2 מחוברים · 5 דיסקים בחריצים</);
-  assert.match(html,/<span class="pill ">אין סבב</);
-  assert.match(html,/wakeRoom\(\)">הער משכפלים \(WoL\)</); assert.match(html,/toggleRoomBig\(\)">תצוגה גדולה</); assert.match(html,/poweroffRoom\('grp_CLONERS'\)">כיבוי כל המשכפלים…/);
-  assert.doesNotMatch(html,/startWave|stopRoom/,'no wave to start or stop');
-  assert.doesNotMatch(html,/class="kpi/,'no KPI row without a round');
-  assert.match(html,/openRoomRound\(\)">פתח סבב</); assert.doesNotMatch(html,/class="rnew"/,'the old inline card is gone');
+  assert.match(html,/obj-name">סבב הפצה<span class="pill ">פנוי<\/span><\/div><div class="obj-sub"[^>]*>אין סבב פעיל</);
+  assert.match(html,/<div class="obj-actions"><button class="btn primary" onclick="openRoomRound\(\)"><svg[^]*?<\/svg> התחל סבב<\/button><\/div>/,'the header holds the one action of the mockup');
+  assert.doesNotMatch(html,/startWave|stopRoom|toggleRoomBig|wakeRoom|refreshPage/,'no wave to start or stop; the big view, room WoL and refresh are not in the mockup');
+  assert.doesNotMatch(html,/class="kpi/,'no tiles without a round');
+  assert.doesNotMatch(html,/class="rgrid|class="mgrid|data-mac=/,'mockup: no machine grid without a round');
+  const room=between(html,'<div class="c12 card">');
+  assert.match(room,/^<div class="c12 card"><div class="card-h"><span>חדר המשכפלים<\/span><div class="acts"><button class="btn sm danger" onclick="poweroffRoom\('grp_CLONERS'\)">כיבוי כל המשכפלים…<\/button><\/div><\/div>/);
+  assert.match(room,/<div class="empty"><span class="eic"><svg[^]*?<\/svg><\/span><b class="et">אין סבב פעיל<\/b><p>בחרו אימג' ומחשבי יעד כדי להתחיל\. מחשבים כבויים יידלקו דרך WoL\.<\/p><button class="btn primary" onclick="openRoomRound\(\)">התחל סבב<\/button><\/div>/);
+  const d=setup({role:'deploy'}).run('deploy(0)');
+  assert.match(d,/openRoomRound\(\)"><svg[^]*?<\/svg> התחל סבב/,'deploy opens rounds'); assert.doesNotMatch(d,/poweroffRoom/,'powering the room off is for an admin (poweroffRoom)');
+  const v=setup(); v.run('ME.role="viewer"'); assert.doesNotMatch(v.run('deploy(0)'),/openRoomRound|poweroffRoom/,'no action without the right');
+  assert.doesNotMatch(html,/class="rnew"/,'the old inline card is gone');
   const form=run('roomNewWindow(roomMachines())');
   assert.match(form,/aria-pressed="true"[^>]*>מהשרת \(הספרייה\)/); assert.match(form,/aria-pressed="false"[^>]*>מדיסק מחשב בנייה \(הפצה ישירה\)/,'a builder that reported disks → #715 offered');
   assert.match(form,/<select id="rn-image"/); assert.match(form,/<input type="number" id="rn-target" min="1" value="5"/,'default target = the ready drawers, like the GUI (5 awake)');
   assert.doesNotMatch(form,/openRoomRoundSubmit/,'#1485 (S350): the primary action is in the window footer, not at the end of the body');
+  assert.match(form,/class="rn-m" data-mac="a0:48:1c:8a:18:40"[^]*class="rn-m off" data-mac="78:ac:c0:9b:11:c3"/,'every cloner and its drawers are in the start window, off ones too');
   run('openRoomRound()');
   assert.equal(run("document.getElementById('modalOk').textContent"),'פתח סבב'); assert.equal(run("document.getElementById('modalOk').disabled"),true,'nothing ticked → the footer action waits');
   assert.equal(run("document.getElementById('modalHint').textContent"),'יש לסמן לפחות דיסק אחד'); assert.match(run("document.getElementById('modalHint').className"),/rn-sum need/);
   assert.match(form,/ברירת המחדל = 5 מגירות מוכנות/); assert.match(form,/id="rn-version"><option>הנוכחית \(ברירת מחדל\)/);   // אפשרות אחת, לא מנוטרל (README §8)
   assert.equal(run('typeof formOptions'),'undefined');
-  // הגריד עד סוף הכרטיס (`UI.card`) — לא לפי ספירת </div>: כרטיס בלי פעולות נסגר מוקדם יותר
-  const grid=between(html,'<div class="mgrid">','<div class="c12 rnotes">')||between(html,'<div class="mgrid">');
-  assert.match(html,/אין סבב — הדיסקים לפי הדיווח האחרון ב-hello/);
-  assert.doesNotMatch(grid,/sd[abc]/,'never sd*');
-  const c1=card(grid,C1), c2=card(grid,C2), c3=card(grid,C3);
-  assert.match(c1,/<b>מחשב 1<\/b><span class="pill ok">מחובר<\/span><span class="muted">2 חריצים · <span class="mono">10.44.12.118<\/span>/);
-  assert.match(c1,/<div class="disk ok" data-slot="1" title="SATA 0 · 870 EVO · S5Y10 · SMART תקין"><b>דיסק 1<\/b>/);
-  assert.match(c2,/<div class="disk warn" data-slot="2" title="[^"]*SMART אזהרה"><b>דיסק 2<\/b>/);
-  assert.match(grid,/<div class="mcard off" data-mac="78:ac:c0:9b:11:c3"><div class="mcard-h"><b>מחשב 3<\/b><span class="pill ">לא מחובר<\/span><span class="muted">3 חריצים · מעולם לא</);
-  assert.equal((c3.match(/<div class="disk empty" data-slot="\d" title="דיסק \d · SATA \d · ריק"><b>דיסק \d<\/b><span class="cap">ריק<\/span><\/div>/g)||[]).length,3);
-  assert.match(c3,/wakeMachine\('[^']+'\)"[^>]*>WoL</,'not connected → per-machine WoL on the card (#984); the room stays wakeRoom in the header');
-  assert.doesNotMatch(c1,/WoL/,'connected → no WoL');
-  assert.doesNotMatch(html,/openMachineDetail/,'no machine drawer from the room');
+});
+
+test('the mockup-only controls are not in the product: "מצב לדוגמה" (active / no round), "הצג מה השתנה"; the page has no round number the API does not give', () => {
+  const pages=[setup().run('deploy(0)'),setup({room:roomRunning()}).run('deploy(0)'),setup({room:roomRunning({wave_state:'open'})}).run('deploy(0)')];
+  for (const html of pages) {
+    assert.doesNotMatch(html,/מצב לדוגמה|הצג מה השתנה|data-round=|hint-demo|chgSw/);
+    assert.doesNotMatch(html,/סבב \d/,'room_rounds.id is "room_xxxx" -- there is no "round 12" to show');
+  }
+  for (const f of ['console.js','index.html','console.css']) {
+    const src=fs.readFileSync(path.join(root,f),'utf8');
+    assert.doesNotMatch(src,/מצב לדוגמה|הצג מה השתנה|data-round=|hint-demo/,f);
+  }
 });
 
 test('#953: every image says "fits a disk from X GB"; one that does not fit the smallest drawer is disabled with the exact server refusal string; unknown floor → note, nothing disabled', () => {
@@ -228,31 +235,37 @@ test('new round: POST /room {image_id, target_drives}; a 409 fit refusal is show
   assert.ok(d.requests.some(x=>x.url==='/api/console/room'&&x.options.method==='POST'),'deploy is a room operator');
 });
 
-test('running wave: header "wave N", transmitting pill with the wave percent, start/stop actions, five KPIs with meaning, rate/loss as an API note', () => {
+test('running wave (mockup P.deploy): "סבב הפצה" + "פעיל", "גל N · image · N מחשבים", "עצירת הסבב…"; three tiles — overall progress, stream rate, re-sent blocks — then the room card, then the notes', () => {
   const {run}=setup({room:roomRunning()});
   const html=run('deploy(0)'); balanced(html);
-  assert.match(html,/obj-name">חדר המשכפלים — גל 2</);
-  assert.match(html,/obj-sub"[^>]*>office365 · <bdi dir="ltr">18.6 GB<\/bdi> בשרת · יעד: 12 דיסקים · נכתבו 5 · נשארו 7 · פתח nadav</);
-  assert.match(html,/<span class="pill info">משדר<\/span>/); assert.doesNotMatch(html,/<span class="pill info">משדר — 31%/,'the percentage moved into the body');
-  assert.doesNotMatch(html,/startWave/,'running → nothing to start'); assert.match(html,/stopRoom\(\)">עצור סבב</); assert.match(html,/wakeRoom\(\)">הער משכפלים \(WoL\)</);
+  assert.match(html,/obj-name">סבב הפצה<span class="pill info">פעיל<\/span><\/div><div class="obj-sub"[^>]*>גל 2 · office365 · 3 מחשבים</);
+  assert.match(html,/<div class="obj-actions"><button class="btn danger" onclick="stopRoom\(\)">עצירת הסבב…<\/button><\/div>/,'the one header action of the mockup');
+  assert.doesNotMatch(html,/startWave|openRoomRound|wakeRoom\(\)">|toggleRoomBig|refreshPage/);
   assert.doesNotMatch(html,/rnew/,'no new-round form while a round is active');
-  assert.match(html,/<div class="kpi info"><div class="l">הגל הנוכחי<\/div><div class="v"><bdi dir="auto">גל 2<\/bdi><\/div><div class="bar" style="margin-top:6px" role="progressbar"[^>]*aria-valuenow="31"><i style="--w:31%"><\/i><\/div><div class="s">31% בממוצע על המגירות שהצטרפו · קצב הזרם — <b[^>]*>לא נמדד<\/b> · שידור חוזר — <b[^>]*>לא נמדד<\/b>/,'no throughput_bps/loss_blocks → "not measured", not 0 (#989)');
-  assert.match(html,/<div class="kpi ok"><div class="l">נכתבו ואומתו<\/div><div class="v"><bdi dir="auto">5<\/bdi> <small>\/ 12<\/small><\/div><div class="s">7 נשארו · מכל הגלים/);
-  assert.match(html,/<div class="kpi info"><div class="l">כותבים עכשיו<\/div><div class="v"><bdi dir="auto">4<\/bdi><\/div><div class="s">מחשב 1 · דיסק 1,2 — מחשב 2 · דיסק 1,2/);
-  assert.match(html,/<div class="kpi err"><div class="l">דורש מפעיל<\/div><div class="v"><bdi dir="auto">1<\/bdi><\/div><div class="s">מחשב 2 · דיסק 3 אדום — מדלג/);
-  assert.match(html,/<div class="kpi "><div class="l">ריקים \/ לא מחוברים<\/div><div class="v"><bdi dir="auto">1<\/bdi><\/div><div class="s">מחשב 3 לא מחובר · 0 חריצים פנויים/,'a machine that is off counts once, not per empty slot');
-  const s2=setup({room:roomRunning()}); s2.run("ROOM.machines[0].drawer_list.pop()"); assert.match(s2.run('deploy(0)'),/ריקים \/ לא מחוברים<\/div><div class="v"><bdi dir="auto">2<\/bdi><\/div><div class="s">מחשב 3 לא מחובר · 1 חריצים פנויים/);
+  const order=['<div class="c12 kpis">','<div class="c12 card"><div class="card-h"><span>חדר המשכפלים','<div class="c12 rnotes">'].map((x)=>html.indexOf(x));
+  assert.ok(order.every((i,k)=>i>0&&(k===0||i>order[k-1])),'tiles → room card → notes '+order);
+  const kpis=between(html,'<div class="c12 kpis">','<div class="c12 card">');
+  assert.equal((kpis.match(/<div class="kpi /g)||[]).length,3,'three tiles, like the mockup');
+  assert.match(kpis,/<div class="kpi info"><div class="l">התקדמות כוללת<\/div><div class="v"><bdi dir="auto">31%<\/bdi><\/div><\/div>/,'the average of the joined drawers (wavePct)');
+  assert.match(kpis,/<div class="kpi info"><div class="l">קצב זרם<\/div><div class="v"><bdi dir="auto">—<\/bdi><\/div><div class="s"><b title="[^"]*throughput_bps[^"]*">לא נמדד<\/b><\/div><\/div>/,'null → "not measured", not 0 (#989)');
+  assert.match(kpis,/<div class="kpi info"><div class="l">בלוקים שודרו שוב<\/div><div class="v"><bdi dir="auto">—<\/bdi><\/div><div class="s"><b title="[^"]*loss_blocks[^"]*">לא נמדד<\/b><\/div><\/div>/);
   assert.doesNotMatch(html,/Gb\/s|איבוד 0|מתוך 3 גלים/,'no invented rate, loss or wave total');
+  const foot=between(html,'<div class="room-foot">','<div class="c12 rnotes">');
+  assert.match(foot,/^<div class="room-foot"><p>גל 2 · נכתבו 5 מתוך 12 · נשארו 7 · [^<]*<\/p><p>הגל משדר — /,'what the mockup has no room for and needs no action is a quiet line at the foot of the room card, not a banner');
+  assert.doesNotMatch(between(html,'<div class="c12 rnotes">'),/נכתבו 5 מתוך 12|הגל משדר/,'the wave line and the running line are no longer blue notes');
+  const s2=setup({room:roomRunning()}); s2.run("ROOM.machines.forEach(m=>(m.drawer_list||[]).forEach(d=>{d.state=null;d.bytes_total=0;}))");
+  assert.match(s2.run('deploy(0)'),/התקדמות כוללת<\/div><div class="v"><bdi dir="auto">—<\/bdi><\/div><div class="s"><b title="עוד אין דיווח כתיבה מהמגירות שהצטרפו">לא נמדד<\/b>/,'no report → "—", not 0%');
 });
 
-test('running wave: throughput and re-sent blocks come from /room.round (udp-sender of the server, #989) — 0 is a measurement, null is not', () => {
+test('running wave: the stream tiles come from /room.round (udp-sender of the server, #989) — 0 is a measurement, null is not', () => {
   const {run}=setup({room:roomRunning({throughput_bps:117964800,loss_blocks:0})});
-  let k1=kpi(run('deploy(0)'),'הגל הנוכחי');
-  assert.match(k1,/קצב הזרם <bdi dir="ltr">113 MB\/s<\/bdi> · 0 בלוקים שודרו שוב/);
-  assert.doesNotMatch(k1,/דורש API|לא נמדד/);
-  const s2=setup({room:roomRunning({throughput_bps:null,loss_blocks:37})});
-  k1=kpi(s2.run('deploy(0)'),'הגל הנוכחי');
-  assert.match(k1,/קצב הזרם — <b[^>]*>לא נמדד<\/b> · 37 בלוקים שודרו שוב/);
+  let html=run('deploy(0)');
+  assert.match(html,/<div class="kpi info"><div class="l">קצב זרם<\/div><div class="v"><bdi dir="auto">113 MB\/s<\/bdi><\/div><\/div>/);
+  assert.match(html,/<div class="kpi info"><div class="l">בלוקים שודרו שוב<\/div><div class="v"><bdi dir="auto">0<\/bdi><\/div><\/div>/,'0 re-sent blocks is a measurement');
+  assert.doesNotMatch(between(html,'<div class="c12 kpis">','<div class="c12 card">'),/דורש API|לא נמדד/);
+  html=setup({room:roomRunning({throughput_bps:null,loss_blocks:37})}).run('deploy(0)');
+  assert.match(html,/קצב זרם<\/div><div class="v"><bdi dir="auto">—<\/bdi><\/div><div class="s"><b title="[^"]*">לא נמדד<\/b>/);
+  assert.match(html,/בלוקים שודרו שוב<\/div><div class="v"><bdi dir="auto">37<\/bdi><\/div><\/div>/);
 });
 
 test('#447: the wave rate line names the drive that lowered it; without wave_rate nothing is shown', () => {
@@ -302,22 +315,45 @@ test('Nadav 15/10 (b): the slowest cloner that set the cap is named; an assumed 
   assert.doesNotMatch(k1,/תקרה לפי/,'the server card set the cap — no cloner is blamed');
 });
 
-test('running wave: the grid is the cloners grid in round mode — write bars, blue writing, orange CRC, red failed drawer; machine "in round · N%"; the notes say what happens without an answer', () => {
+test('running wave (mockup P.deploy): a card per cloner — name, "מחובר", IP; a row per drawer "דיסק N" · bar · percent; orange CRC; a failed drawer is "נכשל", the card red with "דיסק אדום" and which disk and why; off = dashed "לא הצטרף לסבב"; the notes say what happens without an answer', () => {
   const {run}=setup({room:roomRunning()});
   const html=run('deploy(0)');
-  assert.match(html,/בסבב — מצב כל מגירה מ-\/room/);
-  const grid=between(html,'<div class="mgrid">','<div class="c12 rnotes">');
+  assert.match(html,/<div class="c12 card"><div class="card-h"><span>חדר המשכפלים <small>כשל במחשב אחד לא עוצר את השאר<\/small><\/span><div class="acts"><button class="btn sm danger" onclick="poweroffRoom\('grp_CLONERS'\)">כיבוי כל המשכפלים…<\/button><\/div><\/div>/);
+  assert.doesNotMatch(html,/class="mgrid|class="legend|dsk rr|class="rn"|machine-round|machine-fail/,'the old lcbay rows and the idle square grid are gone');
+  const grid=between(html,'<div class="rgrid round">','<div class="c12 rnotes">');
   assert.doesNotMatch(grid,/sd[abc]/,'never sd*');
-  const c1=card(grid,C1), c2=card(grid,C2);
-  assert.match(c1,/<b>מחשב 1<\/b><span class="pill ok">מחובר<\/span>[^]*?<div class="machine-round">38%<\/div>/);
-  assert.match(c1,/<div class="disk run" data-slot="1" title="SATA 0 · 870 EVO · S5Y10 · כותב · SMART תקין">[^]*?<div class="bar "><i style="--w:38%"><\/i><\/div><span class="pct">38%<\/span><\/div><\/div>/);
-  assert.match(c2,/<div class="disk warn" data-slot="2" title="SATA 1 · 870 EVO · S5Y31 · כותב · CRC \+3 · לבדוק כבל · SMART אזהרה">[^]*?<div class="bar warn">/);
-  assert.match(c2,/<div class="disk err" data-slot="3" title="[^"]*נכשל בסבב — queue overflow: target lost bytes[^"]*">[^]*?<div class="bar err">/);
-  assert.doesNotMatch(c2,/<div class="disk ok" data-slot="3"/,'a failed drawer is never green'); assert.match(c2,/<div class="machine-fail">דיסק 3 אדום — נכשל בכתיבה<\/div>/);
+  const c1=mach(grid,C1), c2=mach(grid,C2), c3=mach(grid,C3);
+  assert.match(c1,new RegExp(`^data-mac="${C1}" title="${C1}"><div class="mt"><span>מחשב 1</span><span class="pill ok">מחובר</span></div><div class="ms"><bdi dir="ltr">10\\.44\\.12\\.118</bdi></div><div class="dsks">`),'name + "מחובר" + IP; the MAC is the tooltip');
+  assert.match(c1,/<div class="dsk" data-slot="1" title="SATA 0 · 870 EVO · S5Y10 · כותב · SMART תקין"><span>דיסק 1<\/span><div class="bar " role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="38"><i style="--w:38%"><\/i><\/div><b>38%<\/b>/,'"דיסק N" · bar · percent, the mockup row; the state word is in the tooltip');
+  assert.match(c2,/<div class="dsk" data-slot="2" title="SATA 1 · 870 EVO · S5Y31 · כותב · CRC \+3 · לבדוק כבל · SMART אזהרה"><span>דיסק 2<\/span><div class="bar warn"[^>]*><i style="--w:37%"><\/i><\/div><b>37%<\/b>/);
+  assert.match(c2,/<div class="dsk bad" data-slot="3" title="[^"]*נכשל בסבב — queue overflow: target lost bytes[^"]*"><span>דיסק 3<\/span><div class="bar err"><i style="--w:100%"><\/i><\/div><b>נכשל<\/b><\/div>/,'a write that failed says "נכשל" (principle 4), never a quiet skip');
+  assert.match(grid,new RegExp(`<div class="mach err" data-mac="${C2}"`),'a machine with a failed drawer is red');
+  assert.match(c2,/<span>מחשב 2<\/span><span class="pill err">דיסק אדום<\/span><\/div><div class="ms">דיסק 3 אדום — הדיסק לא עמד בקצב — אבדו בייטים<\/div>/,'which disk and why, on the card');
+  assert.doesNotMatch(c2.replace(/title="[^"]*"/g,''),/queue overflow/,'no English on the screen; the raw reason stays in the tooltip');
+  assert.match(grid,new RegExp(`<div class="mach off" data-mac="${C3}"`)); assert.match(c3,/<span>מחשב 3<\/span><span class="pill ">לא מחובר<\/span><button class="btn sm wx" onclick="wakeMachine\('[^']+'\)" title="WoL למכונה הזו בלבד \(#984\)">WoL<\/button><\/div><div class="ms">לא מחובר — לא הצטרף לסבב<\/div>/);
+  assert.doesNotMatch(c1,/WoL/,'connected → no WoL');
+  assert.equal(run('drawerErrorText("oops: weird")'),'הכתיבה נכשלה — הפרטים בריחוף על הדיסק'); assert.equal(run('drawerErrorText(null)'),'נכשל בכתיבה'); assert.equal(run('drawerErrorText("הדיסק נותק")'),'הדיסק נותק');
+  assert.doesNotMatch(c1,/mach-note err|pill err/,'a healthy machine has no failure line');
+  run("ROOM.machines[1].drawer_list[0]={...ROOM.machines[1].drawer_list[0],state:'done',bytes_written:100}");
+  const d2=mach(run('deploy(0)'),C2);
+  assert.match(d2,/<div class="ms">דיסק 3 אדום — הדיסק לא עמד בקצב — אבדו בייטים; דיסק 1 משוחזר<\/div>/,'what was written is said next to what failed');
+  assert.match(d2,/<div class="dsk" data-slot="1" [^>]*><span>דיסק 1<\/span><div class="bar ok"[^>]*aria-valuenow="100"><i style="--w:100%"><\/i><\/div><b>100%<\/b>/);
   const notes=between(html,'<div class="c12 rnotes">');
   assert.match(notes,/<div class="note warn">[^]*?<b>מחשב 2 · דיסק 2<\/b> — SMART אזהרה \/ CRC \/ קישור איטי: <b>הסוכן ממשיך לכתוב<\/b> \(כתום = כותב\)[^]*?דילוג מרחוק — <b[^>]*>דורש API<\/b>/);
-  assert.match(notes,/<div class="note err">[^]*?<b>מחשב 2 · דיסק 3<\/b> — אדום: <b>הסוכן מדלג<\/b> \(אדום = מדלג\)/);
+  // #1732 (owner 18/10): red is never a target -- the note says so, not "the agent skips if nobody answers"
+  assert.match(notes,/<div class="note err">[^]*?<b>מחשב 2 · דיסק 3<\/b> — אדום: <b>SMART נכשל — לא כותבים על הדיסק הזה[^<]*<\/b> \(#1732: מדולג בגלוי, בלי שאלה\)/);
   assert.doesNotMatch(notes,/דלג בשניהם|onclick="[^"]*skip/,'never "skip both", never an invented skip endpoint');
+});
+
+test('a drawer with no report is "—" (not 0%), an empty slot is "ריק", and a red drawer that was not written in the round is "דולג" with a red track', () => {
+  const r=roomRunning();
+  r.machines[0].drawer_list[1]={...r.machines[0].drawer_list[1],state:null,bytes_written:0,bytes_total:0};
+  r.machines[1].drawer_list[2]={...r.machines[1].drawer_list[2],state:null,error:null,bytes_written:0,bytes_total:0,smart:'fail'};
+  const html=setup({room:r}).run('deploy(0)'); balanced(html);
+  assert.match(mach(html,C1),/<div class="dsk" data-slot="2" [^>]*><span>דיסק 2<\/span><div class="bar "><i style="--w:0%"><\/i><\/div><b>—<\/b><\/div>/);
+  assert.match(mach(html,C2),/<div class="dsk bad" data-slot="3" [^>]*><span>דיסק 3<\/span><div class="bar err"><i style="--w:0%"><\/i><\/div><b>דולג<\/b><\/div>/);
+  assert.match(mach(html,C2),/<div class="ms">דיסק 3 אדום — SMART נכשל<\/div>/);
+  assert.match(mach(html,C3),/<div class="dsk vacant" data-slot="1"><span>דיסק 1<\/span><div class="bar "><i style="--w:0%"><\/i><\/div><b>ריק<\/b><\/div>/);
 });
 
 test('the operator question (prompt) is a note in the page: orange machine → "keeps writing", red machine → "skips"; monitor and clear links for admin, answer from console = API note', () => {
@@ -325,39 +361,37 @@ test('the operator question (prompt) is a note in the page: orange machine → "
   const prompts={[C1]:'Disk 2: SMART warn - write anyway? [y/n]',[C2]:'Disk 3: failed the previous clone - skip? [y/n]'};
   const {run}=setup({room,prompts});
   run(`DISK_FAILURES=[{id:7,session_id:'r15',mac:'${C2}',dev:'sdc',serial:'S5Y2NX0R12345',port:3,disk_number:3,ata_port:'ata3',at:'2026-09-15T14:22:00Z',cause:'cable',error:'ATA bus error',ata_log:[]}]; ROOM.machines[0].drawer_list[1].smart='warn';`);
+  run(`ROOM.machines[1].drawer_list.find(d=>d.port===3).smart='fail'`);   // #1580: red is SMART fail (a failed-last record alone is orange)
   const html=run('deploy(0)'); balanced(html);
-  assert.match(html,/דורש מפעיל<\/div><div class="v"><bdi dir="auto">3<\/bdi><\/div><div class="s">מחשב 1 ממתין לתשובה · מחשב 2 ממתין לתשובה · מחשב 2 · דיסק 3 אדום — מדלג/);
   const notes=between(html,'<div class="c12 rnotes">');
   const n1=between(notes,'<b>מחשב 1</b>','</div>'), n2=between(notes,'<b>מחשב 2</b>','</div>');
   assert.match(notes,/<div class="note warn"><span aria-hidden="true">●<\/span><span><b>מחשב 1<\/b> ממתין למפעיל: <span dir="ltr">Disk 2: SMART warn - write anyway\? \[y\/n\]<\/span>\. <b>כתום — בלי תשובה הסוכן ממשיך לכתוב<\/b> על מחשב 1 · דיסק 2\./);
   assert.match(n1,/selectPageById\('monitor'\)">לענות ליד המסך — דף המוניטור</,'monitor only on the monitor page (Nadav 17/09)'); assert.doesNotMatch(n1,/monitorMachine\(/); assert.match(n1,/תשובה מהקונסולה אינה זמינה לשאלה הזאת — עונים ליד המכונה/,'a prompt without an ask: the console cannot answer, and says so'); assert.match(n1,/שיכפול תמיד עם מישהו ליד המחשבים/);
   assert.doesNotMatch(n1,/מדלג/,'orange never says "skips"');
   assert.match(notes,/<div class="note err"><span aria-hidden="true">●<\/span><span><b>מחשב 2<\/b> ממתין למפעיל: <span dir="ltr">Disk 3: failed the previous clone - skip\? \[y\/n\]<\/span>\. <b>אדום — בלי תשובה הסוכן מדלג<\/b> על מחשב 2 · דיסק 3\./);
-  assert.match(n2,/clearDiskFailure\(7\)">נקה אדום — מחשב 2 · דיסק 3</);
+  assert.match(n2,/clearDiskFailure\(7\)">נקה כשל קודם — מחשב 2 · דיסק 3</);
   assert.equal((notes.match(/<div class="note (?:warn|err)">/g)||[]).length,2,'a machine with a question gets one note; its drawers are not repeated in the aggregate notes');
-  assert.match(card(html,C1),/<b>מחשב 1<\/b><span class="pill ok">מחובר<\/span>[^]*?<div class="machine-round">38%<\/div>/,'connection pill and progress body remain separate; the question is in the note');
+  assert.match(mach(html,C1),/<span>מחשב 1<\/span><span class="pill ok">מחובר<\/span>[^]*?<b>38%<\/b>/,'connection pill and progress rows remain separate; the question is in the note');
   const d=setup({room:roomRunning(),role:'deploy',prompts}); const dh=d.run('deploy(0)');
   assert.doesNotMatch(dh,/monitorMachine|clearDiskFailure/,'deploy: no admin links'); assert.match(dh,/ממתין למפעיל/);
 });
 
-test('wave states: open → "waiting to join" pill and "start wave (N ready)"; verifying counts as writing; stalled stream → orange everywhere; closed wave / target done', () => {
+test('wave states: open → "waiting to join" pill and "start wave (N ready)"; verifying keeps its percent; stalled stream → orange pill and rate tile; closed wave / target done', () => {
   let s=setup({room:roomRunning({wave_state:'open',ready_drives:4,wave_number:1,written_drives:0,remaining_drives:12})});
   s.run("ROOM.machines.forEach(m=>{m.joined=false;m.state=null;(m.drawer_list||[]).forEach(d=>{d.state=null;d.bytes_written=0;d.bytes_total=0;d.crc_delta=null;})})");
   let html=s.run('deploy(0)'); balanced(html);
-  assert.match(html,/obj-name">חדר המשכפלים — גל 1</); assert.match(html,/<span class="pill info">ממתין להצטרפות · 4 מוכנים</);
-  assert.match(html,/startWave\(\)">התחל גל \(4 מוכנים\)</);
-  assert.match(html,/הגל הנוכחי<\/div><div class="v"><bdi dir="auto">גל 1<\/bdi><\/div><div class="s">4 מגירות מוכנות · הגל טרם התחיל/,'no bar without a report — not 0%');
-  assert.match(html,/<div class="kpi "><div class="l">נכתבו ואומתו<\/div><div class="v"><bdi dir="auto">0<\/bdi> <small>\/ 12<\/small>/);
-  assert.match(html,/כותבים עכשיו<\/div><div class="v"><bdi dir="auto">0<\/bdi><\/div><div class="s">הגל טרם התחיל/);
+  assert.match(html,/obj-name">סבב הפצה<span class="pill info">ממתין להצטרפות · 4 מוכנים<\/span><\/div><div class="obj-sub"[^>]*>גל 1 · /);
+  assert.match(html,/startWave\(\)">התחל גל \(4 מוכנים\)<\/button><button class="btn danger" onclick="stopRoom\(\)">עצירת הסבב…</);
+  assert.match(html,/התקדמות כוללת<\/div><div class="v"><bdi dir="auto">—<\/bdi><\/div><div class="s"><b title="הגל טרם התחיל">לא נמדד<\/b>/,'no report → "—", not 0%');
   s=setup({room:roomRunning()}); s.run("ROOM.machines[0].drawer_list[0].state='verifying'");
-  html=s.run('deploy(0)'); assert.match(html,/כותבים עכשיו<\/div><div class="v"><bdi dir="auto">4</); assert.match(card(html,C1),/<div class="disk run" data-slot="1" title="[^"]*מאמת · SMART תקין"/);
+  html=s.run('deploy(0)'); assert.match(mach(html,C1),/<div class="dsk" data-slot="1" title="[^"]*מאמת · SMART תקין"><span>דיסק 1<\/span><div class="bar "[^>]*><i style="--w:38%"><\/i><\/div><b>38%<\/b>/);
   s.run('ROOM.stream_stalled=true'); html=s.run('deploy(0)');
-  assert.match(html,/<span class="pill warn">הזרם עצר</); assert.match(html,/<div class="kpi warn"><div class="l">הגל הנוכחי[^]*?<b>הזרם עצר<\/b>/); assert.match(html,/דורש מפעיל<\/div><div class="v"><bdi dir="auto">2<\/bdi><\/div><div class="s">מחשב 2 · דיסק 3 אדום — מדלג · הזרם עצר/);
+  assert.match(html,/<span class="pill warn">הזרם עצר</); assert.match(html,/<div class="kpi warn"><div class="l">קצב זרם<\/div>[^]*?<b>הזרם עצר<\/b>/);
   s=setup({room:roomRunning({wave_state:'closed',written_drives:12,remaining_drives:0})});
   s.run("ROOM.machines.forEach(m=>(m.drawer_list||[]).forEach(d=>{if(d.state==='writing'){d.state='done';d.bytes_written=100;}}))");
-  html=s.run('deploy(0)'); assert.match(html,/<span class="pill ">הגל נסגר</); assert.match(html,/נכתבו ואומתו<\/div><div class="v"><bdi dir="auto">12<\/bdi> <small>\/ 12<\/small><\/div><div class="s">היעד לסבב הושלם/);
-  assert.match(card(html,C1),/<div class="disk ok" data-slot="1" title="[^"]*נכתב · SMART תקין">[^]*?<div class="bar ok"><i style="--w:100%">/);
-  assert.match(html,/<span class="pill ">הגל נסגר<\/span>/); assert.doesNotMatch(html,/startWave/);
+  html=s.run('deploy(0)'); assert.match(html,/<span class="pill ">הגל נסגר</);
+  assert.match(mach(html,C1),/<div class="dsk" data-slot="1" title="[^"]*נכתב · SMART תקין"><span>דיסק 1<\/span><div class="bar ok"[^>]*><i style="--w:100%"><\/i><\/div><b>100%<\/b>/);
+  assert.doesNotMatch(html,/startWave/);
 });
 
 test('target default (like the GUI "ready || …"): untouched = the ticked disks, else the ready drawers; typed value wins; the submit uses the same number', async () => {
@@ -377,38 +411,61 @@ test('live hint (GUI parity): an open wave says how many are ready and how many 
   assert.match(html,/הגל ממתין: 5 מגירות מוכנות, צריך עוד 2 — או "התחל גל"\. החלפתם מגירות\? הדליקו את המכונות והן יצטרפו\./);
   s=setup({room:roomRunning({wave_state:'open',ready_drives:9,remaining_drives:7})}); assert.match(s.run('deploy(0)'),/הגל ממתין: 9 מגירות מוכנות, צריך עוד 0 — או/,'never negative');
   s=setup({room:roomRunning({elapsed_s:125,rate_bps:98000000,eta_s:3725})}); html=s.run('deploy(0)');
-  assert.match(html,/הגל משדר — עבר 2:05 · <bdi dir="ltr">93\.5 MB\/שנ&#39;<\/bdi> · נותרו ~1:02:05\. מכונה שסיימה — מכבים, מחליפים מגירות, מדליקים\./);
+  assert.match(html,/<p>הגל משדר — עבר 2:05 · <bdi dir="ltr">93\.5 MB\/שנ&#39;<\/bdi> · נותרו ~1:02:05\. מכונה שסיימה — מכבים, מחליפים מגירות, מדליקים\.<\/p>/,'a quiet line in the room-card foot');
   s=setup({room:roomRunning({elapsed_s:40,rate_bps:null,eta_s:null})}); html=s.run('deploy(0)');
   assert.match(html,/הגל משדר — עבר 0:40 · סיום לא נמדד\./,'rate null ≠ 0: not printed, ETA "not measured"'); assert.doesNotMatch(html,/MB\/שנ/);
   s=setup({room:roomRunning()}); assert.match(s.run('deploy(0)'),/הגל משדר — זמן וקצב טרם נמדדו\./,'nothing measured → says so');
   assert.doesNotMatch(setup().run('deploy(0)'),/הגל ממתין|הגל משדר/,'no round, no hint');
 });
 
-test('drivers outcome (GUI parity): one line per drawer in the round — placed / not placed (orange: the restore itself is done) / skipped with the Hebrew reason; none → no block', () => {
+test('#1331 mockup v2: a storage driver that was not made boot-start is red under its disk, reds the machine card, says "may not boot" on the card and in a red note; the wave that ended says so in the summary', () => {
+  const room=roomRunning({wave_state:'closed',wave_number:2,written_drives:5,target_drives:5});
+  room.machines[0].drawer_list[1].drivers={state:'staged',packages:['hp-800g6-win11'],boot:{state:'failed',service:'stornvme',error:"באימג' אין את השירות stornvme"}};
+  room.machines[1].drawer_list[0].drivers={state:'staged',packages:['hp-800g6-win11','realtek-nic'],boot:{state:'enabled',service:'stornvme'}};
+  const s=setup({room}); const html=s.run('deploy(0)'); balanced(html);
+  const at=(mac)=>html.lastIndexOf('<div class="mach',html.indexOf(`data-mac="${mac}"`));
+  const c1=html.slice(at(C1),at(C2)), c2=mach(html,C2);
+  assert.match(c1,/^<div class="mach err"/,'the card of a machine with a disk that may not boot is red');
+  assert.match(c1,/<span class="dline bad">דרייברים הונחו \(חבילה אחת\): hp-800g6-win11 · דרייבר האחסון stornvme לא הוגדר לעלייה — באימג&#39; אין את השירות stornvme<\/span>/);
+  assert.match(c1,/<div class="mach-note err">דיסק 2 — הדיסק עלול לא לעלות \(0x7B\) — לבדוק לפני שמחזירים לכיתה<\/div>/);
+  assert.match(c2,/<span class="dline muted">דרייברים הונחו \(2 חבילות\): hp-800g6-win11, realtek-nic · דרייבר האחסון stornvme הוגדר לעלייה<\/span>/);
+  assert.doesNotMatch(c2,/עלול לא לעלות/,'enabled is positive evidence, not a warning');
+  assert.match(html,/<div class="note err"[^]*<b>מחשב 1 · דיסק 2<\/b> — דרייבר האחסון stornvme לא הוגדר לעלייה — באימג&#39; אין את השירות stornvme\. <b>הדיסק עלול לא לעלות \(0x7B\) — לבדוק לפני שמחזירים לכיתה\.<\/b>/);
+  assert.match(html,/גל 2 הסתיים — נכתבו 5 מתוך 5\. דרייברים: 2 מגירות הונחו\./);
+  assert.match(c1,/<span class="pill err">דיסק אדום<\/span>/,'a disk that may not boot is a red disk on the card');
+});
+
+test('drivers outcome (#1331 mockup v2): a line under the bar of each drawer, one summary, and a note for each drawer that needs a hand — orange = not placed (the restore itself is done); none → nothing', () => {
   const s=setup({room:roomRunning()});
-  assert.doesNotMatch(s.run('deploy(0)'),/דרייברים ·/,'no outcome → no block');
+  assert.doesNotMatch(s.run('deploy(0)'),/class="dline|drv-legend|דרייברים: \d|חבילת דרייברים לפי דגם המגירה/,'no outcome → no line, no legend, no summary, nothing in the header');
   s.run("ROOM.machines[0].drawer_list[0].drivers={state:'staged',packages:['g6-all','g6-nic']}; ROOM.machines[0].drawer_list[1].drivers={state:'skipped',reason:'no_model'}; ROOM.machines[1].drawer_list[0].drivers={state:'failed',error:'חבילה חסרה'}");
   const html=s.run('deploy(0)'); balanced(html);
-  assert.match(html,/דרייברים · מחשב 1 · דיסק 1: הונחו — g6-all, g6-nic/);
-  assert.match(html,/דרייברים · מחשב 1 · דיסק 2: דולגו — לא נבחר דגם לדיסק הזה/);
-  assert.match(html,/<div class="note warn"[^]*דרייברים · מחשב 2 · דיסק 1: לא הונחו — חבילה חסרה/,'a failure is orange (done without its drivers), not red');
+  assert.match(html,/<span class="dline muted">דרייברים הונחו \(2 חבילות\): g6-all, g6-nic<\/span>/);
+  assert.match(html,/<span class="dline muted">דרייברים: לא נבחר דגם למגירה — לא הונחו<\/span>/);
+  assert.match(html,/<span class="dline warn">דרייברים לא הונחו — חבילה חסרה<\/span>/);
+  assert.match(html,/class="drv-legend">מתחת לכל דיסק — מה קרה לדרייברים שלו/);
+  assert.match(html,/obj-sub"[^>]*>גל 2 · office365 · חבילת דרייברים לפי דגם המגירה · 3 מחשבים</,'the header says the round places drivers, after the image (mockup v2)');
+  assert.match(html,/דרייברים: 1 מגירה הונחה, 1 לא הונחה, 1 בלי דגם\./);
+  assert.match(html,/<div class="note warn"[^]*<b>מחשב 2 · דיסק 1<\/b> — דרייברים לא הונחו — חבילה חסרה\. המחשב יעלה בלי הדרייברים של הדגם; השחזור עצמו הושלם\./,'a failure is orange (done without its drivers), not red');
+  assert.doesNotMatch(html,/0x7B|class="dline bad"/,'nothing here may fail to boot');
 });
 
 /* ‏#989 ס׳ 2 — תשובת SMART מהקונסולה. השאלה מגיעה מ-/room (machines[].ask), לא מ-prompt: רק מכונה
    שהמסך שלה חי מציעה אותה. התשובה הראשונה גוברת; השנייה מקבלת 409 והקונסולה מציגה אותו כפי שהוא. */
 const askOpen=(extra={})=>({nonce:'3-2',port:2,verdict:'warn',reason:'crc 4',asked_at:minutesAgo(1),answer:null,answered_by:null,answered_at:null,...extra});
 
-test('SMART question from the console: an open question shows the disk, the verdict and three buttons; red has no "write anyway" and skip is "continue without"', () => {
+test('SMART question from the console: an open question shows the disk, the verdict and three buttons; a disk that failed last time is orange with "retry" (#1580)', () => {
   const room=roomRunning();
   room.machines[0].ask=askOpen(); room.machines[1].ask=askOpen({nonce:'5-3',port:3,verdict:'failed_last',reason:'cable'});
   const {run}=setup({room,prompts:{[C1]:'Disk 2: SMART warn (crc 4)',[C2]:'Disk 3: failed the previous clone'}});
   const html=run('deploy(0)'); balanced(html);
   const notes=between(html,'<div class="c12 rnotes">'), n1=between(notes,'<b>מחשב 1</b>','</div></div>'), n2=between(notes,'<b>מחשב 2</b>','</div></div>');
   assert.match(n1,/דיסק 2/); assert.match(n1,/SMART אזהרה/);
-  assert.match(n1,new RegExp(`answerSmart\\('${C1}','3-2','replace'\\)">החלף דיסק`)); assert.match(n1,new RegExp(`answerSmart\\('${C1}','3-2','rescue'\\)">כתוב בכל זאת`)); assert.match(n1,new RegExp(`answerSmart\\('${C1}','3-2','skip'\\)">דלג על הדיסק`));
+  assert.match(n1,new RegExp(`answerSmart\\('${C1}','3-2','replace','warn'\\)">החלף דיסק`)); assert.match(n1,new RegExp(`answerSmart\\('${C1}','3-2','rescue','warn'\\)">כתוב בכל זאת`)); assert.match(n1,new RegExp(`answerSmart\\('${C1}','3-2','skip','warn'\\)">דלג על הדיסק`));
   assert.match(n1,/בלי תשובה הסוכן ממשיך לכתוב/,'orange: no answer = keeps writing');
-  assert.match(n2,/דיסק 3/); assert.match(n2,/נכשל בשיכפול הקודם/); assert.doesNotMatch(n2,/'rescue'/,'red: no write anyway');
-  assert.match(n2,new RegExp(`answerSmart\\('${C2}','5-3','skip'\\)">המשך בלעדיו`)); assert.match(n2,/בלי תשובה הסוכן מדלג/);
+  assert.match(n2,/דיסק 3/); assert.match(n2,/נכשל בשיכפול הקודם/);
+  assert.match(n2,new RegExp(`answerSmart\\('${C2}','5-3','rescue','failed_last'\\)">נסה שוב`),'orange: retry writes');
+  assert.match(n2,/בלי תשובה הסוכן ממשיך לכתוב/);
   assert.doesNotMatch(notes,/דורש API<\/b>[^]{0,80}תשובה מהקונסולה|תשובה מהקונסולה — <b[^>]*>דורש API/,'the "needs API" placeholder is gone for a machine that can be answered');
   assert.equal((notes.match(/ממתין למפעיל:/g)||[]).length,0,'one note per machine: the question replaces the generic prompt note');
 });
@@ -453,20 +510,18 @@ test('start wave posts /room/start and a 409 is a toast with the reason; stop is
   const close=requests.find(r=>r.url==='/api/console/room/close'); assert.deepEqual(JSON.parse(close.options.body),{confirm_name:'office365'});
   await run('wakeRoom()'); assert.ok(requests.some(r=>r.url==='/api/console/room/wake')); assert.match(run('toasted'),/WoL נשלח ל-3 מחשבים/);
   run("ROOM.round.source={kind:'build_disk',mac:'"+B1+"',disk:'sda',name:'בנייה 1',task_state:'running',manifest_ready:true}; ROOM.round.image_name='בנייה 1:sda'");
-  assert.match(run('deploy(0)'),/obj-sub"[^>]*>מקור: מחשב הבנייה \(בנייה 1:sda\)/); run('stopRoom()'); assert.equal(run('formOptions.verify'),undefined); await run('formOptions.onSubmit({})'); assert.deepEqual(JSON.parse(requests.filter(r=>r.url==='/api/console/room/close').at(-1).options.body),{confirm_name:'בנייה 1:sda'},'#715: the name sent is what GET returns');
+  assert.match(run('deploy(0)'),/obj-sub"[^>]*>גל 2 · מקור: מחשב הבנייה \(בנייה 1:sda\) · /); run('stopRoom()'); assert.equal(run('formOptions.verify'),undefined); await run('formOptions.onSubmit({})'); assert.deepEqual(JSON.parse(requests.filter(r=>r.url==='/api/console/room/close').at(-1).options.body),{confirm_name:'בנייה 1:sda'},'#715: the name sent is what GET returns');
   run('ME.role="deploy"'); run('formOptions=undefined; stopRoom()'); assert.equal(run('formOptions.danger'),true,'deploy is a room operator');
   run('ME=null'); run('formOptions=undefined; stopRoom()'); assert.equal(run('typeof formOptions'),'undefined');
 });
 
-test('big view: the grid alone, larger (4:3 screen next to the machines); ROOM unread ≠ no round; empty room', () => {
+test('the big view is gone (not in the mockup); ROOM unread ≠ no round; empty room', () => {
   const {run}=setup({room:roomRunning()});
-  run('toggleRoomBig()'); let html=run('deploy(0)'); balanced(html);
-  assert.match(html,/<div class="mgrid big">/); assert.doesNotMatch(html,/class="kpi|rnotes|rnew/); assert.match(html,/toggleRoomBig\(\)">חזרה לתצוגה המלאה</);
-  run('toggleRoomBig()'); html=run('deploy(0)'); assert.match(html,/<div class="mgrid">/); assert.match(html,/class="kpi/);
-  run("ROOM=null; DEPLOY.roomErr='שגיאה 500'"); html=run('deploy(0)'); balanced(html);
-  assert.match(html,/<span class="pill ">החדר לא נקרא</); assert.match(html,/החדר לא נקרא: שגיאה 500 — הגריד והסבב לא ידועים/); assert.doesNotMatch(html,/mgrid|rnew|אין סבב/);
+  assert.equal(run('typeof toggleRoomBig'),'undefined'); assert.equal(run('"big" in DEPLOY'),false);
+  run("ROOM=null; DEPLOY.roomErr='שגיאה 500'"); let html=run('deploy(0)'); balanced(html);
+  assert.match(html,/<span class="pill ">החדר לא נקרא</); assert.match(html,/החדר לא נקרא: שגיאה 500 — הגריד והסבב לא ידועים/); assert.doesNotMatch(html,/rgrid|rnew|אין סבב פעיל|openRoomRound/);
   run("ROOM={round:null,stream_stalled:false,disk_floor:null,machines:[]}"); html=run('deploy(0)'); balanced(html);
-  assert.match(html,/0 משכפלים · 0 חריצים · 0 מחוברים/); assert.match(html,/אין מחשבי שיכפול רשומים — הוסיפו אותם במחשבים/); assert.match(html,/openClass\('grp_CLONERS'\)">למחשבי השיכפול</);
+  assert.match(html,/אין מחשבי שיכפול רשומים — הוסיפו אותם במחשבים/); assert.match(html,/openClass\('grp_CLONERS'\)">למחשבי השיכפול</); assert.doesNotMatch(html,/<b class="et">אין סבב פעיל/);
 });
 
 test('class tab: the existing session code as-is inside cards (row, start/stop, members with SMART/error, absent roster, next round, pulls); history tab = API note', () => {
@@ -501,7 +556,7 @@ test('#1081 v1: classrooms flag off drops the class tab; history stays', () => {
   run('ME.capabilities.classrooms=false; ROOM_HISTORY=[]');
   assert.deepEqual(JSON.parse(run('JSON.stringify(deployTabs())')),['חדר המשכפלים','היסטוריה']);
   const room=run('deploy(0)'); balanced(room);
-  assert.match(room,/obj-name">חדר המשכפלים</);
+  assert.match(room,/obj-name">סבב הפצה</);
   assert.doesNotMatch(room,/>כיתה</);
   const hist=run('deploy(1)');
   assert.match(hist,/obj-name">היסטוריית סבבים</);
@@ -603,7 +658,7 @@ test('#1269 drivers: loadDeploy reads /room/driver-models; a failed read is "unr
   room.machines[0].drawer_list[1].drivers={state:'failed',packages:[],error:'the server has no driver package for the chosen model'};
   room.machines[1].drawer_list[0].drivers={state:'skipped',packages:[],reason:'not_windows'};
   const s=setup({room}); const html=s.run('deploy(0)'); const c1=card(html,C1), c2=card(html,C2);
-  assert.match(c1,/data-slot="1" title="[^"]*דרייברים הונחו: m70q-chipset, m70q-nic/);
+  assert.match(c1,/data-slot="1" title="[^"]*דרייברים הונחו \(2 חבילות\): m70q-chipset, m70q-nic/);
   assert.match(c1,/data-slot="2" title="[^"]*דרייברים לא הונחו — the server has no driver package for the chosen model/);
   assert.match(c2,/data-slot="1" title="[^"]*דרייברים דולגו — האימג&#39; אינו Windows/);
   assert.doesNotMatch(c2,/data-slot="2" title="[^"]*דרייברים/,'drivers null = the step did not run — nothing said');
@@ -645,9 +700,9 @@ test('#1275 pick grid: selection keeps warning colour, adds blue selection state
 
 test('#1275 safety: off, empty, unidentified, and red drawers cannot be ticked; red checkbox is disabled', () => {
   const room=roomIdle();
-  room.machines[0].drawer_list=[drawer('sda',1,'S5Y10',{smart:'failed_last'}),drawer('sdb',2,null,{smart:'ok',size_bytes:null})];   // אדום; בלי serial וגודל
-  // #1366 (נדב 13/10): SMART fail = מה שעוצר BIOS על F1 — כתום, לא אדום: הסוכן שואל, ובלי תשובה כותב.
-  room.machines[1].drawer_list=[drawer('sda',1,'S5Y30',{smart:'fail',smart_reason:'pending_sectors'})];                     // חריצים 2,3 ריקים
+  room.machines[0].drawer_list=[drawer('sda',1,'S5Y10',{smart:'fail',smart_reason:'pending_sectors'}),drawer('sdb',2,null,{smart:'ok',size_bytes:null})];   // אדום (#1580: SMART fail); בלי serial וגודל
+  // #1580 (נדב 17/10): נכשל בשיכפול הקודם = כתום — הסוכן שואל "נסה שוב", ובלי תשובה כותב.
+  room.machines[1].drawer_list=[drawer('sda',1,'S5Y30',{smart:'failed_last',smart_reason:'cable'})];                     // חריצים 2,3 ריקים
   const {run}=setup({room});
   run(`roomPick('${C3}@1'); roomPick('${C2}@2'); roomPick('${C2}@3'); roomPick('${C1}@2')`);   // כולם נדחים
   const html=run('roomNewWindow(roomMachines())'); balanced(html); assert.equal(run('roomSubmitState(roomMachines()).n'),0,'nothing selectable was selected');
@@ -656,7 +711,7 @@ test('#1275 safety: off, empty, unidentified, and red drawers cannot be ticked; 
   assert.match(c1,/<span class="n-chip d">לא ניתן לסימון<\/span>/,'red: the red chip');
   assert.match(c1,new RegExp(`data-key="${C1}@2"><input class="dk-in" type="checkbox" disabled`),'no serial → disabled'); assert.match(c1,/class="dk-sz"><bdi[^>]*>—<\/bdi>/);
   assert.equal((pcard(html,C2).match(/class="dk st-e"/g)||[]).length,2,'two dashed empty slots');
-  assert.match(pcard(html,C2),/class="dk st-w"[^>]*>[\s\S]*ה-BIOS יעצור ב-F1 — SMART: סקטורים ממתינים \(197\)/,'#1366: SMART F1 is orange and uses smart_reason');
+  assert.match(pcard(html,C2),/class="dk st-w"[^>]*>[\s\S]*נכשל בשיכפול הקודם — &quot;נסה שוב&quot; כותב/,'#1580: failed last time is orange, retry');
   run(`roomPick('${C1}@1')`); assert.equal(run('roomSubmitState(roomMachines()).n'),0,'red cannot enter selection state');
 });
 
@@ -723,10 +778,10 @@ function roomOpenWave(extra={}) {
 test('#432: a slow drawer is orange with the link and CRC rise in its tooltip; an unread link says "unknown" and is never called fine', () => {
   const {run}=setup({room:roomOpenWave()});
   const html=run('deploy(0)'); balanced(html);
-  assert.match(card(html,C2),/<div class="disk warn" data-slot="2" title="[^"]*קישור 1\.5 מתוך 6\.0 Gb\/s · לבדוק כבל או מגירה · CRC \+12 מאז הסבב הקודם · SMART תקין">/);
-  assert.match(card(html,C1),/<div class="disk ok" data-slot="1" title="[^"]*קישור 6\.0 מתוך 6\.0 Gb\/s · SMART תקין">/);
-  assert.match(card(html,C1),/<div class="disk ok" data-slot="2" title="[^"]*קישור SATA לא ידוע · SMART תקין">/,'unknown is said, not hidden');
-  assert.doesNotMatch(card(html,C1),/לא ידוע · לבדוק כבל/);
+  assert.match(mach(html,C2),/<div class="dsk" data-slot="2" title="[^"]*קישור 1\.5 מתוך 6\.0 Gb\/s · לבדוק כבל או מגירה · CRC \+12 מאז הסבב הקודם · SMART תקין">/);
+  assert.match(mach(html,C1),/<div class="dsk" data-slot="1" title="[^"]*קישור 6\.0 מתוך 6\.0 Gb\/s · SMART תקין">/);
+  assert.match(mach(html,C1),/<div class="dsk" data-slot="2" title="[^"]*קישור SATA לא ידוע · SMART תקין">/,'unknown is said, not hidden');
+  assert.doesNotMatch(mach(html,C1),/לא ידוע · לבדוק כבל/);
   assert.equal(run("linkSlow({link_gbps:3,link_max_gbps:6})"),true,'/machines carries only the numbers');
   assert.equal(run("linkSlow({link_gbps:3,link_max_gbps:null})"),false,'an unknown max is not "slow" either');
 });
@@ -765,4 +820,62 @@ test('#65: the missing machines are named with the three actions; power-off only
   const v=setup({room:roomOpenWave({missing:miss})}); v.run('ME.role="viewer"');
   const vh=v.run('deploy(0)'); assert.match(vh,/חסרים בגל/); assert.doesNotMatch(vh,/כבה אותו|התחל בכל זאת|בטל את הסבב/,'actions only for room operators');
   const run2=setup({room:roomRunning({missing:miss})}); assert.doesNotMatch(run2.run('deploy(0)'),/חסרים בגל/,'a running wave has nothing missing to act on');
+});
+
+test('17/10 (metal) + #1376: a live round shows only the cloners and drawers it writes to (round.target_slots {mac, ports}); a round with no choice (null) shows them all', () => {
+  const picked=setup({room:roomRunning({target_slots:[{mac:C1,ports:[2]},{mac:C2,ports:[1,3]}]})}).run('deploy(0)');
+  const grid=between(picked,'<div class="rgrid round">','<div class="c12 rnotes">');
+  assert.match(grid,new RegExp(`data-mac="${C1}"`));
+  assert.doesNotMatch(grid,new RegExp(`data-mac="${C3}"`),'a cloner outside the round is not on its screen');
+  assert.match(picked,/obj-sub"[^>]*>גל 2 · office365 · 2 מחשבים</,'"N מחשבים" counts the cloners of the round');
+  assert.equal((mach(grid,C1).match(/<div class="dsk[ "]/g)||[]).length,1); assert.doesNotMatch(mach(grid,C1),/data-slot="1"/,'a drawer that was not ticked is not a row');
+  assert.match(mach(grid,C1),/data-slot="2"/);
+  assert.match(mach(grid,C2),/data-slot="1"[^]*data-slot="3"/); assert.doesNotMatch(mach(grid,C2),/data-slot="2"/,'the orange drawer was not ticked: no row, no CRC line');
+  const all=between(setup({room:roomRunning({target_slots:null})}).run('deploy(0)'),'<div class="rgrid round">','<div class="c12 rnotes">');
+  for (const mac of [C1,C2,C3]) assert.match(all,new RegExp(`data-mac="${mac}"`));
+  assert.match(mach(all,C1),/data-slot="1"[^]*data-slot="2"/);
+});
+
+test('#1386: "בטל…" only on a writing drawer of the live round, for a round operator (shown on hover/focus over the percent); cancelled = grey, empty bar, who and when; cancelling = "מבטל…"', () => {
+  const r=roomRunning();
+  r.machines[1].drawer_list[1]={...r.machines[1].drawer_list[1],state:'cancelled',bytes_written:0,
+    cancel:{by:'nadav',source:'console',done:true,text_he:'בוטל על ידי nadav · 16:06'}};
+  const {run}=setup({room:r});
+  const html=run('deploy(0)'); balanced(html);
+  const grid=between(html,'<div class="rgrid round">','<div class="c12 rnotes">');
+  const c1=mach(grid,C1), c2=mach(grid,C2);
+  assert.match(c1,/<b>38%<\/b><button type="button" class="btn sm danger dx" onclick="cancelDrawer\('a0%3A48%3A1c%3A8a%3A18%3A40',1\)" aria-label="בטל את הכתיבה לדיסק 1">בטל…<\/button><\/div>/);
+  assert.equal((c1.match(/cancelDrawer\(/g)||[]).length,2,'both writing drawers of machine 1');
+  assert.doesNotMatch(c2.match(/data-slot="3"[^]*?<\/b>/)[0],/cancelDrawer/,'a failed drawer has nothing to cancel');
+  assert.match(c2,/<div class="dsk cancelled" data-slot="2" [^>]*><span>דיסק 2<\/span><div class="bar "><i style="--w:0%"><\/i><\/div><b>בוטל<\/b><\/div>/,'grey, an empty bar -- not "37%", no button');
+  assert.match(c2,/<div class="mach-note">דיסק 2 — <bdi>בוטל על ידי nadav · 16:06<\/bdi> · טבלת המחיצות נמחקה, הדיסק יוצג ריק<\/div>/);
+  assert.doesNotMatch(grid,/sd[abc]/,'never sd*, not even in onclick');
+  run("ROOM.machines[0].drawer_list[1]={...ROOM.machines[0].drawer_list[1],state:'cancelled',cancel:{by:'nadav',done:true,text_he:'בוטל על ידי nadav'}}");
+  assert.match(run('deploy(0)'),new RegExp(`<div class="mach" data-mac="${C1}"`),'a cancel does not make the machine red');
+  run("ROOM.machines[1].drawer_list[1]={...ROOM.machines[1].drawer_list[1],state:'writing',cancel:{by:'nadav',done:false,text_he:'בוטל על ידי nadav'}}");
+  assert.match(mach(run('deploy(0)'),C2),/<div class="dsk cancelling" data-slot="2" [^>]*><span>דיסק 2<\/span><div class="bar warn"><i style="--w:0%"><\/i><\/div><b>מבטל…<\/b><\/div>/);
+  run('ME=null'); assert.doesNotMatch(run('deploy(0)'),/cancelDrawer\(/,'signed out: no button');
+  const css=fs.readFileSync(path.join(root,'console.css'),'utf8');
+  assert.match(css,/\.page \.rgrid\.round \.dsk:hover \.dx,\.page \.rgrid\.round \.dsk:focus-within \.dx\{opacity:1;pointer-events:auto\}/,'the button appears on hover and on keyboard focus');
+  assert.match(css,/@media \(hover:none\)\{\.page \.rgrid\.round \.dsk \.dx\{position:static;[^}]*opacity:1/,'without hover (touch) it is always shown');
+});
+
+test('#1386: the window is the console\'s danger sheet -- "המשך לכתוב" (never "ביטול"), the red "בטל את דיסק N", no typed word; it posts {mac, dev}', async () => {
+  const {run,requests,fixtures}=setup({room:roomRunning()});
+  run(`cancelDrawer(encodeURIComponent('${C2}'),2)`);
+  assert.equal(run('formOptions.danger'),true); assert.equal(run('formOptions.verify'),undefined,'#1270');
+  assert.equal(run('formOptions.cancelLabel'),'המשך לכתוב'); assert.equal(run('formOptions.submitLabel'),'בטל את דיסק 2');
+  assert.equal(run('formOptions.title'),'לבטל את הכתיבה לדיסק 2?');
+  assert.match(run('formOptions.sub'),/^מחשב 2 · מגירה 2 · 870 EVO · .+ · עכשיו ב-37%$/);
+  const note=run('formOptions.note');
+  assert.match(note,/<li class="bad">[^]*הכתיבה לדיסק הזה נעצרת מיד/); assert.match(note,/<li class="bad">[^]*טבלת המחיצות שלו נמחקת/);
+  assert.match(note,/<li class="imp-ok">[^]*שאר המגירות ממשיכות/); assert.match(note,/<li class="imp-ok">[^]*לא נחשב כשל/);
+  assert.match(run('formOptions.hint'),/בוטל על ידי admin/);
+  assert.ok(!requests.some(r=>r.url==='/api/console/room/drawer/cancel'),'nothing posted before the sheet is confirmed');
+  await run('formOptions.onSubmit({})');
+  const post=requests.find(r=>r.url==='/api/console/room/drawer/cancel');
+  assert.equal(post.options.method,'POST'); assert.deepEqual(JSON.parse(post.options.body),{mac:C2,dev:'sdb'});
+  fixtures['/room/drawer/cancel']={__status:409,detail:'הדיסק אינו כותב עכשיו — אין מה לבטל'};
+  await assert.rejects(run('formOptions.onSubmit({})'),/הדיסק אינו כותב עכשיו/,'the server\'s reason reaches the sheet\'s error line');
+  run('ME=null; formOptions=undefined'); run(`cancelDrawer(encodeURIComponent('${C2}'),2)`); assert.equal(run('typeof formOptions'),'undefined');
 });

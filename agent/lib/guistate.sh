@@ -17,7 +17,7 @@ gui_disk_smart() {
     for _gds_d in $_gds_list; do
         case "$_gds_d" in ''|*[!A-Za-z0-9_]*) continue ;; esac   # a device name, nothing else reaches smartctl
         _gds_f="$RUN_DIR/smart/$_gds_d.gui"
-        if [ ! -s "$_gds_f" ]; then
+        if [ ! -s "$_gds_f" ] || smart_ro_stale "$_gds_d" "$_gds_f"; then   # #1742: read-only now/no longer
             _gds_v=$(smart_probe "$_gds_d") || return 1
             printf 'dsmart=%s|%s|%s|%s|%s\n' "$_gds_d" "$_gds_v" "$(smart_field "$_gds_d" 2)" \
                 "$(disk_serial "$_gds_d" | tr '|\n' '  ')" "$(disk_port "$_gds_d")" > "$_gds_f" || return 1
@@ -115,11 +115,19 @@ gui_state() {
                 (if (.bytes_total // 0)>0 then (100*.bytes_written/.bytes_total|floor) else -1 end),0,
                 (.error // ""),(if .local_copy == true then 1 else 0 end)] | map(clean) | join("|"));
               if (.machines|type) != "array" then error("bad room") else
+              # 17/10: a failed round is not live -- the picker stays, one line says why;
+              # a live round shows only the cloners it targets (the picker shows all).
+              (if .round.state? == "failed" then .room_failed = (.round.failed_reason // "סיבה לא ידועה") | .round = null else . end) |
+              (if (.round.target_slots? | type) == "array" then [.round.target_slots[].mac] as $t
+                 | .machines |= map(select(.mac as $m | any($t[]; . == $m))) else . end) |
               "room_label=" + (.group_label | clean),
+              (if .room_failed == null then empty else "room_failed=" + (.room_failed | clean) end),
               (if .round == null then empty else .round |
                 "round=" + ([.image_name,.wave_number,(if .wave_state == "open" then 1 else 0 end),
                   .written_drives,.target_drives,.ready_drives,.remaining_drives,
-                  (.elapsed_s // -1),(.rate_bps // -1),(.eta_s // -1)] |
+                  (.elapsed_s // -1),(.rate_bps // -1),(.eta_s // -1),
+                  # 17/10: the wave itself -- running / closed / failed; "" = an older server
+                  (.wave_state // "")] |
                   map(tostring|gsub("[\\r\\n|]";" "))|join("|")) end),
               # #432: the orange lines before "start"; #65: who the wave waits for.
               (if .round == null then empty else (.round.precheck // [])[] | "room_warn=" + (.text_he | clean) end),
@@ -154,7 +162,16 @@ gui_state() {
                       # older server without the field -> "" = by port), and the connection.
                       (if has("drawer") then (.drawer // 0) else "" end),
                       (if (.port | type) == "number" then "sata:\(.port)"
-                       elif (.pci | type) == "string" then "nvme:\(.pci)" else "" end | conn)]
+                       elif (.pci | type) == "string" then "nvme:\(.pci)" else "" end | conn),
+                      # 17/10: the own target of this drawer in the wave (dev, bytes_written), never
+                      # the sum of the machine on every drawer; -1 = no total, "" = not a target.
+                      (if (.bytes_total // 0) > 0 then (100 * (.bytes_written // 0) / .bytes_total | floor)
+                       elif .state == "done" then 100 else -1 end),
+                      (.state // ""),
+                      # #1386: the device "בטל דיסק זה" names; "בוטל על ידי …"; 1 = the agent reported it.
+                      (.dev // ""), (.cancel.text_he? // ""), (if .cancel.done? == true then 1 else 0 end),
+                      # #1331: the storage driver made boot-start (bootstorage.sh) -- state, service, error; T8: then drivers.linux (state, module, error|reason; no object = no fields). #1742: 27 = smart_reason, only when there is one (24-26 then empty).
+                      (.drivers.boot.state // ""), (.drivers.boot.service // ""), (.drivers.boot.error // .drivers.boot.reason // ""), (if (.drivers.linux | type) == "object" then (.drivers.linux | (.state // ""), (.module // ""), (.error // .reason // "")) elif (.smart_reason // "") != "" then "", "", "" else empty end), (.smart_reason // "" | select(. != ""))]
                      | map(clean) | join("|"))),
                 # #1495: every drawer of the mapping, empty ones too, with its slot name.
                 (($m.drawer_slots // []) | to_entries[] | .value as $k |
@@ -182,6 +199,9 @@ gui_state() {
             cp "$GUI_DIR/session.json" "$GUI_DIR/session-shown.next" &&
                 mv "$GUI_DIR/session-shown.next" "$GUI_DIR/session-shown.json" || return 1 ;;
     esac
+    # #1560: a round opened from this GUI ended -> the agent asks (roomflow.sh).
+    # A watch that could not read the room is retried next beat, never an end.
+    [ ! -f "$RUN_DIR/room.watch" ] || room_end_watch || :
     if [ -f "$GUI_DIR/error" ]; then cat "$GUI_DIR/error" >> "$GUI_DIR/state.next" || return 1; fi
     # #410: when this snapshot was taken. The screen prints "updated Ns ago"
     # from it, so a state file that stopped changing shows a growing age
@@ -228,6 +248,9 @@ gui_hello_state() {
     printf 'hello_age=%s\nhello_rc=%s\n' "$_hello_age" "$_hello_rc"
     # #1483: a power-off that came back (safe_poweroff) -- on every screen, said
     [ -s "$RUN_DIR/power.fail" ] && printf 'toast=%s\n' "$(tr -d '\r\n|' < "$RUN_DIR/power.fail")"
+    # #1560: the end-of-task count to power-off (idle.sh end_countdown) -- on every screen
+    [ -s "$RUN_DIR/end.poweroff" ] && printf 'end_poweroff=%s\n' "$(tr -d '\r\n' < "$RUN_DIR/end.poweroff")"
+    [ -s "$RUN_DIR/fail.state" ] && cat "$RUN_DIR/fail.state"   # #1569: the failure screen's records (failscreen.sh), on the live kiosk
     return 0
 }
 

@@ -27,7 +27,7 @@ _read_fanout_report() {
     _idx="$1"; _fs="$2"; shift 2
     for _d in "$@"; do
         _t="$RUN_DIR/targets/$_d"
-        [ "$(cat "$_t/state")" = "failed" ] && continue
+        case "$(cat "$_t/state")" in failed|cancelled) continue ;; esac   # #1386
         _line=$(grep -F "$_t/feed " "$RUN_DIR/fanout.out" 2>/dev/null)
         case "$_line" in
             *" ok")
@@ -48,6 +48,12 @@ _read_fanout_report() {
                     _write_fail "$_d" "$_idx" "ok"
                 fi
                 ;;
+            *" failed empty stream"|*" failed short stream"*|*" failed long stream"*)
+                # #1728: fanout's length verdict is the stream's -- every drawer got
+                # the same bytes. No ata_log, no disk_failure on a healthy disk.
+                fail_written_target "$_d" \
+                    "partition $_idx: הזרם הגיע ריק או חלקי (fanout: ${_line#* failed })" stream
+                ;;
             *" failed "*)
                 _write_fail "$_d" "$_idx" "${_line#* failed }"
                 ;;
@@ -60,7 +66,7 @@ _read_fanout_report() {
 
 _any_alive() {
     for _d in $1; do
-        [ "$(cat "$RUN_DIR/targets/$_d/state")" != "failed" ] && return 0
+        case "$(cat "$RUN_DIR/targets/$_d/state")" in failed|cancelled) ;; *) return 0 ;; esac
     done
     return 1
 }
@@ -68,7 +74,7 @@ _any_alive() {
 _fail_alive() {
     # $1 = disks, $2 = reason. מגירות שכבר failed לא נדרסות.
     for _d in $1; do
-        [ "$(cat "$RUN_DIR/targets/$_d/state" 2>/dev/null)" = "failed" ] && continue
+        case "$(cat "$RUN_DIR/targets/$_d/state" 2>/dev/null)" in failed|cancelled) continue ;; esac
         fail_written_target "$_d" "$2"
     done
 }
@@ -79,15 +85,115 @@ _machine_state() {
     # מגירה אחת ששרדה מתוך שלוש, ומחשב שאיבד מגירה דיווח "done" בדיוק
     # כמו מחשב שכל מגירותיו נכתבו. ברמת המגירה הכשל היה גלוי כל הזמן
     # (‏targets_json), וברמת המחשב הוא נבלע — וזה מה שהמפעיל רואה.
-    _alive=0; _dead=0
+    # ‏#1386: בוטל אינו נכתב ואינו נכשל -- לא נספר באף צד. הכול בוטל =
+    # המכונה סיימה את חלקה בלי לכתוב (partial), לא "נכשלה".
+    _alive=0; _dead=0; _off=0
     for _d in $1; do
-        if [ "$(cat "$RUN_DIR/targets/$_d/state" 2>/dev/null)" = "failed" ]; then
-            _dead=$((_dead + 1))
-        else
-            _alive=$((_alive + 1))
-        fi
+        case "$(cat "$RUN_DIR/targets/$_d/state" 2>/dev/null)" in
+            failed) _dead=$((_dead + 1)) ;;
+            cancelled) _off=$((_off + 1)) ;;
+            *) _alive=$((_alive + 1)) ;;
+        esac
     done
-    if [ "$_alive" -eq 0 ]; then echo "failed"
+    if [ "$_alive" -eq 0 ] && [ "$_dead" -eq 0 ] && [ "$_off" -gt 0 ]; then echo "partial"
+    elif [ "$_alive" -eq 0 ]; then echo "failed"
     elif [ "$_dead" -eq 0 ]; then echo "done"
     else echo "partial"; fi
+}
+
+# --- #1598: a drawer that died mid-stream is out within seconds ---------------
+# fanout drops a drawer at once only on EPIPE; a drawer that stops taking bytes
+# holds the whole machine's stream for STALL_EVICT_MS (150s) first (#660, #674).
+# A pulled drawer is not even stopped at first: partclone writes into the page
+# cache and "succeeds", so the bar climbs. On metal (17/10, cloner 2) sdb was
+# deleted at 10:57:52, evicted ~150s later, by then the sender had lost the
+# machine, and the healthy sda failed with "the stream did not arrive". So the
+# kernel is asked every tick -- and only positive evidence counts: the disk left
+# sysfs, sysfs says offline, or the kernel failed a WRITE. Silence is not death.
+
+drawer_dead_reason() {
+    # $1 = disk, $2 = 1 if /sys/block/$1 existed when the stream began,
+    # $3 = this tick's dmesg. Prints the reason; 1 = no evidence of death.
+    _dr_sys="$SYSROOT/sys/block/$1"
+    if [ "$2" = 1 ] && [ ! -e "$_dr_sys" ]; then echo "הכונן נעלם מהמערכת (נשלף או נותק)"; return 0; fi
+    if [ "$(cat "$_dr_sys/device/state" 2>/dev/null)" = offline ]; then echo "הקרנל סימן את הכונן offline"; return 0; fi
+    _dr_l=$(awk -v dev="$1" -v since="$(cat "$RUN_DIR/targets/$1/since" 2>/dev/null)" '
+        match($0, /^\[ *[0-9]+\.[0-9]+\]/) && substr($0, RSTART + 1, RLENGTH - 2) + 0 < since + 0 { next }
+        index($0, " error, dev " dev ",") && /\(WRITE\)/ { print; exit }' "$3" 2>/dev/null)
+    [ -n "$_dr_l" ] || return 1
+    echo "הקרנל דחה כתיבה לכונן: ${_dr_l#*] }"
+}
+
+drawer_watch() {
+    # $1 = the stream's pid, $2 = partition index, $3 = the disks. In the
+    # background while the stream runs. A dead drawer gets `dead`, its zstd is
+    # killed -- the fifo loses its reader, fanout's next write is EPIPE and the
+    # drawer is out -- and it is failed by name, with its kernel evidence.
+    _dw_seen=" "; _dw_k="$RUN_DIR/dmesg.watch"; _dw_blind=0
+    for _dw_d in $3; do [ -e "$SYSROOT/sys/block/$_dw_d" ] && _dw_seen="$_dw_seen$_dw_d "; done
+    while kill -0 "$1" 2>/dev/null; do
+        _nap "$1"   # #1705: the stream's end is seen at once, not up to a second later
+        if ! dmesg > "$_dw_k" 2>/dev/null; then
+            : > "$_dw_k"   # not "no errors": said once, and sysfs is still watched
+            [ "$_dw_blind" = 1 ] || log "WARNING: dmesg unreadable -- kernel write errors on drawers are not watched"
+            _dw_blind=1
+        fi
+        for _dw_d in $3; do
+            _dw_t="$RUN_DIR/targets/$_dw_d"
+            case "$(cat "$_dw_t/state" 2>/dev/null)" in failed|cancelled) continue ;; esac
+            [ -f "$_dw_t/cancel" ] && { cancel_drawer "$_dw_d" live || :; continue; }   # #1386
+            case "$_dw_seen" in *" $_dw_d "*) _dw_s=1 ;; *) _dw_s=0 ;; esac
+            _dw_why=$(drawer_dead_reason "$_dw_d" "$_dw_s" "$_dw_k") || continue
+            echo "$_dw_why" > "$_dw_t/dead"
+            log "$_dw_d: $_dw_why -- out of the stream now, the other drawers carry on"
+            kill -9 "$(cat "$_dw_t/zstd.pid" 2>/dev/null)" 2>/dev/null \
+                || log "WARNING: $_dw_d: its zstd was not stopped -- fanout drops it on its own stall ceiling"
+            fail_written_target "$_dw_d" "מחיצה $2: $_dw_why"
+        done
+    done
+    rm -f "$_dw_k"
+}
+
+# ברזל 17/10: progress_loop (progress.sh) משאיר את הסמן כשהשרת עונה not_open --
+# הסבב נסגר והשולח כבר איננו. עד אז המסלול הראשי המשיך לטבלה ולזרם מול
+# שולח שיצא, והמכונה נשארה "כותבת" עם דיסק חצי-מוכן.
+ROUND_CLOSED_WHY="השרת סגר את הסבב -- הכתיבה הופסקה"
+round_closed() { [ -e "$RUN_DIR/session-closed" ]; }
+round_closed_fail() {   # $1 = disks. 0 = closed, and every live drawer failed by name
+    round_closed || return 1
+    _fail_alive "$1" "$ROUND_CLOSED_WHY"; return 0
+}
+
+# --- #1386: "בטל דיסק זה" -- a drawer leaves the stream on request ----------
+# The request is targets/<dev>/cancel (cancel.sh writes it, with who asked).
+# Here because every drawer path loads this file.
+
+cancel_drawer() {
+    # $1 = dev, $2 = `live` while its stream runs (the watcher). The zstd is
+    # killed only then -- between partitions its pid file names a process that
+    # is gone, and a reused pid is someone else's. `dead` makes the stream's own
+    # waits skip it (#1603); the GPT goes only after the writer has stopped.
+    _cd_t="$RUN_DIR/targets/$1"
+    [ -f "$_cd_t/cancel" ] || return 1
+    case "$(cat "$_cd_t/state" 2>/dev/null)" in failed|cancelled) return 1 ;; esac
+    echo "בוטל באמצע הכתיבה" > "$_cd_t/dead"
+    log "$1: cancelled $(cat "$_cd_t/cancel") -- out of the stream, the other drawers carry on"
+    if [ "${2:-}" = live ]; then
+        _cd_z=$(cat "$_cd_t/zstd.pid" 2>/dev/null)
+        { [ -n "$_cd_z" ] && kill -9 "$_cd_z" 2>/dev/null; }             || log "WARNING: $1: its zstd was not stopped -- fanout drops it on its own stall ceiling"
+        _cd_p=$(cat "$_cd_t/pipeline.pid" 2>/dev/null)
+        [ -z "$_cd_p" ] || wait_pid "$_cd_p" "$WAIT_HELPER_S" "המגירה $1 (ביטול)" || :
+    fi
+    # Principle 5: a GPT that was not wiped is said so, never "wiped".
+    if wipe_written_gpt "$1" "cancel"; then rm -f "$_cd_t/error"
+    else echo "טבלת המחיצות לא נמחקה — הדיסק לא זוהה בוודאות או שהמחיקה נכשלה" > "$_cd_t/error"; fi
+    date +%s > "$_cd_t/cancelled_at" 2>/dev/null
+    target_set "$1" cancelled
+}
+
+cancel_pending() {
+    # $@ = disks. A request that came while no stream ran (before the first
+    # partition, between two, after the last), or that the watcher did not
+    # finish before its ceiling: carried out now, without killing anything.
+    for _cp_d in "$@"; do cancel_drawer "$_cp_d" || :; done
 }

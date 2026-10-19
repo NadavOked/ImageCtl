@@ -23,7 +23,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -133,6 +133,14 @@ class Host:
 
     def popen(self, argv: list[str], **kw) -> subprocess.Popen:
         return subprocess.Popen(argv, env=self.env, **kw)
+
+    def free_bytes(self, path: Path) -> int | None:
+        """פנוי למי שאינו root (‏f_bavail). ‏None = לא נקרא — לא 0 ולא "מספיק"."""
+        try:
+            stat = os.statvfs(path)
+        except (OSError, AttributeError):
+            return None
+        return stat.f_bavail * stat.f_frsize
 
     def agent(self, func: str, *args: str, run_dir: Path,
               env: dict[str, str] | None = None, user: "VmUser | None" = None) -> agent_shell.Call:
@@ -391,8 +399,8 @@ def build_disk(host: Host, manifest: dict, image_dir: Path, workdir: Path,
 #
 # * הטבלה, סוגי מערכות הקבצים, BitLocker, מצב השינה, המינימום לכיווץ, הכיווץ
 #   עצמו, הנפח התפוס וקובצי האתחול של ה-ESP — **בתוך ה-appliance של
-#   libguestfs** (קרנל משלו, ב-VM משלו).
-# * ‏`partclone -c` ו-`ntfsfix -d` — על המארח, אבל **כמשתמש ה-VM** (‏setpriv,
+#   libguestfs** (קרנל משלו, ב-VM משלו). הכיווץ — על עותק (‏#1491, `shrink_view`).
+# * ‏`partclone -c`, ‏`ntfsfix -d` ו-`ntfsresize -n` — על המארח, אבל **כמשתמש ה-VM** (‏setpriv,
 #   ‏no-new-privs) על התקן loop של מחיצה אחת בהיסט שה-appliance מסר ושעבר
 #   אימות — בלי `--partscan`, כך שהקרנל אינו קורא את ה-GPT של האורח.
 # * חתימות ה-PE של קובצי האתחול (`boot_ca_json` של הסוכן, עם ESPROOT) —
@@ -437,7 +445,10 @@ class Appliance:
     DEV = "/dev/sda"
 
     def __init__(self, disk: Path, *, factory: Callable[[], object] | None = None,
-                 memsize: int = 1024):
+                 memsize: int = 1024, writable: bool = False):
+        """‏`writable=False` (‏#1491): ‏libguestfs פותח את הדיסק לקריאה בלבד —
+        כתיבה של ה-appliance (‏ext4 שמשחזר יומן ב-mount_ro) נוחתת ב-overlay
+        זמני שלו. ‏`writable=True` — רק על העותק של הכיווץ (`shrink_view`)."""
         if factory is None:
             try:
                 import guestfs   # noqa: PLC0415 — רק בשרת; ‏python3-guestfs
@@ -449,7 +460,7 @@ class Appliance:
         self.g = factory()
         try:
             self.g.set_memsize(memsize)
-            self.g.add_drive_opts(str(disk), format="raw", readonly=False)
+            self.g.add_drive_opts(str(disk), format="raw", readonly=not writable)
             self.g.launch()
         except RuntimeError as exc:
             raise DiskError("appliance", f"ה-appliance של libguestfs לא עלה: {exc}") from exc
@@ -620,7 +631,7 @@ LOOP_MODE = "0660"
 
 
 @contextmanager
-def partition_loop(host: Host, disk: Path, part: dict, user: VmUser, *, writable: bool):
+def partition_loop(host: Host, disk: Path | str, part: dict, user: VmUser, *, writable: bool):
     """התקן loop על מחיצה **אחת** — היסט וגודל מהטבלה שאומתה, בלי partscan —
     שנמסר למשתמש ה-VM למשך העבודה בלבד. ‏`partclone`/`ntfsfix` פותחים נתיב
     (פתיחה חוזרת של `/dev/fd/N` בודקת הרשאות מחדש), ולכן מעבירים בעלות
@@ -650,18 +661,168 @@ def partition_loop(host: Host, disk: Path, part: dict, user: VmUser, *, writable
         raise DiskError("loop", f"הבעלות על {node} לא הוחזרה ל-{LOOP_OWNER} — בדקו ידנית")
 
 
-def boot_files(box: "Appliance", esp: int, paths: list[str], run_dir: Path) -> Path:
+# --- ‏#1491: הכיווץ נעשה על עותק, ודיסק ה-VM אינו נכתב ------------------------------
+#
+# הכלל של #1466 (נדב 16/10) גם כאן: דיסק המקור של שמירה — `disk.raw`, הדיסק
+# שה-VM רץ עליו — **אינו נכתב**. ‏`ntfsresize`, הטבלה החדשה ו-`ntfsfix -d` רצים
+# על dm-snapshot מעליו: המקור מחובר ל-loop **לקריאה בלבד** (נבדק ב-`blockdev
+# --getro`), וה-copy-on-write הוא קובץ דליל ב-`run/` בגודל התקציב — עותק שחורג
+# ממנו נפסל (‏I/O error בקול), ולא ממלא את דיסק השרת. ‏partclone קורא מהעותק,
+# וכשל בכל שלב משאיר את הדיסק שלם: מדליקים שוב, מתקנים ושומרים.
+
+VIEW_NAME = "imagectl-vmsave"
+#: סקטורים — ‏4KiB, אשכול NTFS (‏`LC_SNAP_CHUNK` של הסוכן).
+VIEW_CHUNK = 8
+#: ‏`LC_SNAP_META_MB` של הסוכן: ‏$LogFile, ‏$MFT/$Bitmap, הטבלה וגיבויה.
+VIEW_META = 256 * MIB
+#: ה-"MB" של ‏`ntfsresize` (‏NTFS_MBYTE) הוא 10^6.
+NTFS_MB = 10**6
+
+
+def view_budget(host: Host, disk: Path, todo: list[tuple[dict, int]], user: VmUser,
+                run_dir: Path) -> int:
+    """כמה בייטים העותק צריך. ‏`ntfsresize -n` (ריצת בדיקה; כמשתמש ה-VM, על loop
+    **לקריאה בלבד** של המחיצה) אומר כמה יוזז — ‏M + M/10 + VIEW_META לכל מחיצה,
+    כמו `_snap_views` של הסוכן, ו-`_lc_relocs` שלו קורא את המספר. לא נמדד =
+    נכשל, לא "מספיק" (עיקרון 5)."""
+    need = 0
+    for part, new in todo:
+        idx = part["index"]
+        with partition_loop(host, disk, part, user, writable=False) as node:
+            proc = host.run(as_user(user, ["ntfsresize", "-n", "-s", str(new),
+                                           "--no-progress-bar", node]))
+        said = run_dir / f"relocs.{idx}.txt"
+        said.write_text((proc.stdout or "") + (proc.stderr or ""), encoding="utf-8", newline="\n")
+        mb = host.agent("_lc_relocs", str(said), run_dir=run_dir).out.strip()
+        if proc.returncode != 0 or not mb.isdigit():
+            raise DiskError("unchecked", f"לא ניתן למדוד כמה מקום זמני הכיווץ של מחיצה {idx} "
+                                         f"צריך (ntfsresize -n rc={proc.returncode}) — דיסק ה-VM "
+                                         "לא נכתב")
+        need += (int(mb) + int(mb) // 10) * NTFS_MB + VIEW_META
+    return need
+
+
+def _dm_names(text: str) -> list[str]:
+    return [line.split()[0] for line in text.splitlines() if line.strip()]
+
+
+def view_valid(host: Host) -> bool:
+    """‏`dmsetup status`: ‏`0 <len> snapshot <בשימוש>/<סה"כ> <meta>` = תקין.
+    ‏Invalid, ‏Overflow, או שאין תשובה — לא תקין (כמו `_snap_valid`)."""
+    proc = host.run(["dmsetup", "status", VIEW_NAME])
+    fields = proc.stdout.split() if proc.returncode == 0 else []
+    return (len(fields) >= 4 and fields[2] == "snapshot"
+            and re.fullmatch(r"\d+/\d+", fields[3]) is not None)
+
+
+def _release_view(host: Host, disk: Path, cow: Path) -> list[str]:
+    """העותק, ה-loop של המקור וה-loop של ה-copy-on-write — מוסרים, וכל אחד
+    נקרא בחזרה. ‏[] = לא נשאר דבר (או שלא היה); אחרת — מה שנשאר."""
+    problems = []
+    listed = host.run(["dmsetup", "ls"])
+    if listed.returncode != 0:
+        problems.append("dmsetup ls נכשל — לא נבדק שהעותק שוחרר")
+    elif VIEW_NAME in _dm_names(listed.stdout):
+        host.run(["dmsetup", "remove", "--retry", VIEW_NAME])
+        again = host.run(["dmsetup", "ls"])
+        if again.returncode != 0 or VIEW_NAME in _dm_names(again.stdout):
+            problems.append(f"{VIEW_NAME} עדיין קיים")
+    for backing in (cow, disk):
+        try:
+            if backing.exists():
+                detach_all(host, backing)
+        except DiskError as exc:
+            problems.append(exc.message)
+    if not problems:
+        cow.unlink(missing_ok=True)
+        if cow.exists():
+            problems.append(f"{cow.name} לא נמחק")
+    return problems
+
+
+def clear_leftovers(host: Host, workdir: Path) -> None:
+    """‏#1649: שאריות של שמירה שנקטעה (אתחול השרת באמצע כיווץ) — העותק
+    `imagectl-vmsave`, ה-loop של `disk.raw`, ה-loop של `run/shrink.cow` והקובץ
+    עצמו. מזהים **לפי השם והנתיב** (`dmsetup ls`, ‏`losetup -j`) — לא נוגעים
+    בדיסקים אחרים. ‏`_release_view` מסיר וקורא בחזרה כל אחד; מה שנשאר, או
+    כלי שלא רץ (‏OSError) = ‏DiskError בשם, לא "אין מה לנקות" (עיקרון 5)."""
+    try:
+        left = _release_view(host, workdir / "disk.raw", workdir / "run" / "shrink.cow")
+    except OSError as exc:
+        raise DiskError("loop", f"לא ניתן לנקות שאריות של שמירה קודמת — כלי לא רץ: {exc}") from exc
+    if left:
+        raise DiskError("loop", "שאריות משמירה קודמת לא נוקו: " + "; ".join(left))
+
+
+@contextmanager
+def shrink_view(host: Host, disk: Path, need: int, run_dir: Path):
+    """עותק copy-on-write של `disk` — ‏`/dev/mapper/imagectl-vmsave` — שכל
+    כתיבה אליו נוחתת ב-`run/shrink.cow` (דליל, בגודל `need`), ולא בדיסק.
+    לפני שנוצר דבר: המקום הפנוי (‏`disk_space` כשחסר). ביציאה — גם בכשל —
+    הכול מוסר ונקרא בחזרה; מה שנשאר = ‏DiskError("loop")."""
+    free = host.free_bytes(run_dir)
+    if free is None:
+        raise DiskError("unchecked", "לא ניתן לקרוא כמה מקום פנוי לעותק הזמני של הכיווץ")
+    if free < need:
+        raise DiskError("disk_space", f"אין מקום לעותק הזמני של הכיווץ: נדרשים {need / 10**9:.1f}GB, "
+                                      f"פנויים {free / 10**9:.1f}GB — דיסק ה-VM לא נכתב")
+    cow = run_dir / "shrink.cow"
+    stale = _release_view(host, disk, cow)       # שמירה קודמת שמתה באמצע
+    if stale:
+        raise DiskError("loop", "עותק כיווץ משמירה קודמת לא שוחרר: " + "; ".join(stale))
+    with cow.open("xb") as fh:
+        fh.truncate(need)
+    os.chmod(cow, 0o600)
+    try:
+        origin = host.run(["losetup", "--find", "--show", "--read-only", str(disk)])
+        origin_node = _loop_name(origin.stdout) if origin.returncode == 0 else None
+        if origin_node is None:
+            raise DiskError("loop", f"לא ניתן לחבר את דיסק ה-VM לקריאה בלבד (rc={origin.returncode})")
+        ro = host.run(["blockdev", "--getro", f"/dev/{origin_node}"])
+        if ro.returncode != 0 or ro.stdout.strip() != "1":
+            raise DiskError("loop", "התקן ה-loop של דיסק ה-VM לא אושר כקריאה בלבד — לא מכווצים")
+        store = host.run(["losetup", "--find", "--show", str(cow)])
+        store_node = _loop_name(store.stdout) if store.returncode == 0 else None
+        if store_node is None:
+            raise DiskError("loop", f"לא ניתן לחבר את העותק הזמני (rc={store.returncode})")
+        sectors = disk.stat().st_size // SECTOR
+        made = host.run(["dmsetup", "create", VIEW_NAME, "--table",
+                         f"0 {sectors} snapshot /dev/{origin_node} /dev/{store_node} N {VIEW_CHUNK}"])
+        view = f"/dev/mapper/{VIEW_NAME}"
+        size = host.run(["blockdev", "--getsize64", view])
+        if (made.returncode != 0 or size.returncode != 0
+                or size.stdout.strip() != str(sectors * SECTOR) or not view_valid(host)):
+            raise DiskError("loop", f"העותק של דיסק ה-VM לא נוצר או לא נקרא בחזרה "
+                                    f"(dmsetup rc={made.returncode}): {made.stderr.strip()}")
+        yield view
+    finally:
+        left = _release_view(host, disk, cow)
+    if left:
+        raise DiskError("loop", "העותק הזמני של הכיווץ לא שוחרר: " + "; ".join(left))
+
+
+#: ‏#1535/#1610: משתמש ה-VM מגיע לאזור העבודה **בשמו בלבד** (ACL של ה-uid;
+#: ‏`agent_shell.grant_user`). ‏root נשאר הבעלים (הוא כותב כאן, ולכן אסור
+#: שמשתמש ה-VM ישתול symlink), והקבוצה ו"אחרים" — אפס.
+#: תיקייה: מעבר בלבד (‏`[ -f "$ESPROOT$p" ]` על נתיבים ידועים; אין רשימה).
+VM_PASS = agent_shell.ACL_X
+#: קובץ אתחול שהורד: קריאה, לחתימות של `boot_ca_json`.
+VM_READ = agent_shell.ACL_R
+
+
+def boot_files(box: "Appliance", esp: int, paths: list[str], run_dir: Path, uid: int) -> Path:
     """קובצי האתחול של ה-ESP, בתיקייה **חדשה של root** (‏mkdtemp) — root
     כותב רק לשם, ואיש אחר אינו יכול לשתול בה symlink. אחרי ההורדה היא
-    נפתחת לקריאה (בעלות root נשארת), ומשתמש ה-VM קורא ממנה את החתימות."""
+    נפתחת **למשתמש ה-VM בלבד** (בעלות root נשארת), והוא קורא ממנה
+    את החתימות."""
     target = Path(tempfile.mkdtemp(prefix="esp-", dir=run_dir))
     box.fetch(esp, paths, target)
     for folder, _dirs, files in os.walk(target, followlinks=False):
-        os.chmod(folder, 0o755)
+        agent_shell.grant_user(folder, uid, VM_PASS)
         for name in files:
             path = os.path.join(folder, name)
             if not os.path.islink(path):
-                os.chmod(path, 0o644)
+                agent_shell.grant_user(path, uid, VM_READ)
     return target
 
 
@@ -689,22 +850,23 @@ def _boot_paths(host: Host, run_dir: Path) -> list[str]:
 
 def capture_disk(host: Host, workdir: Path, out_dir: Path, progress: Progress,
                  on_partition: Callable[[int, int], None] | None = None, *,
-                 user: VmUser, appliance: Callable[[Path], "Appliance"] = Appliance) -> dict:
+                 user: VmUser, appliance: Callable[..., "Appliance"] = Appliance) -> dict:
     """קולט את `workdir/disk.raw` ל-`out_dir` — מחזיר את חלק המניפסט שנגזר
-    מהדיסק. הכיווץ נעשה על דיסק העבודה עצמו."""
+    מהדיסק. הכיווץ נעשה על עותק (`shrink_view`) — ‏`disk.raw` אינו נכתב (‏#1491)."""
     disk = workdir / "disk.raw"
     run_dir = workdir / "run"
     run_dir.mkdir(parents=True, exist_ok=True)
     # ‏root בלבד כותב כאן (משתמש ה-VM מקבל תת-תיקיות חדשות בלבד, ‏fresh_user_dir),
-    # בלי תלות ב-umask של התהליך.
+    # בלי תלות ב-umask של התהליך. משתמש ה-VM רק עובר כאן (‏#1535) — ‏QEMU פותח
+    # את הדיסק כ-root לפני `-run-with`, והשמירה רצה כשהוא כבוי.
     for folder in (workdir, run_dir):
-        if hasattr(os, "chown"):
-            os.chmod(folder, 0o755)
+        if hasattr(os, "setxattr"):
+            agent_shell.grant_user(folder, user.uid, VM_PASS)
     _clear_stale(workdir, run_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     source = json.loads((workdir / "source-manifest.json").read_text(encoding="utf-8"))
 
-    # 1. ה-appliance: קריאה, אימות, כיווץ, נפח, קובצי אתחול.
+    # 1. ה-appliance, לקריאה בלבד: אימות, תוכנית הכיווץ, נפח, קובצי אתחול.
     box = appliance(disk)
     try:
         disk_guid, table = box.table()
@@ -717,8 +879,12 @@ def capture_disk(host: Host, workdir: Path, out_dir: Path, progress: Progress,
             if fs_of[part["index"]] == "ntfs":
                 rc = box.hibernation(part["index"])
                 if rc in (14, 15):
-                    raise DiskError("hibernated", "הדיסק מהובר — הדליקו שוב, כבו את Windows "
-                                                  "כיבוי מלא (shutdown /s /f /t 0) ושמרו")
+                    # #1504 (כמו #1502 בסוכן, ברזל 16/10): עם Fast Startup כיבוי רגיל
+                    # **הוא** שינה — "כיבוי מלא" לא משחרר; התיקון שעובד הוא powercfg.
+                    raise DiskError("hibernated", f"חלונות במחיצה {part['index']} נכבה ב-Fast "
+                                                  "Startup — גם כיבוי רגיל משאיר את הדיסק נעול. "
+                                                  "הדליקו את ה-VM, הריצו בו כמנהל powercfg /h off, "
+                                                  "כבו ושמרו שוב")
                 if rc != 0:
                     raise DiskError("unchecked", f"לא ניתן לבדוק מצב שינה במחיצה "
                                                  f"{part['index']} (ntfs-3g.probe rc={rc})")
@@ -770,42 +936,62 @@ def capture_disk(host: Host, workdir: Path, out_dir: Path, progress: Progress,
             if len(fields) != 7 or not fields[0].isdigit() or not fields[6].isdigit():
                 raise DiskError("shrink", "תוכנית זנב הפריסה של הסוכן אינה תקינה")
             planned[int(fields[0])] = int(fields[6])
-        for part, current, _minimum, _ordinary in candidates:
-            new = planned.get(part["index"], current)
-            if new >= current:
-                continue
-            box.shrink(part["index"], part["first"], new, part)
-            with mark.open("a", encoding="utf-8", newline="\n") as fh:
-                fh.write(f"{part['index']}|{part['first']}|{part['sectors']}|"
-                         f"{new // SECTOR}|{part['type_guid']}|{part['unique_guid']}||"
-                         f"{part['attrs']}\n")
-            part["sectors"] = new // SECTOR
-            shrunk.append(part["index"])
+        todo = [(part, planned.get(part["index"], current))
+                for part, current, _minimum, _ordinary in candidates
+                if planned.get(part["index"], current) < current]
         esp = next((p for p in table if partition_role(p["type_guid"]) == "esp"), None)
-        boot_dir = (boot_files(box, esp["index"], _boot_paths(host, run_dir), run_dir)
+        boot_dir = (boot_files(box, esp["index"], _boot_paths(host, run_dir), run_dir, user.uid)
                     if esp is not None else None)
     finally:
         box.close()
 
-    # 2. הפריסה המצומצמת — `_shrink_compact`/`shrink_json_extra` של הסוכן, על
-    # קבצים שלנו בלבד (מספרים שאומתו). ‏parts.orig.txt = לפני הכיווץ.
-    on_disk = {p["index"]: dict(p) for p in table}
-    if shrunk:
-        orig = run_dir / "parts.orig.txt"
-        _parts_file(orig, original)
-        compact = host.agent("_shrink_compact", str(mark), str(orig), run_dir=run_dir)
-        if not compact.ok or not compact.out.strip():
-            raise DiskError("shrink", "לא ניתן לחשב את הפריסה המצומצמת")
-        parts_path.write_text(compact.out, encoding="utf-8", newline="\n")
-    else:
-        (run_dir / "parts.orig.txt").unlink(missing_ok=True)
-        _parts_file(parts_path, table)
-    rows = _read_parts_file(parts_path)
+    # ‏#1649: שאריות משמירה שנקטעה (עותק, ‏loop-ים, ‏shrink.cow) מנקים **לפני** כל
+    # שימוש בדיסק — גם כשאין מה לכווץ, כי ה-`detach_all` שבסוף נכשל על loop
+    # שהעותק הישן עוד מחזיק. אחרי האימות: לפני שהוא עבר, המארח אינו נגוע.
+    clear_leftovers(host, workdir)
 
-    # 3. הזרם — כמשתמש ה-VM, על loop של מחיצה אחת.
     parts: list[dict] = []
     total = 0
+    views = ExitStack()
     try:
+        # 2. הכיווץ — על העותק בלבד (‏#1491). ‏`reads` הוא מה ש-ntfsfix ו-partclone
+        # פותחים; בלי כיווץ אין עותק, ו-partclone קורא את הדיסק לקריאה בלבד.
+        reads: Path | str = disk
+        if todo:
+            need = view_budget(host, disk, todo, user, run_dir)
+            reads = views.enter_context(shrink_view(host, disk, need, run_dir))
+            shrinker = appliance(Path(reads), writable=True)
+            try:
+                for part, new in todo:
+                    shrinker.shrink(part["index"], part["first"], new, part)
+                    with mark.open("a", encoding="utf-8", newline="\n") as fh:
+                        fh.write(f"{part['index']}|{part['first']}|{part['sectors']}|"
+                                 f"{new // SECTOR}|{part['type_guid']}|{part['unique_guid']}||"
+                                 f"{part['attrs']}\n")
+                    part["sectors"] = new // SECTOR
+                    shrunk.append(part["index"])
+            finally:
+                shrinker.close()
+            if not view_valid(host):
+                raise DiskError("shrink", "העותק של דיסק ה-VM אינו תקין אחרי הכיווץ (המקום הזמני "
+                                          "התמלא?) — דיסק ה-VM לא נכתב")
+
+        # 3. הפריסה המצומצמת — `_shrink_compact`/`shrink_json_extra` של הסוכן, על
+        # קבצים שלנו בלבד (מספרים שאומתו). ‏parts.orig.txt = לפני הכיווץ.
+        on_disk = {p["index"]: dict(p) for p in table}
+        if shrunk:
+            orig = run_dir / "parts.orig.txt"
+            _parts_file(orig, original)
+            compact = host.agent("_shrink_compact", str(mark), str(orig), run_dir=run_dir)
+            if not compact.ok or not compact.out.strip():
+                raise DiskError("shrink", "לא ניתן לחשב את הפריסה המצומצמת")
+            parts_path.write_text(compact.out, encoding="utf-8", newline="\n")
+        else:
+            (run_dir / "parts.orig.txt").unlink(missing_ok=True)
+            _parts_file(parts_path, table)
+        rows = _read_parts_file(parts_path)
+
+        # 4. הזרם — כמשתמש ה-VM, על loop של מחיצה אחת.
         for count, row in enumerate(rows, 1):
             idx = row["index"]
             fs = fs_of[idx]
@@ -828,13 +1014,16 @@ def capture_disk(host: Host, workdir: Path, out_dir: Path, progress: Progress,
                 parts.append(entry)
                 continue
             if idx in shrunk:
-                with partition_loop(host, disk, real, user, writable=True) as node:
+                with partition_loop(host, reads, real, user, writable=True) as node:
                     fixed = host.run(as_user(user, ["ntfsfix", "-d", node]))
                 if fixed.returncode != 0:
                     raise DiskError("shrink", f"דגל ה-dirty לא נוקה אחרי כיווץ מחיצה {idx} "
                                               f"(ntfsfix -d rc={fixed.returncode})")
+                if not view_valid(host):
+                    raise DiskError("shrink", f"העותק של מחיצה {idx} אינו תקין אחרי ntfsfix -d "
+                                              "(המקום הזמני התמלא?) — דיסק ה-VM לא נכתב")
             name = f"p{idx}.{role}.pcl.zst"
-            with partition_loop(host, disk, real, user, writable=False) as node:
+            with partition_loop(host, reads, real, user, writable=False) as node:
                 sha, size = capture_partition(host, fs, node, out_dir / name, run_dir, idx,
                                               progress, user=user, err_dir=run_dir,
                                               limit=real["sectors"] * SECTOR + STREAM_SLACK)
@@ -843,10 +1032,13 @@ def capture_disk(host: Host, workdir: Path, out_dir: Path, progress: Progress,
                           "expandable": False, **extra})
             parts.append(entry)
     finally:
-        detach_all(host, disk)
+        try:
+            views.close()          # העותק משוחרר לפני ה-loop של המקור שהוא מחזיק
+        finally:
+            detach_all(host, disk)
     mark_expandable(parts)
 
-    # 4. ‏boot_ca — `boot_ca_json` של הסוכן, כמשתמש ה-VM, על הקבצים שהורדו.
+    # 5. ‏boot_ca — `boot_ca_json` של הסוכן, כמשתמש ה-VM, על הקבצים שהורדו.
     boot: dict = {}
     if boot_dir is not None:
         got = host.agent("boot_ca_json", "esp", run_dir=run_dir,

@@ -30,6 +30,8 @@ Rgb smart_color(const Theme *t, const char *smart);
 const char *smart_he(const char *smart);
 /* the agent's SMART reason code (smart.sh) in words; "" for none or ok */
 const char *smart_reason_text(const char *reason);
+const char *smart_he_why(const char *smart, const char *reason);   /* #1742: read-only says so */
+const char *red_refusal_he(const char *reason);   /* #1732/#1742: "לא כותבים" on red, by the reason */
 const IdleDisk *idle_for_port(const State *s, int port);
 /* #1495: drawer mapping. A zero struct field is the legacy port convention. */
 int eff_drawer(int drawer, int port);
@@ -45,6 +47,9 @@ void cloner_bay_conn(const State *s, int bay, char *out, size_t n);
 void cloner_slot_label(const State *s, int bay, char *out, size_t n);
 void cloner_port_label(const State *s, int port, char *out, size_t n);
 int room_selectable(const RoomDrawer *d);
+int room_pickable(const RoomDrawer *d);   /* #1732: selectable and not red */
+/* Nadav 17/10: is this cloner picked as a whole machine (a->room_pick)? */
+int room_picked(const App *a, const char *mac);
 void room_drawer_label(const Machine *m, const RoomDrawer *d, char *out, size_t n);
 int room_rows(const Machine *m);
 /* The status span of room.js machineRows / classes.js renderLive, as Pango
@@ -81,8 +86,9 @@ int image_options(const App *, const char **, char (*)[168], int);
  * room_drv_options: the rows of the model list (the library's, nothing else).
  * room_drv_block_*: the switch row and, when on, the model + mode columns,
  * under the setup fields; draw returns the select's rect (w = 0 when none).
- * room_drv_tag_draw: a chosen disk's tag in pick mode. The summary and the
- * live round's outcome lines; a Text with a NULL layout = nothing to draw. */
+ * room_drv_tag_draw: a chosen disk's tag in pick mode. The summary line; a
+ * Text with a NULL layout = nothing to draw. The live round's outcome is in
+ * each drawer's row (#1331, lc_bay_drivers). */
 int room_drv_options(const App *a, const char **opts, char (*buf)[200], int max);
 double room_drv_block_height(App *a, cairo_t *cr, double w);
 Rect room_drv_block_draw(App *a, cairo_t *cr, double x, double y, double w);
@@ -90,5 +96,4 @@ void room_drv_tag_draw(App *a, cairo_t *cr, Rect slot, const Machine *m, int mi,
 Text room_drv_summary_make(App *a, cairo_t *cr, double w);
 double room_drv_summary_height(const Text *t);
 void room_drv_summary_draw(App *a, cairo_t *cr, double x, double y, double w, Text *t);
-Text room_drv_results_make(cairo_t *cr, const State *s, double w, int *any_failed);
 #endif

@@ -271,6 +271,21 @@ test('#1463: payload (the initrd build) is a stage of its own — shown as "inst
   assert.match(h, /onclick="updWaitMore\(\)">חכה עוד 25 דקות</);
 });
 
+test('#1411: packages (Debian security updates from the release) is drawn as installing, with its own 25-minute ceiling', async () => {
+  const t = await started({}, 'install');
+  const stages = {...running('install').stages, packages: at(20)};
+  t.fixtures['/update/status'] = running('install', {stage: 'packages', stages, now: at(20)});
+  await t.poll();
+  const h = t.html();
+  assert.deepEqual(steps(h), ['done', 'done', 'cur', 'pend'], 'packages is the install step, not the first one');
+  assert.match(h, /מתקין את עדכוני האבטחה של Debian שבגרסה/);
+  const entered = t.run('UPD.changeAt');
+  t.clock.now = entered + 21 * 60000; t.run('updTick()');
+  assert.equal(t.run('UPD.phase'), 'run', 'apt has 20 minutes on the server; the screen waits longer');
+  t.clock.now = entered + 25 * 60000 + 1000; t.run('updTick()');
+  assert.equal(t.run('UPD.phase'), 'timeout');
+});
+
 test('#1463: entering payload resets the ceiling — install and payload each get their own window', async () => {
   const t = await started({}, 'install');
   t.clock.now += 9 * 60000; t.run('updTick()');
@@ -458,7 +473,8 @@ test('settings card after the run: updated / refused / returned are named notes;
   const card = (status, last) => {
     t.ctx.st = status; t.ctx.lc = last || null;
     t.run('HEALTH_UPDATE={current:"v0.72.0",enabled:true,previous:"v0.71.0",last_check:lc}; UPDATE_STATUS=st; UPDATE_CHECK=null; updateError=""');
-    return t.run('updateCard()');
+    // סידור ההגדרות (17/10): הקבוצה "עדכונים ותחזוקה" — השורות, ומתחתן ההודעות והכפתורים
+    return t.run('settingsGroupHtml(SETTING_GROUPS.find((g) => g.card === "update"))');
   };
   const today = new Date().toISOString().slice(0, 10);
   const done = {state: 'done', verified: true, stage: 'done', tag: 'v0.72.0', from: 'v0.71.0', by: 'nadav', stages: {done: `${today}T11:05:00+00:00`}};
@@ -484,4 +500,68 @@ test('index.html loads update_screen.js after console.js with the same cache-bus
   const m = index.match(/<script src="console\.js\?v=([\d.]+)"><\/script>\n<script src="update_screen\.js\?v=([\d.]+)"><\/script>/);
   assert.ok(m, 'update_screen.js right after console.js');
   assert.equal(m[1], m[2]);
+});
+
+// ‏#1776: "עדכן" בלשונית של שרת משנה בעץ — אותו חלון ואותו מסך, אבל כל בקשה הולכת למשני דרך
+// ה-relay של הראשי. ‏/health/live של הראשי אינו ראיה על המשני, ובסוף אין טעינה של הדף (הראשי לא השתנה).
+const RELAY = '/storage-nodes/haifa/console';
+async function secondaryStarted(stage = 'fetch') {
+  const t = setup();
+  t.run('SERVER_CTX="haifa"; HEALTH_UPDATE={current:"v0.71.0",enabled:true}; OVERVIEW={session:null}');
+  t.fixtures[RELAY + '/update/status'] = running(stage);
+  t.run('confirmUpdateApply("v0.72.0")');
+  const next = await t.run('sheets[0]').onSubmit();
+  t.ctx.next = next; t.run('next()');
+  await t.poll();
+  return t;
+}
+
+test('secondary (#1776): apply and every status read go to the secondary through the relay — never to the primary', async () => {
+  const t = await secondaryStarted();
+  assert.deepEqual(t.requests.find((r) => r.url === RELAY + '/update/apply').body, {tag: 'v0.72.0'});
+  assert.deepEqual([...new Set(t.requests.map((r) => r.url))], [RELAY + '/update/apply', RELAY + '/update/status']);
+  assert.equal(t.run('UPD.from'), 'v0.71.0', 'from = the secondary\'s version, not the primary\'s /me');
+  assert.deepEqual(steps(t.html()), ['cur', 'pend', 'pend', 'pend']);
+  t.fixtures[RELAY + '/update/status'] = running('install', {now: at(74)});
+  await t.poll();
+  assert.deepEqual(steps(t.html()), ['done', 'done', 'cur', 'pend']);
+});
+
+test('secondary (#1776): the relay failing while it restarts is "not answering" — the primary\'s /health/live is never asked', async () => {
+  const t = await secondaryStarted('install');
+  t.fixtures[RELAY + '/update/status'] = {code: 502, detail: 'חיפה לא ענה'};
+  t.fixtures['/health/live'] = {ok: true, version: 'v0.71.0'};
+  t.fixtures['/update/status'] = {state: 'idle'};
+  t.clock.now += 3000; await t.poll();
+  t.clock.now += 3000; await t.poll();
+  assert.equal(t.run('UPD.off'), true);
+  assert.match(t.html(), /השרת לא עונה — צפוי בזמן ההפעלה מחדש/);
+  assert.ok(!t.requests.some((r) => r.url === '/health/live' || r.url === '/update/status'), 'only the relay');
+  t.fixtures[RELAY + '/update/status'] = {...running('done', {now: at(186)}), state: 'done', verified: true, current: 'v0.72.0'};
+  await t.poll();
+  assert.equal(t.run('UPD.phase'), 'done');
+  assert.match(t.html(), /חזרה ללשונית של שרת המשנה/);
+  for (let i = 0; i < 5; i++) t.run('updCountdown()');
+  assert.deepEqual(t.navigated, [], 'no reload — the files in the page are the primary\'s, which did not change');
+  assert.equal(t.run('UPD'), null, 'the screen closed');
+  assert.equal(JSON.stringify(t.run('toasts')), JSON.stringify([['שרת המשנה עודכן ל-v0.72.0 ✓', 'ok']]));
+});
+
+test('secondary (#1776): the secondary refusing an unsigned tag shows the refusal and its reason', async () => {
+  const t = await secondaryStarted('fetch');
+  t.fixtures[RELAY + '/update/status'] = failed('signature', 'verify', {error: 'התג v0.72.0 לא אומת כחתום: no principal'});
+  await t.poll();
+  const h = t.html();
+  assert.equal(t.run('UPD.phase'), 'sigfail');
+  assert.match(h, /העדכון נדחה: הגרסה לא חתומה/);
+  assert.match(h, /לא אומת כחתום: no principal/);
+});
+
+test('secondary (#1776): a refusal of the apply itself (relay or secondary) stays in the window, visible', async () => {
+  const t = setup();
+  t.run('SERVER_CTX="haifa"; HEALTH_UPDATE={current:"v0.71.0",enabled:true}; OVERVIEW={session:null}');
+  t.fixtures[RELAY + '/update/apply'] = {code: 404, detail: 'הפעולה אינה זמינה על שרת המשנה מכאן'};
+  t.run('confirmUpdateApply("v0.72.0")');
+  await assert.rejects(t.run('sheets[0]').onSubmit(), /הפעולה אינה זמינה על שרת המשנה מכאן/);
+  assert.equal(t.run('UPD'), null);
 });

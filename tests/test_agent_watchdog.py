@@ -111,6 +111,7 @@ def test_transfer_wait_renews_lease_but_stalled_wait_finishes(tmp_path, moving):
             watchdog_expired "$t" && exit 9
             return 0
         }}
+        poll_tick() {{ sleep; _tk=$((WAIT_POLL_S * 10)); }}   # #1705: one fake tick = one poll
         wait_progress 999 "$RUN_DIR/counter" 600 120 stream
         echo "result=$? t=$t"
         # Once the controlling wait stops, a surviving reporter must not

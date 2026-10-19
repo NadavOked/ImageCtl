@@ -378,3 +378,84 @@ def test_only_main_turns_the_startup_pass_on():
     from server import app, main
     assert inspect.signature(app.create_runtime).parameters["backfill_used_bytes"].default is False
     assert "backfill_used_bytes=True" in inspect.getsource(main)
+
+
+# --- #1641: a raw (dd) capture has no partclone header by format -------------
+
+def windows_with_msr(image_id: str = "img_8da804") -> dict:
+    """ESP + MSR + NTFS as the agent writes them: the MSR has ``fs: ""`` and
+    ``used_bytes: null`` on purpose, and its file is a ``partclone.dd`` stream."""
+    esp, win = MANIFEST_256["partitions"]
+    msr = {"index": 2, "type_guid": "E3C9E316-0B5C-4DB8-817D-F92DF00215AE", "role": "msr",
+           "fs": "", "start_sector": 206848, "size_bytes": 16777216, "used_bytes": None,
+           "file": "p2.msr.pcl.zst", "sha256": "cc" * 32, "expandable": False}
+    return {**MANIFEST_256, "id": image_id,
+            "partitions": [{**esp, "used_bytes": None}, msr, {**win, "used_bytes": None}]}
+
+
+def test_a_raw_capture_is_not_read_and_is_not_a_problem(tmp_path):
+    """Only the NTFS partition -- which has no header although partclone wrote
+    it -- is reported. The MSR is never even opened (#1641), and the ESP, whose
+    header is valid, is still measured."""
+    from server.usedbackfill import derive
+    write_image(tmp_path, windows_with_msr())
+    manifest = ImageLibrary(tmp_path).scan()["img_8da804"]
+    read_names = []
+
+    def read(path):
+        read_names.append(Path(path).name)
+        return header(used=7, fs=b"FAT32") if path.name.startswith("p1") else b"\0" * 110
+
+    values, problems = derive(manifest, read=read)
+
+    assert values == {1: 7 * 4096}
+    assert problems == ["p3: no valid partclone v2 header"]
+    assert "p2.msr.pcl.zst" not in read_names
+
+
+def test_the_startup_pass_is_silent_for_a_windows_image_whose_only_gap_is_the_msr(tmp_path):
+    from server.usedbackfill import backfill
+    esp, msr, win = windows_with_msr()["partitions"]
+    write_image(tmp_path, {**windows_with_msr(), "partitions": [{**esp, "used_bytes": 1}, msr,
+                                                                {**win, "used_bytes": 1}]})
+    assert backfill(ImageLibrary(tmp_path), read=lambda p: b"\0" * 110) == []
+
+
+def test_every_filesystem_the_agent_streams_with_dd_is_skipped_by_its_own_mapping(tmp_path):
+    """The rule is the agent's ``partclone_for_fs`` (``server.vmdisk`` keeps a
+    parity-tested copy), not a file name -- the file is called ``.pcl.zst`` in
+    both cases. (``xfs`` is not a manifest filesystem today, so it cannot be
+    tried here; the mapping would send it to dd too.)"""
+    from server.usedbackfill import derive
+    msr = windows_with_msr()["partitions"][1]
+    for n, fs in enumerate(("", "unknown")):
+        image = {**windows_with_msr(f"img_00000{n}"),
+                 "partitions": [{**msr, "fs": fs}]}
+        write_image(tmp_path, image)
+        manifest = ImageLibrary(tmp_path).scan()[image["id"]]
+        assert derive(manifest, read=lambda p: pytest.fail("a dd stream was read")) == ({}, [])
+
+
+def test_a_partclone_filesystem_without_a_header_still_fails_loudly(tmp_path):
+    from server.usedbackfill import derive
+    esp, _msr, win = windows_with_msr()["partitions"]
+    write_image(tmp_path, {**windows_with_msr(), "partitions": [esp, win]})
+    manifest = ImageLibrary(tmp_path).scan()["img_8da804"]
+    _, problems = derive(manifest, read=lambda p: b"\0" * 110)
+    assert problems == ["p1: no valid partclone v2 header", "p3: no valid partclone v2 header"]
+
+
+def test_the_dry_run_does_not_call_a_raw_capture_a_failure(tmp_path, capsys, monkeypatch):
+    from server import usedbackfill
+    esp, msr, win = windows_with_msr()["partitions"]
+    write_image(tmp_path, {**windows_with_msr(), "partitions": [esp, msr, win]})
+    folder = tmp_path / "img_8da804"
+    (folder / "p1.esp.pcl.zst").write_bytes(header(used=7, fs=b"FAT32"))
+    (folder / "p2.msr.pcl.zst").write_bytes(b"\0" * 110)
+    (folder / "p3.win.pcl.zst").write_bytes(header(used=5, total=9))
+    monkeypatch.setattr(usedbackfill, "read_head", lambda path: Path(path).read_bytes()[:110])
+
+    assert usedbackfill.main([str(folder)]) == 0
+    out = capsys.readouterr().out
+    assert "NO VALID HEADER" not in out
+    assert "p2 p2.msr.pcl.zst RAW DD CAPTURE (no partclone header)" in out.splitlines()

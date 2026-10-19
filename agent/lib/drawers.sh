@@ -45,8 +45,8 @@ _drawer_pipeline() {
         #
         # ⚠️ **לא `set -o pipefail`** — הוא אינו קיים ב-busybox ash. הוא
         # היה עובר בטסט (Git Bash) ומשאיר את הבאג על המכונה.
-        # shellcheck disable=SC2046,SC2094 # fifo opened once; partclone_mode flags are a word list
-        { zstd -dc < "$_tdir/feed" 2>> "$LOG_FILE"
+        # shellcheck disable=SC2016,SC2046,SC2094 # $$ is sh -c's own; fifo opened once; partclone_mode flags are a word list
+        { sh -c 'echo "$$" > "$1"; exec zstd -dc' zstd "$_tdir/zstd.pid" < "$_tdir/feed" 2>> "$LOG_FILE"   # #1598: drawer_watch
           echo "$?" > "$_tdir/zstd.rc"; } \
             | "$_pcl" $(partclone_mode "$_pcl" -r) -s - -O "$_node" \
                 -L "$_tdir/partclone.log" 2>> "$LOG_FILE"
@@ -61,7 +61,7 @@ restore_partition_drawers() {
     _mode="$1"; _server="$2"; _image="$3"; _idx="$4"; _fs="$5"; _file="$6"
     _sha="$7"; _uuid="$8"
     shift 8
-    _disks="$*"
+    _disks="$*"; cancel_pending "$@"   # #1386: a cancel asked while no stream ran
 
     # ‏swap אינה משודרת (אפיון סעיף 14): אין קובץ, אין sha256, ואין מה
     # להזרים — ‏fanout על רשומה כזו היה מזין את המגירות בזרם ריק ונכשל על
@@ -70,7 +70,7 @@ restore_partition_drawers() {
     # השאר — כמו כל כשל אחר של מגירה בודדת.
     if is_swap_partition "$_fs"; then
         for _d in $_disks; do
-            [ "$(cat "$RUN_DIR/targets/$_d/state")" = "failed" ] && continue
+            case "$(cat "$RUN_DIR/targets/$_d/state")" in failed|cancelled) continue ;; esac
             if make_swap "$(partition_node "$_d" "$_idx")" "$_uuid"; then
                 target_partition_done "$_d"
             else
@@ -84,9 +84,9 @@ restore_partition_drawers() {
     _feeds=""
     for _d in $_disks; do
         _t="$RUN_DIR/targets/$_d"
-        [ "$(cat "$_t/state")" = "failed" ] && continue
+        case "$(cat "$_t/state")" in failed|cancelled) continue ;; esac   # #1386
         rm -f "$_t/feed" "$_t/feed.bytes" "$_t/pipeline.rc" "$_t/pipeline.pid" \
-              "$_t/zstd.rc"
+              "$_t/zstd.rc" "$_t/zstd.pid"
         mkfifo "$_t/feed"
         # ההתקדמות של המגירה הזו נמדדת אצל fanout, לא אצל ה-pv שלפניו:
         # ‏pv אחד מודד את הזרם של המכונה — אותו מספר לשלוש המגירות, ולכן
@@ -106,6 +106,7 @@ restore_partition_drawers() {
     # shellcheck disable=SC2086 # word splitting of the fifo list is wanted
     rm -f "$RUN_DIR/sha.out" "$RUN_DIR/fanout.rc" "$RUN_DIR/source.rc" "$RUN_DIR/bytes.raw"  # #1430: old count != 1st byte
     next_stream_ceiling   # #957: המחיצה הראשונה ממתינה למפעיל, הבאות לחדר
+    udp_drops_mark "$_mode"   # #1571: did this machine drop the stream itself?
     (
         # ה-rc של המקור נלכד לחוד: ב-POSIX sh ‏$? של צינור הוא של האחרון
         # בלבד, ולכן זרם שנקטע באמצע (‏udp-receiver שפקע, ‏curl שנפל)
@@ -117,7 +118,8 @@ restore_partition_drawers() {
                 > "$RUN_DIR/fanout.out" 2>> "$LOG_FILE"
         echo "$?" > "$RUN_DIR/fanout.rc"
     ) &
-    _streampid=$!
+    _streampid=$!; WAIT_ABORT_FILE="$RUN_DIR/session-closed"   # ברזל 17/10: סגירת הסבב עוצרת את הזרם
+    drawer_watch "$_streampid" "$_idx" "$_disks" & _watchpid=$!   # #1598: a dead drawer is out in seconds
     if wait_progress "$_streampid" "$RUN_DIR/bytes.raw" \
             "$STREAM_START_CEILING" "$WAIT_STREAM_STALL_S" \
             "הזרם של מחיצה $_idx ($_file)"; then
@@ -125,20 +127,23 @@ restore_partition_drawers() {
     else
         _fanout_rc="$WAIT_TIMED_OUT"
     fi
+    udp_drops_log "$_mode" "partition $_idx"
+    wait_pid "$_watchpid" "$WAIT_HELPER_S" "מעקב המגירות (מחיצה $_idx)" || :; cancel_pending "$@"   # #1386: one it did not finish
 
     # ממתינים לצינור לפי PID: בלי זה pipeline.rc עוד לא קיים (#20),
     # ו-wait ריק תופס גם את דמון ההתקדמות (#12). תקרה: fifo שלא נפתח
     # (#49) לא ייגמר מעצמו; אחרי פקיעת הזרם התקרה הקצרה.
-    _dwait="$WAIT_DRAWER_S"
-    [ "$_fanout_rc" = "$WAIT_TIMED_OUT" ] && _dwait="$WAIT_HELPER_S"
+    # ‏#1598: פקיעת זרם = stream (בלי ראיית ATA → בלי disk_failure); מגירה dead לא ממתינים לה.
+    _dwait="$WAIT_DRAWER_S"; _blame=""
+    [ "$_fanout_rc" = "$WAIT_TIMED_OUT" ] && { _dwait="$WAIT_HELPER_S"; _blame=stream; }
     for _d in $_disks; do
         _pidf="$RUN_DIR/targets/$_d/pipeline.pid"
-        [ -f "$_pidf" ] || continue
+        [ -f "$_pidf" ] && [ ! -f "$RUN_DIR/targets/$_d/dead" ] || continue
         wait_pid "$(cat "$_pidf")" "$_dwait" "המגירה $_d (מחיצה $_idx)" && continue
         # בידוד: המגירה הזו לבדה נכשלת, הלולאה ממשיכה לשכנות.
         unblock_fifo "$RUN_DIR/targets/$_d/feed"
         fail_written_target "$_d" \
-            "מחיצה $_idx: פג הזמן — המגירה לא סיימה לכתוב"
+            "מחיצה $_idx: פג הזמן — המגירה לא סיימה לכתוב" "$_blame"
     done
 
     # ה-sha התואם הוא הראיה החיובית שהזרם הגיע שלם, ולכן הוא נשאל ראשון:
@@ -156,7 +161,7 @@ restore_partition_drawers() {
     if is_sha256 "$_got" && [ "$_got" = "$_sha" ]; then
         _why=""
     elif [ "$_fanout_rc" = "$WAIT_TIMED_OUT" ]; then
-        _why="פג הזמן -- הזרם לא הגיע"
+        _why="פג הזמן -- הזרם לא הגיע"; round_closed && _why="$ROUND_CLOSED_WHY"
     elif [ "$_fanout_rc" != "0" ] && [ "$_fanout_rc" != "1" ]; then
         # ‏2 של fanout, ‏137 של OOM (#21) = ההפצה עצמה נפלה.
         _why="הפצת הזרם למגירות נכשלה (fanout rc=${_fanout_rc:-לא נרשם})"
@@ -191,8 +196,8 @@ restore_partition_drawers() {
     fi
     if [ -n "$_why" ]; then
         log "partition $_idx ($_file): $_why -- failing all drawers"
-        for _d in $_disks; do
-            fail_written_target "$_d" "מחיצה $_idx: $_why"
+        for _d in $_disks; do   # ‏#1598: כשל של הזרם, לא של הכונן; dead שומרת את סיבתה
+            [ -f "$RUN_DIR/targets/$_d/dead" ] || fail_written_target "$_d" "מחיצה $_idx: $_why" stream
         done
         return 1
     fi
@@ -206,6 +211,7 @@ run_restore_drawers() {
     _mode="$1"; _server="$2"; _image="$3"; _manifest="$4"
     shift 4
     _disks="$*"
+    round_closed_fail "$_disks" && { echo "failed" > "$RUN_DIR/state"; return 1; }   # 17/10: before any disk I/O
 
     echo "writing" > "$RUN_DIR/state"
     # אותה בדיקה 2.7 של התחנה הבודדת, לכל מגירה בנפרד: מגירה קטנה מדי
@@ -215,11 +221,16 @@ run_restore_drawers() {
     # רק מגירות הסבב מגיעות לכאן (#1275). מגירה שנפסלה אינה עוצרת את השאר.
     # shellcheck disable=SC2086 # the disk list is a word list on purpose
     write_check_round "$_manifest" $_disks
+    # #1704: all tables at once, a job per drawer (a writing sgdisk sleeps 1s, gdisk DiskSync:
+    # ~11s a drawer in a row, metal 17/10). A job fails only its drawer; PREP_TAG = its own
+    # scratch files.
+    _tjobs=""
     for _d in $_disks; do
-        [ "$(cat "$RUN_DIR/targets/$_d/state")" = "failed" ] && continue
+        case "$(cat "$RUN_DIR/targets/$_d/state")" in failed|cancelled) continue ;; esac
+        ( PREP_TAG=".$_d"
         if ! apply_gpt "$_d" "$_manifest"; then
             fail_written_target "$_d" "${PLAN_ERROR:-לא הצלחנו לכתוב את טבלת המחיצות}"
-            continue
+            exit 0
         fi
         # ההרחבה קורית לפני הזרם, בדיוק כמו בתחנה בודדת: מחיצת swap
         # נגררת עוברת לזנב עכשיו כדי שלא תחסום את מה שלפניה (#46).
@@ -228,7 +239,12 @@ run_restore_drawers() {
             log "WARNING: expansion failed on $_d -- writing at the image's own size"
             apply_gpt "$_d" "$_manifest" \
                 || fail_written_target "$_d" "${PLAN_ERROR:-לא הצלחנו לכתוב את טבלת המחיצות}"
-        fi
+        fi ) &
+        _tjobs="$_tjobs $_d:$!"
+    done
+    for _j in $_tjobs; do   # a drawer's write ceiling (waits.sh); past it, that drawer alone fails
+        wait_pid "${_j#*:}" "$WAIT_DRAWER_S" "טבלת המחיצות של ${_j%%:*}" \
+            || fail_written_target "${_j%%:*}" "פג הזמן — טבלת המחיצות לא נכתבה תוך $WAIT_DRAWER_S שניות"
     done
     _any_alive "$_disks" || { echo "failed" > "$RUN_DIR/state"; return 1; }
 
@@ -242,26 +258,27 @@ run_restore_drawers() {
         return 1
     fi
     _expected=$(awk 'END { print NR }' "$_plan")
-    _written=0; STREAMED_PARTITIONS=0   # #957: הזרם הראשון של השחזור הזה
+    _written=0; STREAMED_PARTITIONS=0; udp_drops_reset   # #957: הזרם הראשון של השחזור הזה (וסכום ה-drops שלו, 17/10)
     while IFS='|' read -r _i _g _role _fs _s _sz _f _sha _exp _ug _uuid _attrs <&3; do
         if is_swap_partition "$_fs"; then
             log "partition $_i (swap): recreated on each drawer, not fed"
         else
             log "partition $_i ($_role): feeding $(echo "$_disks" | wc -w) drawers"
         fi
+        round_closed_fail "$_disks" && break   # 17/10: the server closed the round -- feed no more
         restore_partition_drawers "$_mode" "$_server" "$_image" \
             "$_i" "$_fs" "$_f" "$_sha" "$_uuid" $_disks || break
         _written=$((_written + 1))
     done 3< "$_plan"
     if [ "$_expected" -lt 1 ] || [ "$_written" -ne "$_expected" ]; then
         _fail_alive "$_disks" "נכתבו $_written מתוך $_expected מחיצות"
-        echo "failed" > "$RUN_DIR/state"
-        return 1
+        _final=$(_machine_state "$_disks"); echo "$_final" > "$RUN_DIR/state"   # #1386: all cancelled = partial
+        [ "$_final" = "failed" ] && return 1; return 0
     fi
 
-    echo "verifying" > "$RUN_DIR/state"
+    cancel_pending "$@"; echo "verifying" > "$RUN_DIR/state"   # #1386: one asked after the last partition
     for _d in $_disks; do
-        [ "$(cat "$RUN_DIR/targets/$_d/state")" = "failed" ] && continue
+        case "$(cat "$RUN_DIR/targets/$_d/state")" in failed|cancelled) continue ;; esac
         finish_grow "$_d"
     done
 

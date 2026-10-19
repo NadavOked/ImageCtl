@@ -245,7 +245,7 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         }
 
     @router.get("")
-    def read(user=Depends(admin_only)):
+    def read(request: Request, user=Depends(admin_only)):
         """ההגדרה של כל כרטיס, ולצידה מה שנקרא בחזרה מהמכונה."""
         drain_crumbs(ctx, state_dir, hooks)
         live = {i["name"]: i for i in hooks["interfaces"]()}
@@ -263,6 +263,9 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
                             "management": n == mgmt,
                             "member_of": member_of.get(n)} for n in names],
             "management_interface": mgmt or None,
+            # ‏#1556: הכרטיס שדרכו הגיעה הבקשה (‏None = לא נקבע) — הקונסולה לא
+            # מציעה אותו כברירת מחדל לרשת ההפצה, גם כשכרטיס הניהול לא ידוע.
+            "console_interface": active_interface(request, live),
             "deploy_bond": bond_view(bonded, bond) if bonded else None,
             "live": {"checked": state.checked, "reason": state.reason,
                      "routes": state.routes, "nameservers": state.nameservers},
@@ -290,6 +293,15 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         others = [c for c in all_configs() if c.name != cfg.name] + [cfg]
         return netcfg.problems(cfg, others, dhcp_cfg or dhcp_of(cfg.name))
 
+    def checked_name(name: str) -> None:
+        """‏#1628: שם הכרטיס נכנס לנתיב הקובץ ול-`iface`/`post-up` שרצים
+        כ-root, ולכן רשימת היתר **לפני** כל קריאה וכל כתיבה — לא רק אחרי
+        שנמצא ברשימת הכרטיסים החיה (‏`allow_missing` עוקף אותה)."""
+        try:
+            dhcp.validate_name(name)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
     @router.post("/{name}/preview")
     async def preview(name: str, request: Request, user=Depends(admin_only)):
         """הקובץ שייכתב, לפני ואחרי — ואילו בעיות יעצרו אותו.
@@ -297,6 +309,7 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         אותה תבנית של "קובץ dnsmasq שנוצר", ובאותה כוונה: מי שרואה את
         הטקסט לפני ההחלה תופס טעות כשהיא עדיין טקסט.
         """
+        checked_name(name)
         cfg = build(name, await request.json())
         cfg.slaves = load(name).slaves              # ‏#1264: נערכים רק מרשת ההפצה
         after = [c for c in all_configs() if c.name != name] + [cfg]
@@ -312,6 +325,7 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
 
     @router.put("/{name}")
     async def configure(name: str, request: Request, user=Depends(admin_only)):
+        checked_name(name)
         body = await request.json()
         live = {i["name"]: i for i in hooks["interfaces"]()}
         if name not in live and not body.get("allow_missing"):
@@ -333,6 +347,15 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
     def _configure(name: str, before: netcfg.NetConfig, cfg: netcfg.NetConfig,
                    body: dict, request: Request, user, live: dict) -> dict:
         """מכאן — אחרי שהקלט נבדק: הקלדת השם, זרוע ההחזרה, כתיבה, קריאה חוזרת."""
+        # ‏#1558: הקונסולה כותבת ל-ifupdown. כשמשהו אחר מנהל את הרשת (שרת
+        # חיפה: netplan) — סירוב בשם **לפני** הזרוע ולפני כל קובץ, ולא
+        # "resolv.conf: Read-only" ו-"ifup: unknown interface" אחרי שנכתבו.
+        foreign = hooks["netcfg_foreign_manager"]()
+        if foreign:
+            raise HTTPException(
+                409, f"{foreign}. הקונסולה מגדירה כרטיסי רשת רק בשרת שמנוהל "
+                     "ב-ifupdown (כמו שרת שהותקן מה-ISO) — לא נכתב ולא הוחל דבר. "
+                     "בשרת הזה מגדירים את הכרטיס בכלי שמנהל את הרשת.")
         # עיקרון 7: שינוי כתובת הוא הרסני-בפועל — הוא מנתק מחשבים, ועל
         # הכרטיס הפעיל גם את המפעיל עצמו. הקלדת השם, כמו בהדלקת DHCP.
         if body.get("confirm") != name:
@@ -440,10 +463,7 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         """
         if dhcp_steps is None:
             raise HTTPException(501, "שלבי ה-DHCP לא חוברו לראוטר הזה")
-        try:
-            dhcp.validate_name(name)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc))
+        checked_name(name)
         body = await request.json()
         live = {i["name"]: i for i in hooks["interfaces"]()}
         if name not in live:
@@ -532,10 +552,7 @@ def create_netcfg_router(ctx: ServerContext, state_dir,
         """
         if dhcp_steps is None:
             raise HTTPException(501, "שלבי ה-DHCP לא חוברו לראוטר הזה")
-        try:
-            dhcp.validate_name(name)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc))
+        checked_name(name)
         body = await request.json()
         second = str(body.get("second") or "").strip()
         current, deploy = load(name), dhcp_steps["deploy"]()

@@ -40,10 +40,23 @@ WS_FORBIDDEN = 4403
 #: אינו admin) ומ-4502 (אין מי שיענה על 5900).
 WS_MACHINE_AUTH = 4512
 
+#: The authenticated machine-side TCP stream ended while the browser was still
+#: watching.  This is deliberately different from a browser/network close
+#: (normally 1006) so the last framebuffer cannot masquerade as a live screen.
+WS_MACHINE_GONE = 4513
+MACHINE_GONE_REASON = "החיבור למחשב נותק — ייתכן שהמחשב כבה"
+
 #: ‏#1129: הגשר סוגר את שני הצדדים אחרי IDLE_SECONDS בלי בייט אחד לאף כיוון
 #: — ‏WS/TCP חצי-פתוח היה משאיר task ו-`active` תפוס לנצח.
 WS_IDLE = 4408
 IDLE_SECONDS = 600
+
+# The first hello makes a booting machine visible before monitor_start() has a
+# framebuffer to serve and binds 5900.  Keep the accepted WebSocket open (the
+# browser continues to show "מתחבר…") while that short startup window closes.
+MONITOR_CONNECT_WAIT_SECONDS = 15.0
+MONITOR_CONNECT_ATTEMPT_SECONDS = 3.0
+MONITOR_CONNECT_BACKOFF = (0.25, 0.5, 1.0, 2.0, 3.0)
 
 #: ‏#1129: ‏Origin זר (דף באתר אחר שפתח WebSocket עם ה-cookie של המנהל —
 #: ‏SameSite=lax אינו מגן על WS בכל הדפדפנים) נסגר **לפני** accept:
@@ -168,6 +181,58 @@ OpenConnection = Callable[
     [str, int],
     Awaitable[tuple[asyncio.StreamReader, asyncio.StreamWriter]],
 ]
+
+
+async def connect_machine(
+    open_connection: OpenConnection,
+    ip: str,
+    *,
+    total_seconds: float | None = None,
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Connect to a monitor that may still be starting, within one deadline.
+
+    A hello is deliberately sent before ``monitor_start`` knows the machine's
+    role, and the monitor then waits for the GUI framebuffer mirror.  Refused
+    connections in that interval are transient; timeouts and all other
+    ``OSError`` failures remain bounded by the same deadline.
+    """
+    if total_seconds is None:
+        total_seconds = MONITOR_CONNECT_WAIT_SECONDS
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + total_seconds
+    attempt = 0
+    last_error: OSError | asyncio.TimeoutError | None = None
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            assert last_error is not None
+            raise last_error
+        try:
+            return await asyncio.wait_for(
+                open_connection(ip, MONITOR_PORT),
+                timeout=min(MONITOR_CONNECT_ATTEMPT_SECONDS, remaining),
+            )
+        except (OSError, asyncio.TimeoutError) as exc:
+            last_error = exc
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise last_error
+        delay = MONITOR_CONNECT_BACKOFF[
+            min(attempt, len(MONITOR_CONNECT_BACKOFF) - 1)
+        ]
+        attempt += 1
+        await asyncio.sleep(min(delay, remaining))
+
+
+def connect_error_reason(exc: OSError | asyncio.TimeoutError) -> str:
+    """A short Hebrew reason suitable for the WebSocket close frame."""
+    if isinstance(exc, ConnectionRefusedError):
+        return "המכונה סירבה לחיבור"
+    if isinstance(exc, asyncio.TimeoutError):
+        return "ניסיון החיבור לא הסתיים"
+    if isinstance(exc, OSError) and exc.errno is not None:
+        return f"שגיאת רשת {exc.errno}"
+    return "שגיאת רשת"
 
 
 def stations_enabled(conn) -> bool:
@@ -457,7 +522,11 @@ async def bridge_browser(websocket: WebSocket, reader, writer, *,
     async def machine_to_browser() -> None:
         nonlocal last_activity, outcome
         while True:
-            payload = await reader.read(65536)
+            try:
+                payload = await reader.read(65536)
+            except (ConnectionError, OSError):
+                outcome = "machine"
+                return
             if not payload:
                 outcome = "machine"
                 return
@@ -487,6 +556,9 @@ async def bridge_browser(websocket: WebSocket, reader, writer, *,
             await websocket.close(
                 code=WS_IDLE,
                 reason=f"המוניטור נסגר — {int(idle_seconds // 60)} דק' בלי תעבורה")
+        elif downstream in done and outcome == "machine":
+            await websocket.close(code=WS_MACHINE_GONE,
+                                  reason=MACHINE_GONE_REASON)
     finally:
         # ביטול של ה-endpoint עצמו (‏#725) לא משאיר משימת ממסר יתומה.
         for task in tasks:
@@ -652,13 +724,13 @@ def create_monitor_router(
         writer: asyncio.StreamWriter | None = None
         try:
             try:
-                reader, writer = await asyncio.wait_for(
-                    open_connection(ip, MONITOR_PORT), timeout=3.0
-                )
-            except (OSError, asyncio.TimeoutError):
+                reader, writer = await connect_machine(open_connection, ip)
+            except (OSError, asyncio.TimeoutError) as exc:
                 # ‏`finally` משחרר את ההזמנה; כאן רק סוגרים את החיבור.
                 await websocket.close(
-                    code=4502, reason="שירות המוניטור במכונה אינו זמין")
+                    code=4502, reason=close_reason(
+                        "שירות המוניטור במכונה אינו זמין לאחר 15 שניות: "
+                        f"{connect_error_reason(exc)}"))
                 return
 
             try:

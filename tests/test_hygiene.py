@@ -89,6 +89,29 @@ def test_a_skipped_run_is_not_a_green_run_when_native_is_required(monkeypatch):
     assert any("gcc חסר" in line for line in verdict)
 
 
+def test_a_strict_xfail_that_failed_as_predicted_is_not_a_skipped_test(monkeypatch):
+    """pytest מדווח xfail שנכשל כ-skipped + wasxfail. הוא רץ ונכשל כצפוי
+    (‏strict הופך מעבר לכישלון), ולכן הוא אינו "טסט שלא רץ" -- אחרת כל xfail
+    מפיל את ריצת המעבדה כש-IMAGECTL_REQUIRE_NATIVE=1. אבל ``run=False``
+    נדלג ב-setup ולא רץ: הוא נשאר ברשימת הדילוגים."""
+    monkeypatch.setenv(native.ENV_FLAG, "1")
+    ran = _Report("tests/x.py::test_known_bug", "expected failure")
+    ran.wasxfail, ran.when = "tracked in #1", "call"
+    never_ran = _Report("tests/x.py::test_not_run", "[NOTRUN] expected failure")
+    never_ran.wasxfail, never_ran.when = "tracked in #1", "setup"
+    plain = _Report("tests/x.py::test_plain_skip", "gcc missing")
+    plain.when = "call"
+
+    audit = native.SkipAudit()
+    audit.record(ran)
+    assert audit.verdict() == [] and audit.skipped == {}
+
+    audit.record(never_ran)
+    audit.record(plain)
+    assert set(audit.skipped) == {"tests/x.py::test_not_run", "tests/x.py::test_plain_skip"}
+    assert audit.verdict()
+
+
 # --- ‏#295: כלי תחנת-פיתוח — דילוג מוצהר, לא אדום קבוע ------------------------
 
 
@@ -114,6 +137,26 @@ def test_a_requirement_without_a_tool_is_refused():
     """דרישה ריקה היתה מדלגת תמיד — זו הדרך שדילוג הופך למחיקה."""
     with pytest.raises(ValueError):
         native.requires_dev_workstation()
+
+
+def test_with_sbin_appends_only_the_sbin_dirs_that_exist_and_are_missing():
+    here = {"/usr/sbin", "/sbin"}.__contains__
+    assert native.with_sbin("/usr/bin:/bin", here) == "/usr/bin:/bin:/usr/sbin:/sbin"
+    assert native.with_sbin("/sbin:/usr/bin", here) == "/sbin:/usr/bin:/usr/sbin"   # not twice
+    assert native.with_sbin("/usr/bin", lambda d: False) == "/usr/bin"
+
+
+def test_a_tool_in_sbin_is_found_and_not_skipped():
+    """#1594: on the Testrunner the user `test` had no /usr/sbin in PATH, so
+    `which("sgdisk")` was None and every real-sgdisk test skipped -- a rc5
+    regression hid there. The run itself (conftest) must put sbin on PATH."""
+    path = os.environ.get("PATH", "").split(os.pathsep)
+    for d in native.SBIN:
+        if os.name != "nt" and os.path.isdir(d):
+            assert d in path, f"{d} exists and is not on the run's PATH: {path}"
+            for tool in ("sgdisk", "blockdev"):
+                if os.path.exists(os.path.join(d, tool)):
+                    assert shutil.which(tool), f"{d}/{tool} exists and which() does not find it"
 
 
 def test_a_declared_skip_is_counted_and_named_but_never_fails(monkeypatch):

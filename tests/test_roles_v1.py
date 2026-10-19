@@ -86,6 +86,7 @@ def _safe_hooks(tmp_path: Path) -> dict:
             "netcfg_read_conf": lambda name, root=None: None,
             "netcfg_local_address": lambda request: "10.10.10.8",
             "netcfg_boot_id": lambda *a: "boot-A",
+            "netcfg_foreign_manager": lambda: None,   # #1558: ifupdown, לא המכונה המריצה
             "netcfg_write_conf": fail, "netcfg_write_resolv": fail, "netcfg_apply": fail,
         },
     }
@@ -299,7 +300,9 @@ def test_the_console_hides_nothing_on_a_secondary_but_the_hierarchy():
     לפי דגלי ההיררכיה **או** דגל המהדורה (`classrooms`, זהה בכל שרת).
     דף שייתלה בדגל אחר יסתיר משהו בחיפה שרואים בת"א."""
     page = (STATIC / "index.html").read_text(encoding="utf-8")
-    caps = set(re.findall(r'data-cap="([^"]+)"', page))
+    # #1689: data-cap="a|b" = any of them (console.js splits on "|") -- every
+    # one of the alternatives is held to the same rule.
+    caps = {cap for value in re.findall(r'data-cap="([^"]+)"', page) for cap in value.split("|")}
     allowed = HIERARCHY_CAPS | EDITION_CAPS
     assert caps and caps <= allowed, caps
     assert "classrooms" in caps

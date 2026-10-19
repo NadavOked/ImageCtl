@@ -13,7 +13,7 @@
 # הוגדרה" — סוכן וקיוסק על loopback, והקונסולה אומרת מה לעשות.
 
 [Unit]
-Description=ImageCtl image server and console
+Description=ImageSrv image server and console
 After=network-online.target
 Wants=network-online.target
 
@@ -72,7 +72,12 @@ ProtectHome=yes
 # ו-dhcpcd ל-/run/dhcpcd ול-/var/lib/dhcpcd. בלעדיהם החלת כתובת מהקונסולה
 # נכשלה ב-"Read-only file system" על שרת מה-ISO (10/10). אופציונליים
 # (מקף): נתיב שעוד לא קיים בעליית היחידה לא מפיל את מרחב השמות.
-ReadWritePaths=/var/lib/imagectl /srv/imagectl/images /etc/dnsmasq.d -/etc/imagectl /etc/network/interfaces.d /etc -/srv/tftp -/run/network -/run/dhcpcd -/var/lib/dhcpcd
+#
+# ‏#1552: ‏iscsiadm (אשף האחסון, #1066) יוצר את נעילתו ב-/run/lock/iscsi
+# ושומר רשומות discovery/node ב-/var/lib/iscsi. בלעדיהם "גלה יעדים" נכשל
+# ב-"Read-only file system" בשרת חיפה (17/10). ‏/run/lock ולא /run/lock/iscsi:
+# התת-תיקייה אינה קיימת עד ההרצה הראשונה, ומקף היה מדלג עליה בשקט.
+ReadWritePaths=/var/lib/imagectl /srv/imagectl/images /etc/dnsmasq.d -/etc/imagectl /etc/network/interfaces.d /etc -/srv/tftp -/run/network -/run/dhcpcd -/var/lib/dhcpcd -/run/lock -/var/lib/iscsi
 PrivateTmp=yes
 
 [Install]

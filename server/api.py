@@ -19,7 +19,7 @@ from boot.grub_menu import normalize_mac as lenient_mac
 
 from . import (agent_loops, disk_events, drawer_slots, foreign_vlan, identity, inventory,
                login_guard, probe, pulls, registry, reports, shrink_records, users)
-from .auth import COOKIE_NAME, read_session
+from .auth import COOKIE_NAME, PURPOSE_KIOSK, read_session
 from .db import journal
 from . import direct, gui_failure, local_clone_report, room_console, smart_ask
 from .hello import (build_answer, hello_payload_oversized, login_required, off_deploy_vlan,
@@ -385,7 +385,7 @@ def create_agent_router(ctx: ServerContext,
         # follow it -- without a second password. A cookie that does not read
         # back as a session is no session: the password road below decides.
         gui_session = read_session(ctx.conn, request.cookies.get(COOKIE_NAME))
-        if gui_session is not None and gui_session.purpose:
+        if gui_session is not None and gui_session.purpose not in ("", PURPOSE_KIOSK):
             gui_session = None     # mid password change / MFA enrollment: not a session for work
         if gui_session is not None:
             username = gui_session.username

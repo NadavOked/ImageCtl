@@ -16,9 +16,12 @@ static void hex_of(Rgb c, char *out, size_t n) {
     snprintf(out, n, "#%02X%02X%02X", (int)(c.r * 255 + 0.5), (int)(c.g * 255 + 0.5), (int)(c.b * 255 + 0.5));
 }
 
+/* #1580 (Nadav 17/10, "like Clonezilla"): SMART says the disk is faulty (fail)
+ * = red -- written only after the red button, no answer skips; failed in the
+ * previous clone (failed_last) = orange, "נסה שוב" writes; old warn = orange. */
 int smart_level(const char *smart) {
-    if (!strcmp(smart, "failed_last")) return 2;
-    if (!strcmp(smart, "fail") || !strcmp(smart, "warn")) return 1;
+    if (!strcmp(smart, "fail")) return 2;
+    if (!strcmp(smart, "failed_last") || !strcmp(smart, "warn")) return 1;
     return 0;
 }
 
@@ -32,9 +35,23 @@ const char *smart_he(const char *smart) {
     if (!strcmp(smart, "pending")) return "ממתין להכרעה";
     if (!strcmp(smart, "passed")) return "תקין";
     if (!strcmp(smart, "failed_last")) return "נכשל בשיכפול הקודם";
-    if (!strcmp(smart, "fail")) return "נכשל";
+    if (!strcmp(smart, "fail")) return "SMART תקול";
     if (!strcmp(smart, "warn")) return "אזהרה";
     return smart;
+}
+
+/* #1742 (Nadav 18/10): a read-only disk is red with SMART's own red (fail,
+ * reason "readonly" -- smart.sh smart_ro_check), and says why: not "SMART תקול". */
+/* #1732/#1742: the sentence of the refusal to write on a red disk -- by its
+ * reason: a read-only disk did not fail SMART (smart.sh SMART_RO_HE / SMART_RED_HE) */
+const char *red_refusal_he(const char *reason) {
+    return reason && !strcmp(reason, "readonly") ? "הדיסק במצב קריאה בלבד"
+         : "SMART נכשל — לא כותבים על הדיסק הזה; אפשר להעתיק ממנו או לחלץ לשרת";
+}
+
+const char *smart_he_why(const char *smart, const char *reason) {
+    if (smart && !strcmp(smart, "fail") && reason && !strcmp(reason, "readonly")) return smart_reason_text(reason);
+    return smart_he(smart);
 }
 
 /* The prompt's reason is the agent's code word (smart.sh: smart_classify /
@@ -43,6 +60,8 @@ const char *smart_he(const char *smart) {
  * SMART warning window (smartdlg.c, 16/10). */
 const char *smart_reason_text(const char *reason) {
     if (!reason || !reason[0] || !strcmp(reason, "ok")) return "";
+    /* #1742: /sys/block/<d>/ro = 1, or the server's cause of a refused write (EPERM/EROFS) */
+    if (!strcmp(reason, "readonly")) return "הדיסק במצב קריאה בלבד";
     /* #1366: the three reasons of fail -- what stops an HP BIOS on "press F1" */
     if (!strcmp(reason, "health_failed")) return "ה-BIOS יעצור ב-F1 — SMART: בדיקת הבריאות נכשלה";
     if (!strcmp(reason, "pending_sectors")) return "ה-BIOS יעצור ב-F1 — SMART: סקטורים ממתינים (197)";
@@ -51,6 +70,12 @@ const char *smart_reason_text(const char *reason) {
     if (!strcmp(reason, "no_smartctl")) return "smartctl חסר ב-initramfs";
     if (!strcmp(reason, "timeout")) return "smartctl לא ענה בזמן — לא נבדק";   /* #1367 */
     if (!strcmp(reason, "pending")) return "ממתין להכרעה";
+    /* #1503: failed_last carries the server's cause instead (ata_cause.py CAUSES);
+     * the words are the console's FAILURE_CAUSE_HE, which this was showing in English */
+    if (!strcmp(reason, "cable")) return "סיבה: כבל/חריץ";
+    if (!strcmp(reason, "disk")) return "סיבה: הדיסק";
+    if (!strcmp(reason, "removed")) return "סיבה: המגירה נשלפה";   /* ata_cause.py, owner 17/10 */
+    if (!strcmp(reason, "unclassified")) return "סיבה: לא סווג";
     return reason;
 }
 
@@ -83,8 +108,8 @@ void unmapped_label(const char *name, const char *conn, int port, const char *de
 
 int cloner_bay_count(const State *s) {
     if (s->ncbays > 0) return s->ncbays;
-    int bays = 3;
-    for (int p = 4; p <= MAX_DRAWERS; p++)
+    int bays = s->drawer_count > 0 ? s->drawer_count : 3;
+    for (int p = bays + 1; p <= MAX_DRAWERS; p++)
         if (s->cslot_names[p - 1][0] || idle_for_port(s, p)) bays = p;
     return bays;
 }
@@ -142,6 +167,12 @@ void cloner_port_label(const State *s, int port, char *out, size_t n) {
 
 int room_selectable(const RoomDrawer *d) {
     return d->present && d->port >= 1 && eff_drawer(d->drawer, d->port) > 0;
+}
+
+/* #1732 (Nadav 18/10): a red drawer (SMART fail) is drawn in its colour but is
+ * never a target -- never picked, never sent; the server refuses it too (room.py). */
+int room_pickable(const RoomDrawer *d) {
+    return room_selectable(d) && smart_level(d->smart) < 2;
 }
 
 void room_drawer_label(const Machine *m, const RoomDrawer *d, char *out, size_t n) {

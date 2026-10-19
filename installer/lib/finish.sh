@@ -55,7 +55,7 @@ GRUB_TIMEOUT=3
 set -eu
 root_uuid=$(grub-probe --target=fs_uuid /)
 cat <<EOF
-menuentry "ImageCtl recovery (text console)" {
+menuentry "ImageSrv recovery (text console)" {
     search --no-floppy --fs-uuid --set=root $root_uuid
     linux /vmlinuz root=UUID=$root_uuid ro nomodeset systemd.unit=multi-user.target
     initrd /initrd.img
@@ -84,12 +84,13 @@ UUID=$_wh_esp_uuid /boot/efi vfat umask=0077 0 1
 ::1 localhost ip6-localhost ip6-loopback
 "
     # #1447: Debian's default is Etc/UTC; the DCUI clock reads the OS zone.
-    # Install Israel's zone before enabling time synchronization.
-    must_run timezone-missing "Asia/Jerusalem is not in the target's zoneinfo" \
-        chroot "$TARGET" test -f /usr/share/zoneinfo/Asia/Jerusalem
+    # The zone the person chose (default Asia/Jerusalem), before time sync;
+    # firstboot hands it to the server's setting (setup-boot-server --timezone).
+    must_run timezone-missing "$ANSWER_TIMEZONE is not in the target's zoneinfo" \
+        chroot "$TARGET" test -f "/usr/share/zoneinfo/$ANSWER_TIMEZONE"
     must_run timezone "could not set the server timezone" \
-        chroot "$TARGET" ln -sf /usr/share/zoneinfo/Asia/Jerusalem /etc/localtime
-    write_target 0644 /etc/timezone "Asia/Jerusalem
+        chroot "$TARGET" ln -sf "/usr/share/zoneinfo/$ANSWER_TIMEZONE" /etc/localtime
+    write_target 0644 /etc/timezone "$ANSWER_TIMEZONE
 "
     # Journal ordering, TLS validity, and session expiry all depend on a sane
     # clock. The package is in the offline ISO pool; enabling it here makes
@@ -108,6 +109,7 @@ servers_mask=$ANSWER_SERVERS_MASK
 servers_gw=$ANSWER_SERVERS_GW
 servers_dns=$ANSWER_SERVERS_DNS
 hostname=$ANSWER_HOSTNAME
+timezone=$ANSWER_TIMEZONE
 admin_user=$ANSWER_ADMIN_USER
 "
     write_target_secret /etc/imagectl/answers.secret "$ANSWER_ADMIN_PASS"

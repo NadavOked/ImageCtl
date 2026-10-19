@@ -11,8 +11,7 @@
 # State lives in files, so the reporter can run as a background process:
 #   $RUN_DIR/state                 top-level state word
 #   $RUN_DIR/targets/<dev>/state   waiting/writing/verifying/done/failed
-#   $RUN_DIR/targets/<dev>/base    compressed bytes from finished partitions
-#   $RUN_DIR/targets/<dev>/bytes.raw   pv output for the current partition
+#   $RUN_DIR/targets/<dev>/bytes.<n> per-partition counters; bytes.raw points at current
 #   $RUN_DIR/targets/<dev>/counter the file the live counter is read from
 #   $RUN_DIR/targets/<dev>/total   total compressed bytes for the whole image
 #   $RUN_DIR/targets/<dev>/error   error text (only when failed)
@@ -35,13 +34,14 @@ target_init() {
     _t="$RUN_DIR/targets/$1"
     mkdir -p "$_t"
     echo "waiting" > "$_t/state"
-    echo 0 > "$_t/base"
-    : > "$_t/bytes.raw"
+    rm -f "$_t/base" "$_t/bytes.raw" "$_t"/bytes.[0-9]*
+    : > "$_t/bytes.0"; ln -s "bytes.0" "$_t/bytes.raw"; echo 0 > "$_t/counter.index"
     echo "$_t/bytes.raw" > "$_t/counter"
     echo "$2" > "$_t/total"
     rm -f "$_t/error" "$_t/crc_delta" "$_t/ata_log" "$_t/ata_log.json" "$_t/ident" "$_t/evidence_only" \
         "$_t/boot_ca_state" "$_t/boot_ca_reason" "$_t/write_check_state" "$_t/write_check_reason" "$_t/write_check_mbps" \
-        "$_t/write_started" "$_t/ntfs_boot"
+        "$_t/write_started" "$_t/ntfs_boot" "$_t/dead"
+    target_ident_keep "$1"   # #1602: serial|port|ata while it is still in sysfs (failmark.sh)
     # ‏#874: מאיפה dmesg נספר בכשל -- ריק (אין /proc/uptime) = מההתחלה.
     cut -d' ' -f1 "$SYSROOT/proc/uptime" > "$_t/since" 2>/dev/null
 }
@@ -52,13 +52,12 @@ target_write_started() {
     [ -n "$_tw_s" ] || log "$1: no serial -- a failure here keeps its GPT (#1427)"   # loop/VM: no wipe without identity
     mkdir -p "$RUN_DIR/targets/$1" && printf '%s\n' "$_tw_s" > "$RUN_DIR/targets/$1/write_started"
 }
-
 target_counter() {
-    # $1 = dev, $2 = the file the live counter is appended to (pv format:
-    # a decimal number per line, the last one wins).
-    echo "$2" > "$RUN_DIR/targets/$1/counter"
+    # $2 receives pv-format lines; it points at this partition's stable file.
+    _tc_t="$RUN_DIR/targets/$1"; _tc_i=$(cat "$_tc_t/counter.index" 2>/dev/null); _tc_i=${_tc_i:-0}
+    rm -f "$2"; ln -s "$_tc_t/bytes.$_tc_i" "$2"
+    echo "$2" > "$_tc_t/counter"
 }
-
 _counter_of() {
     _c=$(cat "$RUN_DIR/targets/$1/counter" 2>/dev/null)
     [ -n "$_c" ] || _c="$RUN_DIR/targets/$1/bytes.raw"
@@ -90,20 +89,22 @@ _last_number() {
 }
 
 target_bytes() {
-    # $1 = dev. Finished partitions + the live pv counter.
-    _t="$RUN_DIR/targets/$1"
-    _base=$(_last_number "$_t/base")
-    _cur=$(_last_number "$(_counter_of "$1")")
-    [ -n "$_base" ] || _base=0
-    [ -n "$_cur" ] || _cur=0
-    echo $((_base + _cur))
+    # Sum the stable, per-partition counters (#1657).
+    _t="$RUN_DIR/targets/$1"; _sum=0; _n=
+    for _f in "$_t"/bytes.[0-9]*; do
+        [ -f "$_f" ] || continue
+        _n=$(_last_number "$_f"); _sum=$((_sum + ${_n:-0}))
+    done
+    echo "$_sum"
 }
 
 target_partition_done() {
-    # $1 = dev. Fold the finished partition's counter into the base.
+    # Point the next writer at a new counter; keep the old one.
     _t="$RUN_DIR/targets/$1"
-    echo "$(target_bytes "$1")" > "$_t/base"
-    : > "$(_counter_of "$1")"
+    _i=$(cat "$_t/counter.index" 2>/dev/null); _i=$((${_i:-0} + 1))
+    : > "$_t/bytes.$_i"; _c=$(_counter_of "$1")
+    ln -s "$_t/bytes.$_i" "$_c.next" && mv "$_c.next" "$_c"
+    echo "$_i" > "$_t/counter.index"
 }
 
 _source_progress_json() {
@@ -187,8 +188,8 @@ build_progress() {
         _who=$(printf '"session_id":"%s"' "$1")
     fi
     # #720: driver staging outcome (postdeploy.sh); absent = did not run, not no_match.
-    _drivers=""
-    [ -s "$RUN_DIR/drivers.json" ] && _drivers=",\"drivers\":$(tr -d '\n' < "$RUN_DIR/drivers.json")"
+    _drivers=""; [ -s "$RUN_DIR/udp_drops.json" ] && _drivers=",\"udp_drops\":$(tr -d '\n' < "$RUN_DIR/udp_drops.json")"   # 17/10 rate policy; absent = not read
+    [ -s "$RUN_DIR/drivers.json" ] && _drivers="$_drivers,\"drivers\":$(tr -d '\n' < "$RUN_DIR/drivers.json")"
     [ -n "${3:-}" ] && [ -s "$RUN_DIR/stage" ] && _drivers="$_drivers,\"stage\":\"$(json_escape "$(cat "$RUN_DIR/stage")")\""   # #980 §4: task reports only
     printf '{%s,"mac":"%s","state":"%s","targets":[%s]%s}' \
         "$_who" "$2" "$_state" "$_targets" "$_drivers"
@@ -236,14 +237,14 @@ progress_loop() {
     while :; do
         progress_send "$1" "$2" "$3" "${4:-}" || true
         # ‏#557: `|| true` נשאר — דיווח שיחזור בעוד שתי שניות אינו חייב
-        # תשובה. אבל **סבב שנסגר לא יפתח את עצמו מחדש**, ולולאה
-        # שממשיכה עליו היא מכונה שלא תצטרף לגל הבא. נמדד 08/09:
-        # שתי מכונות דיווחו 50 דקות על סבב סגור, ולכן נשארו בחוץ.
+        # תשובה. אבל **סבב שנסגר לא יפתח את עצמו מחדש** (08/09: 50 דקות על
+        # סבב סגור). ברזל 17/10: והמסלול הראשי חייב לדעת -- הוא המשיך לכתוב
+        # מול שולח שכבר יצא. הסמן ב-$RUN_DIR עוצר אותו (drawers.sh).
         if progress_refused_for_good; then
             log "progress: the server says this session is closed -- stopping"
-            return 0
+            printf '%s\n' "$1" > "$RUN_DIR/session-closed"; return 0
         fi
-        sleep "${PROGRESS_INTERVAL_S:-2}"
+        cancel_from_reply; sleep "${PROGRESS_INTERVAL_S:-2}"   # #1386: "בטל דיסק זה" (cancel.sh)
     done
 }
 

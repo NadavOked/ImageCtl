@@ -1,7 +1,7 @@
-/* ImageCtl — קבוצות הסניפים (#655/#727), לשונית "קבוצות" בדף "סניפים"
+/* ImageCtl — קבוצות שרתי המשנה (#655/#727), לשונית "קבוצות" בדף "שרתי משנה"
    (#954 גל 7, branches.js). ניהול הקבוצות עצמן (יצירה/שם/סדר/מחיקה)
-   בלבד — רשומות המשניים (שם/קבוצה/השבתה/מחיקה) עברו לטבלה בלשונית
-   "שרתים" של branches.js, ואין כאן עוד "הוספת משני": הוספה היא
+   בלבד — רשומות שרתי המשנה (שם/קבוצה/השבתה/מחיקה) עברו לטבלה בלשונית
+   "שרתים" של branches.js, ואין כאן עוד "הוספת שרת משנה": הוספה היא
    enrollment (openEnrollSheet ב-branches.js). משתמש ב-api/post/put/del/
    sheet/toast/esc/confirmSheet/enableLongPressReorder מ-console.js. */
 "use strict";
@@ -11,7 +11,7 @@ function renderBranchGroups(groups, afterChange) {
     <div class="group-head">
       <span class="caret">≡</span>
       <h3>${esc(g.label)}</h3>
-      <span class="pill">${g.nodes} משניים</span>
+      <span class="pill">${g.nodes} שרתי משנה</span>
       <div class="spacer">
         <button class="btn" data-grp-rename="${esc(g.id)}">שינוי שם</button>
         <button class="btn danger" data-grp-del="${esc(g.id)}"
@@ -23,7 +23,7 @@ function renderBranchGroups(groups, afterChange) {
 
   const addBtn = $("#add-branch-group");
   if (addBtn) addBtn.onclick = () => sheet({
-    title: "קבוצת סניפים חדשה",
+    title: "קבוצת שרתי משנה חדשה",
     fields: [{ id: "label", label: "שם הקבוצה", placeholder: "למשל: צפון" }],
     submitLabel: "צור קבוצה",
     onSubmit: async (v) => { await post("/storage-node-groups", { label: v.label }); await afterChange(); },
@@ -42,7 +42,7 @@ function renderBranchGroups(groups, afterChange) {
     confirmSheet("למחוק את הקבוצה?", b.dataset.name,
       "מחיקת הקבוצה",
       async () => { await del(`/storage-node-groups/${b.dataset.grpDel}`); await afterChange(); },
-      [["b", "הקבוצה תימחק"], ["ok", `${esc(b.dataset.count)} המשניים שבה יישארו, בלי קבוצה`]]));
+      [["b", "הקבוצה תימחק"], ["ok", `${esc(b.dataset.count)} שרתי המשנה שבה יישארו, בלי קבוצה`]]));
 
   // סדר הקבוצות בגרירה — רק כשיש יותר מאחת.
   if (groups.length > 1) {

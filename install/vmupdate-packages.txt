@@ -18,3 +18,4 @@ partclone           # הזרם, לשני הכיוונים
 zstd
 jq                  # json_get של הסוכן
 ntfs-3g             # ntfsresize/ntfsfix (grow בפתיחה, ‏dirty flag בשמירה)
+dmsetup             # #1491: הכיווץ בשמירה — על עותק copy-on-write, לא על דיסק ה-VM

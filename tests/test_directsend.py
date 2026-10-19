@@ -97,6 +97,7 @@ TASK = "tsk_715"
 PARTCLONE = (
     '#!/bin/sh\n'
     'n=$(cat "$PCL_COUNT" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$PCL_COUNT"\n'
+    '[ -z "${PCL_ARGV:-}" ] || echo "partclone $*" >> "$PCL_ARGV"\n'   # #1171: the node each read read
     'b="$PCL_BYTE"; [ "$n" -ge 2 ] && [ -n "$PCL_SECOND" ] && b="$PCL_SECOND"\n'
     'head -c 4096 /dev/zero | tr "\\000" "$b"\n'
     'exit 0\n'
@@ -169,7 +170,7 @@ TWO_PARTITIONS = (
 
 
 def direct_run(tmp_path, *, answer=None, env=None, udp_silent=False, partitions=1,
-               timeout=45, udp_sender=None):
+               timeout=45, udp_sender=None, extra_stubs=None, pre="", call="direct_send_run"):
     box = tmp_path / "box"
     dev, run = box / "dev", box / "run"
     dev.mkdir(parents=True); run.mkdir(parents=True)
@@ -192,7 +193,7 @@ def direct_run(tmp_path, *, answer=None, env=None, udp_silent=False, partitions=
     exports = "".join(f"export {k}={v!r}; " for k, v in envs.items())
     stubs = {"sgdisk": TWO_PARTITIONS if partitions == 2 else ONE_PARTITION,
              "partclone.dd": PARTCLONE, "udp-sender": udp_sender or UDP_SENDER,
-             "curl": CURL_RECORD}
+             "curl": CURL_RECORD, **(extra_stubs or {})}
     if shutil.which("jq") is None:
         stubs["jq"] = JQ_STUB
     libs = " ".join(f". {posix(AGENT)}/lib/{n}.sh;" for n in (
@@ -202,7 +203,8 @@ def direct_run(tmp_path, *, answer=None, env=None, udp_silent=False, partitions=
         make_stubs(box / "stubs", stubs) + exports + libs
         + f' node_is_block() {{ grep -qxF "$1" {posix(nodes)!r} 2>/dev/null; }}; '
         f'send_hello() {{ cp {posix(box / "answer.json")!r} "$RESP"; }}; '
-        f"direct_send_run {TASK} sda > {posix(box)}/direct.out 2>&1; "
+        + pre   # #1171: after the libraries, so it can replace one of their functions
+        + f"{call} {TASK} sda > {posix(box)}/direct.out 2>&1; "
         'echo "rc=$?"; '
         f"build_progress '' {MAC} {TASK} > {posix(box)}/progress.json",
         timeout=timeout,
@@ -281,3 +283,33 @@ def test_a_closed_wave_or_a_task_that_is_no_longer_ours_does_not_send(tmp_path):
         assert out.strip().endswith("rc=1"), out
         assert not (box / "udp.argv").exists(), name
         assert "הגל לא התחיל" in _progress(box)["targets"][0]["error"]   # #1503
+
+
+#: ‏partclone שהזרם שלו הוא שורת הפקודה שקיבל: שתי קריאות עם דגלים שונים
+#: מייצרות בייטים שונים -- בדיוק כמו partclone אמיתי עם ובלי ‎-a0 (#1574).
+PARTCLONE_ARGV = (
+    '#!/bin/sh\n'
+    'printf "%s\\n" "$*" >> "$PCL_ARGS"\n'
+    'printf "%s\\n" "$*"\n'
+    'head -c 4096 /dev/zero\n'
+    'exit 0\n'
+)
+
+
+def test_both_reads_run_partclone_with_the_same_flags(tmp_path):
+    """‏#1574, ברזל 17/10: ‏#1472 נתן לקריאה הראשונה (המניפסט) ‏`-a0 -z 524288`
+    ולשנייה (השידור) את ברירות המחדל של partclone. ‏partclone עם checksum
+    וחוצץ אחרים הוא זרם אחר, ולכן **כל** הפצה ישירה נכשלה במחיצה 1 עם
+    "הבייטים שנשלחו שונים מהמניפסט". כאן partclone מזויף מזרים את ה-argv
+    שלו -- הקריאות זהות רק אם הדגלים זהים.
+
+    **בקרה שלילית:** על directsend.sh/capture.sh של main ‏rc=1 והשורות שונות."""
+    args = tmp_path / "pcl.args"
+    box, run, out = direct_run(tmp_path, env={"PCL_ARGS": posix(args)},
+                               extra_stubs={"partclone.fat": PARTCLONE_ARGV},
+                               pre="_fs_of() { echo vfat; }; ")
+    lines = args.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2, lines
+    assert lines[0] == lines[1], lines
+    assert "-a0" in lines[0].split(), lines   # #1472's flags kept, in both
+    assert out.strip().endswith("rc=0"), out + (run / "agent.log").read_text("utf-8", "replace")

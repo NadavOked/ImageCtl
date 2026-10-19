@@ -90,9 +90,9 @@ test('drawer disk table: drawers 1..N by the mapping, then drives outside it (na
   const rows=[...sec.matchAll(/<tr class="([^"]*)" data-slot="([^"]*)">([^]*?)<\/tr>/g)].map(m=>[m[1],m[2],m[3]]);
   assert.deepEqual(rows.map(r=>[r[0],r[1]]),[['','1'],['vacant','2'],['','3'],['unmapped',''],['unmapped','']],'SATA 0..2 by the convention (2 empty), then NVMe and USB, which have no connection key');
   const [s0,s1,s2,nv,usb]=rows.map(r=>r[2]);
-  assert.match(s0,/<b>דיסק 1<\/b>/); assert.match(s0,/selected>SATA 0</); assert.match(s0,/256GB[^]*870/);
-  assert.match(s1,/<b>האמצעית<\/b>/); assert.match(s1,/selected>SATA 1</); assert.match(s1,/ריק/);
-  assert.match(s2,/<b>דיסק 3<\/b>/); assert.match(s2,/selected>SATA 2</);
+  assert.match(s0,/<b>דיסק 1<\/b>/); assert.match(s0,/title="SATA 0" selected>דיסק 1</); assert.match(s0,/256GB[^]*870/);
+  assert.match(s1,/<b>האמצעית<\/b>/); assert.match(s1,/title="SATA 1" selected>דיסק 2</); assert.match(s1,/ריק/);
+  assert.match(s2,/<b>דיסק 3<\/b>/); assert.match(s2,/title="SATA 2" selected>דיסק 3</);
   assert.match(nv,/<b>דיסק מיוחד \(לא ממופה\)<\/b>/,'#704 name kept; no number guessed'); assert.match(nv,/NVMe — אין כתובת PCI/);
   assert.match(usb,/<b>USB \(לא ממופה\)<\/b>/); assert.doesNotMatch(usb,/renameSlot/,'no stable key → no rename');
   assert.match(s1,new RegExp(`renameSlot\\('${encodeURIComponent(C2)}','sata%3A2'\\)`));
@@ -108,7 +108,7 @@ test('drawer disk table: marketing size and vendor; SMART is a chip in its own c
   const html=diskTab(run(`machineDrawerHtml(findMachine('${C2}'))`));
   assert.match(html,/256GB<\/bdi><\/span> <span class="cap">Samsung<\/span><\/td><td><span class="n-chip">תקין<\/span>/);
   assert.match(html,/500GB<\/bdi><\/span> <span class="cap">Western<\/span><\/td><td><span class="n-chip w">אזהרה<\/span>/);
-  assert.match(html,/1TB<\/bdi><\/span> <span class="cap">Kingston<\/span><\/td><td><span class="n-chip w">F1<\/span>/,'#1366: fail = the F1 stop, orange');
+  assert.match(html,/1TB<\/bdi><\/span> <span class="cap">Kingston<\/span><\/td><td><span class="n-chip d">SMART תקול<\/span>/,'#1580: SMART fail is red');
 });
 
 test('build machines use the same table and mapping, without slot rename controls', () => {
@@ -116,7 +116,7 @@ test('build machines use the same table and mapping, without slot rename control
   run(`GROUPS[0].role='build'`);
   const html=diskTab(run(`machineDrawerHtml(findMachine('${C2}'))`));
   assert.match(html,/<th>דיסק<\/th><th>חיבור<\/th><th>גודל<\/th><th>SMART<\/th>/);
-  assert.match(html,/selected>SATA 0</); assert.match(html,/256GB[^]*870/); assert.match(html,/slotEditAdd\(/,'#1485: the count and mapping for build machines too');
+  assert.match(html,/title="SATA 0" selected>דיסק 1</); assert.match(html,/256GB[^]*870/); assert.match(html,/slotEditAdd\(/,'#1485: the count and mapping for build machines too');
   assert.doesNotMatch(html,/renameSlot/);
 });
 

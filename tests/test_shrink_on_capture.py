@@ -518,14 +518,19 @@ def test_nothing_to_shrink_asks_nobody_and_writes_nothing(tmp_path):
     assert part(manifest(run), 3)["size_bytes"] == WIN_SECTORS * 512
 
 
-def test_direct_send_never_shrinks(tmp_path):
-    """‏#715: הקריאה השנייה משווה sha256 לראשונה; מחיצה שהוחזרה ביניהן
-    אינה אותם בייטים. בשידור ישיר הדיסק נשאר קריאה-בלבד, כמו שהמסך מבטיח."""
+def test_direct_send_takes_only_the_tail_and_never_writes_the_source(tmp_path):
+    """‏#715: הקריאה השנייה משווה sha256 לראשונה, והדיסק נשאר קריאה-בלבד, כמו
+    שהמסך מבטיח. ‏#1171: שידור ישיר לוקח רק את הזנב של #1202 (לא את המרווח
+    הרגיל), אחרי "כווץ ושלח" (SAY_YES), על עותק **אחד** בזיכרון ששתי הקריאות קוראות --
+    tests/test_direct_tail_1171.py. גודל הדיסק לא ידוע כאן, ולכן הזנב נלקח."""
     box, run, out = capture_run(tmp_path, stubs=stubs(), shell_pre=FS_MAP + SAY_YES,
                                 env={"CAPTURE_SINK": "discard"})
     assert out.strip().endswith("rc=0"), out
-    assert not [s for s in order(run) if s.startswith("ntfsresize")]
-    assert part(manifest(run), 3)["size_bytes"] == WIN_SECTORS * 512
+    steps, tail = order(run), 64 << 20
+    assert source_writes(steps, box) == [], source_writes(steps, box)
+    assert [s for s in steps if s.startswith("ntfsresize -s")] == \
+        [f"ntfsresize -s {WIN_SECTORS * 512 - tail} --no-progress-bar {posix(box / 'dev')}/mapper/lc-src-3"], steps
+    assert part(manifest(run), 3)["size_bytes"] == WIN_SECTORS * 512 - tail
 
 
 def test_a_hibernated_disk_is_refused_before_the_shrink_is_even_measured(tmp_path):
@@ -840,10 +845,10 @@ def test_on_the_target_c_is_stretched_and_d_moves_to_the_tail(tmp_path):
     assert rc == "rc=0", (rc, calls)
     assert marker == "3|ntfs", marker
     d_sectors = part(m, 4)["size_bytes"] // 512
-    assert calls[0].startswith("-d 4 "), calls
-    assert calls[1].startswith(__import__("test_agent").tail_n(4, d_sectors)[0] + " "), "‏D: נבראת בזנב, בגודל שהמניפסט מצהיר"
-    assert calls[2].startswith(f"-a 1 -d 3 -n 3:{WIN_START}:0 "), "‏C: נשארת בתחילתה ונמתחת"
-    assert len(calls) == 3, calls
+    call = __import__("test_agent").one_call(calls)   # #1714: one sgdisk call
+    assert call.startswith("-a 1 -d 4 " + __import__("test_agent").tail_n(4, d_sectors)[0] + " "), \
+        "‏D: נבראת בזנב, בגודל שהמניפסט מצהיר"
+    assert f" -d 3 -n 3:{WIN_START}:0 " in call, "‏C: נשארת בתחילתה ונמתחת"
 
 
 # --- הנעילות המבניות ------------------------------------------------------------

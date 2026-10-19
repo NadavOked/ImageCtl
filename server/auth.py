@@ -18,7 +18,7 @@ import hmac
 import sqlite3
 import time
 
-from .db import get_setting
+from .db import _settle, _write_lock, get_setting, writing
 
 COOKIE_NAME = "imagectl_session"
 #: ‏#1179: הזהות של בקשה שהשרת הראשי שלח בערוץ הבין-שרתי (8443) — ``(user, role)``.
@@ -29,6 +29,15 @@ PEER_SCOPE_KEY = "imagectl.peer_user"
 TTL_SECONDS = 12 * 3600
 PURPOSE_PWCHANGE = "pwchange"
 PURPOSE_MFAENROLL = "mfaenroll"
+#: ‏#1340: עוגייה שהקיוסק (פורט הסוכן, ‎:8080) הנפיק — סיסמה בלבד, בלי MFA,
+#: ב-HTTP בוילן ההפצה. תקפה בפורט הסוכן; הקונסולה (``CONSOLE_APP_FLAG``) מסרבת לה.
+PURPOSE_KIOSK = "kiosk"
+#: ‏#1340: ‏``app.state`` של אפליקציית הקונסולה (‎:8081) נושא את הדגל הזה, ושם
+#: עוגיית קיוסק אינה session; של אפליקציית הסוכן (‎:8080) — ``KIOSK_APP_FLAG``,
+#: ושם הכניסה מנפיקה עוגיית קיוסק. ‏``create_app`` המשולב (בדיקות) אינו נושא
+#: אף אחד מהם, ושם ההתנהגות היא הישנה — הפיצול נבדק על שתי האפליקציות.
+CONSOLE_APP_FLAG = "refuses_kiosk_sessions"
+KIOSK_APP_FLAG = "issues_kiosk_sessions"
 
 SECRET_KEY = "console_secret"
 #: ‏`db._initialize` זורע 32 בייטים. פחות מ-16 אינו סוד, הוא שריד.
@@ -63,6 +72,15 @@ def _enforce_purpose(request, session: Session) -> None:
     # ‏#1127: משתמש שמתחרט באמצע החלפת סיסמה/רישום MFA חייב לוכל להתנתק —
     # ‏403 על logout השאיר אותו כלוא במצב הביניים.
     if method == "POST" and path.rstrip("/") == "/api/console/logout":
+        return
+    if session.purpose == PURPOSE_KIOSK:
+        # ‏#1340: הקיוסק נכנס בסיסמה בלבד וב-HTTP. בקונסולה זו אינה כניסה —
+        # 401 ולא 403: הדפדפן נשלח למסך הכניסה של הקונסולה, עם MFA.
+        # ‏deploy מקבל את הסירוב של #1073 כמו בכל נתיב קונסולה.
+        if getattr(request.app.state, CONSOLE_APP_FLAG, False):
+            if session.role == "deploy":
+                raise HTTPException(403, DEPLOY_NO_CONSOLE_HE)
+            raise HTTPException(401, "לא מחובר")
         return
     if session.purpose == PURPOSE_PWCHANGE:
         if not (method == "POST" and path.rstrip("/") == "/api/console/me/password"):
@@ -132,6 +150,12 @@ def console_only(conn: sqlite3.Connection):
             return
         token = connection.cookies.get(COOKIE_NAME)
         found = check(conn, token)
+        if found is None:
+            # ‏#1340: עוגיית קיוסק של deploy — אותו סירוב בדיוק כמו קודם. של
+            # admin — עוברת לנתיב, ו-``current_user`` מחזיר 401 (לא "מחובר").
+            kiosk = read_session(conn, token)
+            if kiosk is not None and kiosk.purpose == PURPOSE_KIOSK                     and kiosk.role == "deploy":
+                raise HTTPException(403, DEPLOY_NO_CONSOLE_HE)
         if found is not None and found[1] == "deploy":
             raise HTTPException(403, DEPLOY_NO_CONSOLE_HE)
         if found is not None:
@@ -226,25 +250,50 @@ def read_session(conn: sqlite3.Connection, token: str | None) -> Session | None:
             epoch = int(epoch_s or 0)
         except ValueError:
             return None
-        if purpose not in ("", PURPOSE_PWCHANGE, PURPOSE_MFAENROLL):
+        if purpose not in ("", PURPOSE_PWCHANGE, PURPOSE_MFAENROLL, PURPOSE_KIOSK):
             return None
     try:
         if int(expiry) < time.time():
             return None
     except ValueError:
         return None
+    # ‏#1633: עוגייה שיצאה ב-logout — באותה שאילתה, לא SELECT נוסף לכל בקשה.
     row = conn.execute(
-        "SELECT username, role, disabled_at, auth_epoch FROM users"
-        " WHERE username = ? COLLATE NOCASE",
-        (username,),
+        "SELECT username, role, disabled_at, auth_epoch,"
+        " EXISTS (SELECT 1 FROM revoked_tokens WHERE token_hash = ?) AS revoked"
+        " FROM users WHERE username = ? COLLATE NOCASE",
+        (_token_hash(token), username),
     ).fetchone()
     if row is None or not row["role"]:
         return None
-    if row["disabled_at"]:
+    if row["disabled_at"] or row["revoked"]:
         return None
     if epoch < int(row["auth_epoch"] or 0):
         return None
     return Session(row["username"], row["role"], purpose)
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def revoke(conn: sqlite3.Connection, token: str | None) -> None:
+    """‏#1633: logout מבטל את העוגייה הזו בשרת — רק אותה, לא את שאר
+    הדפדפנים של המשתמש (זה ``users.bump_auth_epoch``). השורה נשמרת עד
+    התפוגה שבעוגייה, ואז נמחקת; עוגייה שאינה מפוענחת אינה נרשמת."""
+    if not token or token.count("|") not in (3, 4):
+        return
+    try:
+        expires = float(token.rpartition("|")[0].split("|")[2])
+    except (IndexError, ValueError):
+        return
+    _settle(conn)
+    with _write_lock, writing(conn):
+        conn.execute("DELETE FROM revoked_tokens WHERE expires_at < ?", (time.time(),))
+        conn.execute(
+            "INSERT OR REPLACE INTO revoked_tokens (token_hash, expires_at) VALUES (?, ?)",
+            (_token_hash(token), expires),
+        )
 
 
 def check(conn: sqlite3.Connection, token: str | None) -> tuple[str, str] | None:

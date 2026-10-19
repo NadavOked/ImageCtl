@@ -1,32 +1,34 @@
-/* ImageCtl — #954 גל 7: דף "סניפים" (רשימת המשניים) ודף "שרת משני" (הצומת
+/* ImageCtl — #954 גל 7: דף "שרתי משנה" (רשימת שרתי המשנה) ודף "שרת משנה" (הצומת
    בעץ, #936). לפי docs/design/console-redesign/branches.md.
 
-   "סניפים" הוא דף "own" (UI.objHeader/datagrid כמו drivers.js): כותרת עם
+   "שרתי משנה" הוא דף "own" (UI.objHeader/datagrid כמו drivers.js): כותרת עם
    מונים ותג "N לא מגיב/ים" · לשוניות שרתים/העברות/קבוצות. חיבור כל שרת
-   **נמדד** בפועל מול ה-machines endpoint של המשני, ולא נשאר "בודק
+   **נמדד** בפועל מול ה-machines endpoint של שרת המשנה, ולא נשאר "בודק
    חיבור…" קפוא (עיקרון 5) — אחרי שהטבלה על המסך, כל שרת נבדק במקביל
    ותא ה"חיבור" שלו מתעדכן במקום.
 
-   "שרת משני" (branch, BRANCH_NODE) נשאר בדפוס הישן (לא "own" — הלשוניות
+   "שרת משנה" (branch, BRANCH_NODE) נשאר בדפוס הישן (לא "own" — הלשוניות
    שלו טוענות נתונים שונים כל אחת) עם כותרת אובייקט/KPI/note שנוספו כאן;
    ‏loadBranchMachines/renderBranchTransfers/openTransferSheet משותפים
-   לשני הדפים. קבוצות הסניפים (יצירה/שם/סדר/מחיקה) נשארות ב-storage_nodes.js
+   לשני הדפים. קבוצות שרתי המשנה (יצירה/שם/סדר/מחיקה) נשארות ב-storage_nodes.js
    ומוצגות כלשונית "קבוצות" כאן. משתמש ב-UI/api/post/put/del/sheet/toast/
    esc/encodeId/fmtDate/fmtClock/formatGB/confirmSheet מ-console.js. */
 "use strict";
 
-let BRANCH_TIMER = null;          // פולינג העברות בדף שרת משני יחיד (branch)
-let BRANCHES_LIST_TIMER = null;   // פולינג לשונית "העברות" בדף הסניפים
+let BRANCH_TIMER = null;          // פולינג העברות בדף שרת משנה יחיד (branch)
+let BRANCHES_LIST_TIMER = null;   // פולינג לשונית "העברות" בדף שרתי המשנה
+let BRANCH_LIVE_TIMER = null;     // מצב חדר/קליטה חי בכרטיסי שרתי המשנה
 let BRANCH_TRANSFERS = [];
 let BRANCH_GROUPS = [];
 let BRANCH_NODES = [];
+let BRANCH_READY = false, BRANCH_ERR = "";   // לשונית "שרתי משנה" בהגדרות: נטען / נכשל (לא נקרא ≠ אין שרתי משנה)
 let BRANCH_CONN = {};   // id → {state:"checking"|"ok"|"err"|"disabled", error, machines, lastSeenAt, lastErrorAt}
 // ‏#1017: הזמנים הם של **השרת** (last_seen_at / last_error_at על storage_nodes,
 // נכתבים בכל קריאה בין-שרתית) — לא שעון הדפדפן ברגע שהדף קרא. בלי שדה מהשרת
 // אין זמן, לא ניחוש.
 
 const TRANSFER_STATE = {
-  queued: ["ממתין", ""], sending: ["שולח", ""], verifying: ["המשני מאמת sha256", ""],
+  queued: ["ממתין", ""], sending: ["שולח", ""], verifying: ["שרת המשנה מאמת sha256", ""],
   done: ["הושלם", "ok"], failed: ["נכשל", "err"],
 };
 
@@ -79,27 +81,31 @@ function transferStateLabel(t) {
 
 function stopBranchPolling() { clearInterval(BRANCH_TIMER); BRANCH_TIMER = null; }
 function stopBranchesListPolling() { clearInterval(BRANCHES_LIST_TIMER); BRANCHES_LIST_TIMER = null; }
+function stopBranchLivePolling() { clearInterval(BRANCH_LIVE_TIMER); BRANCH_LIVE_TIMER = null; }
 
-/* ---------- דף "סניפים" (רשימת המשניים, own) ---------- */
+/* ---------- דף "שרתי משנה" (רשימת שרתי המשנה, own) ---------- */
 
 async function loadBranchesData() {
   stopBranchesListPolling();
+  stopBranchLivePolling();
   const [groups, nodes, transfers] = await Promise.all([
     api("/storage-node-groups"), api("/storage-nodes"), api("/storage-transfers"),
   ]);
   BRANCH_GROUPS = groups;
   BRANCH_NODES = nodes;
   BRANCH_TRANSFERS = transfers;
+  BRANCH_READY = true; BRANCH_ERR = "";
   await loadTransferCap();
   for (const n of nodes) {
     // עוד לפני הבדיקה — מה שהשרת זוכר: "ענתה לאחרונה HH:MM" גם כשהעמוד לא היה בפוקוס.
     const remembered = { lastSeenAt: n.last_seen_at || null, lastErrorAt: n.last_error_at || null, error: n.last_error || "" };
     BRANCH_CONN[n.id] = n.disabled_at ? { state: "disabled", ...remembered } : { state: "checking", ...remembered };
   }
-  if (current === "branches") renderCurrent();
+  if (current === "branches" || current === "settings") renderCurrent();
   await Promise.all(nodes.filter((n) => !n.disabled_at).map((n) =>
     checkBranchConnection(n).catch(() => {})));
   maybeStartBranchesListPolling();
+  maybeStartBranchLivePolling();
 }
 
 /* ‏probe=true (#1017, "בדוק חיבור" מהשורה): POST …/check — /ping בלבד, בלי מכונות;
@@ -113,8 +119,17 @@ async function checkBranchConnection(n, probe = false) {
     const contact = { lastSeenAt: answer.last_seen_at || null, lastErrorAt: answer.last_error_at || null };
     // ‏/check אינו שולף מכונות — המונה מהקריאה האחרונה ל-/machines נשאר (הוא נמדד, לא הומצא).
     const machines = probe ? prev.machines : (answer.connected ? answer.machines : prev.machines);
+    let room = prev.room, images = prev.images, liveError = "";
+    if (!probe && answer.connected) {
+      const prefix = `/storage-nodes/${encodeId(n.id)}/console`;
+      const live = await Promise.allSettled([api(`${prefix}/room`), api(`${prefix}/images`)]);
+      if (live[0].status === "fulfilled") room = live[0].value;
+      else liveError = live[0].reason.message;
+      if (live[1].status === "fulfilled") images = live[1].value;
+      else liveError = liveError || live[1].reason.message;
+    }
     result = answer.connected
-      ? { state: "ok", machines, ...contact }
+      ? { state: "ok", machines, room, images, liveError, ...contact }
       : { state: "err", error: answer.error || "", machines, ...contact };
   } catch (e) {
     // הבקשה לראשי עצמו נכשלה — לא נרשם בשרת, ולכן בלי זמן (לא שעון הדפדפן).
@@ -127,6 +142,28 @@ async function checkBranchConnection(n, probe = false) {
   if (connCell) { const st = branchStatusHtml(n.id); connCell.className = st.cls; connCell.innerHTML = st.html; }
   if (machinesCell) machinesCell.textContent = Array.isArray(result.machines) ? String(result.machines.length) : "—";
   if (current === "branches" && currentTab === 0) updateAlertBadge();
+  if (current === "settings" && currentTab === 1) renderCurrent();   // הלשונית "שרתי משנה" מציירת את הסטטוס כ-pill
+}
+
+async function refreshBranchLive(n) {
+  const prev = BRANCH_CONN[n.id] || {};
+  if (prev.state !== "ok") return;
+  const prefix = `/storage-nodes/${encodeId(n.id)}/console`;
+  const live = await Promise.allSettled([api(`${prefix}/room`), api(`${prefix}/images`)]);
+  BRANCH_CONN[n.id] = { ...prev,
+    room: live[0].status === "fulfilled" ? live[0].value : prev.room,
+    images: live[1].status === "fulfilled" ? live[1].value : prev.images,
+    liveError: live.find((x) => x.status === "rejected")?.reason?.message || "" };
+}
+
+function maybeStartBranchLivePolling() {
+  if (current !== "branches" || currentTab !== 0 || !BRANCH_NODES.some((n) => !n.disabled_at)) return;
+  stopBranchLivePolling();
+  BRANCH_LIVE_TIMER = setInterval(async () => {
+    if (current !== "branches" || currentTab !== 0 || document.hidden) { stopBranchLivePolling(); return; }
+    await Promise.all(BRANCH_NODES.filter((n) => !n.disabled_at).map((n) => refreshBranchLive(n)));
+    renderCurrent();
+  }, 2000);
 }
 
 /* "בודק חיבור…" רק לפני המדידה הראשונה; אחריה — "מחובר · ענתה HH:MM" או
@@ -147,7 +184,7 @@ function branchStatusHtml(nid) {
 async function checkBranchNow(nid) {
   try { nid = decodeURIComponent(nid); } catch (e) {}
   const n = BRANCH_NODES.find((x) => x.id === nid);
-  if (!n) { toast("שרת משני לא נמצא"); return; }
+  if (!n) { toast("שרת משנה לא נמצא"); return; }
   if (n.disabled_at) { toast("השרת מושבת — לא נשאל"); return; }
   BRANCH_CONN[n.id] = { ...(BRANCH_CONN[n.id] || {}), state: "checking" };
   const connCell = $(`#branch-row-conn-${CSS.escape(n.id)}`);
@@ -193,9 +230,87 @@ function branchesServersTab() {
     cls: "acts-on",
     columns: ["שרת", "כתובת", "קבוצה", "חיבור", "מחשבים", "אימג'ים שהועברו", "העברה אחרונה", ""],
     rows: BRANCH_NODES.map(branchNodeRow),
-    empty: "אין שרתים משניים רשומים.",
+    empty: "אין שרתי משנה רשומים.",
   });
-  return `<div class="c12 card"><div class="card-b${BRANCH_NODES.length ? " flush" : ""}">${table}</div></div>`;
+  return `<div class="c12 card"><div class="card-b${BRANCH_NODES.length ? " flush" : ""}">${table}</div></div>
+    ${BRANCH_NODES.map(branchControlCard).join("")}`;
+}
+
+function branchMachineName(m) { return m.name || m.suffix || m.hostname || m.mac; }
+function branchMachineRole(m) {
+  const role = m.role || m.kind || "";
+  return role === "cloner" || m.group_id === "grp_CLONERS" ? "cloner" : role === "build" ? "build" : role;
+}
+function branchSmartClass(d) {
+  if (d.state === "failed" || d.smart === "failed_last") return "err";
+  if (d.smart === "warn" || d.smart === "fail") return "warn";
+  if (d.state === "writing" || d.state === "verifying") return "run";
+  if (d.smart === "ok" || d.state === "done") return "ok";
+  return "";
+}
+function branchDrawerHtml(d, i) {
+  const label = d.slot_name || `דיסק ${d.slot || d.port || i + 1}`;
+  const state = d.state ? (DRAWER_STATE_HE[d.state] || d.state) : smartText(d);
+  return `<span class="disk ${branchSmartClass(d)}" title="${esc(state)}"><b>${esc(label)}</b><span class="cap">${esc(state)}</span></span>`;
+}
+function branchCaptureText(m) {
+  const c = m.last_capture || m.capture;
+  if (!c) return "אין קליטה פעילה";
+  const state = c.state === "running" ? "קליטה פעילה" : c.state === "failed" ? "קליטה נכשלה" : c.state === "done" ? "קליטה הושלמה" : c.state;
+  return `${state}${c.image_name ? ` · ${c.image_name}` : ""}`;
+}
+function branchMachineHtml(nid, m, roomMachine) {
+  const role = branchMachineRole(m), live = roomMachine || {};
+  const disks = Array.isArray(live.drawer_list) ? live.drawer_list : (Array.isArray(m.disks) ? m.disks : []);
+  const roleHe = role === "cloner" ? "משכפל" : role === "build" ? "מחשב בנייה" : "מחשב";
+  const status = live.awake === true || m.online === true || m.awake === true ? "מחובר" : "לא מחובר";
+  const drawers = role === "cloner" ? `<div class="slots">${disks.length ? disks.map(branchDrawerHtml).join("") : `<span class="muted">לא דווחו מגירות</span>`}</div>` : "";
+  const capture = role === "build" ? `<div class="sub">${esc(branchCaptureText(m))}</div>` : "";
+  return `<div class="mcard" data-branch-machine="${esc(m.mac)}"><div class="mcard-h"><b>${esc(branchMachineName(m))}</b><span class="muted">${roleHe} · ${status}</span></div>${drawers}${capture}<div class="acts"><button class="btn sm" onclick="branchMonitor('${encodeId(nid)}','${encodeId(m.mac)}','${encodeId(branchMachineName(m))}')">מוניטור</button></div></div>`;
+}
+function branchRoundHtml(n, c) {
+  const r = c.room && c.room.round;
+  if (!r) return `<span class="muted">אין סבב פעיל</span>`;
+  const state = r.state === "failed" ? "נכשל" : r.wave_state === "active" ? "משדר" : r.wave_state === "open" ? "ממתין להתחלה" : (r.state || "פעיל");
+  return `<b>${esc(r.image_name || r.image_id || "סבב")}</b> · ${esc(state)} · נכתבו ${Number(r.written_drives || 0)} מתוך ${Number(r.target_drives || 0)}`;
+}
+function branchControlCard(n) {
+  const c = BRANCH_CONN[n.id] || {};
+  if (n.disabled_at) return `<div class="c12 card"><div class="card-h"><span>${esc(n.label)} · שליטה</span></div><div class="card-b">${UI.note("warn", "השרת מושבת — לא נשאל")}</div></div>`;
+  if (c.state !== "ok") return `<div class="c12 card"><div class="card-h"><span>${esc(n.label)} · שליטה</span></div><div class="card-b">${UI.note("warn", `לא נקרא: ${esc(c.error || "השרת לא ענה")}`)}</div></div>`;
+  const roomMachines = new Map((((c.room || {}).machines) || []).map((m) => [m.mac, m]));
+  const machines = (c.machines || []).filter((m) => ["cloner", "build"].includes(branchMachineRole(m)));
+  const actions = c.room && c.room.round
+    ? `<button class="btn danger" onclick="stopBranchRound('${encodeId(n.id)}')">עצור סבב</button>`
+    : `<button class="btn primary" onclick="openBranchRound('${encodeId(n.id)}')" ${(c.images || []).length ? "" : "disabled"}>פתח סבב</button>`;
+  return `<div class="c12 card" data-branch-control="${esc(n.id)}"><div class="card-h"><span>${esc(n.label)} · חדר ומחשבים</span><span>${branchRoundHtml(n, c)}</span></div><div class="card-b">${c.liveError ? UI.note("warn", `מצב חי לא נקרא: ${esc(c.liveError)}`) : ""}<div class="action-strip">${actions}</div><div class="machine-grid">${machines.length ? machines.map((m) => branchMachineHtml(n.id, m, roomMachines.get(m.mac))).join("") : UI.empty("אין מחשבי בנייה או משכפלים רשומים")}</div></div></div>`;
+}
+
+function openBranchRound(nidEnc) {
+  let nid = nidEnc; try { nid = decodeURIComponent(nid); } catch (e) {}
+  const c = BRANCH_CONN[nid] || {}, n = BRANCH_NODES.find((x) => x.id === nid);
+  const images = Array.isArray(c.images) ? c.images : [];
+  if (!n || !images.length) { toast("אין אימג'ים בספריית שרת המשנה"); return; }
+  const count = Math.max(1, (c.machines || []).filter((m) => branchMachineRole(m) === "cloner").reduce((sum, m) => sum + (Array.isArray(m.disks) ? m.disks.length : 0), 0));
+  sheet({ title: `פתיחת סבב ב-${n.label}`, sub: "האימג' והסבב שייכים לשרת המשנה.",
+    fields: [{ id: "image_id", label: "אימג'", type: "select", value: images[0].id, options: images.map((x) => ({ value: x.id, label: x.name })) },
+      { id: "target_drives", label: "מספר דיסקי יעד", type: "number", value: String(count) }],
+    submitLabel: "פתח סבב", onSubmit: async (v) => {
+      const target = Number(v.target_drives);
+      if (!Number.isInteger(target) || target < 1) throw new Error("מספר דיסקי היעד חייב להיות מספר שלם וחיובי");
+      await post(`/storage-nodes/${encodeId(nid)}/console/room`, { image_id: v.image_id, target_drives: target, expand_partition: false });
+      toast(`הסבב נפתח ב-${n.label}`); await refreshBranchLive(n); renderCurrent();
+    } });
+}
+
+function stopBranchRound(nidEnc) {
+  let nid = nidEnc; try { nid = decodeURIComponent(nid); } catch (e) {}
+  const c = BRANCH_CONN[nid] || {}, n = BRANCH_NODES.find((x) => x.id === nid), r = c.room && c.room.round;
+  if (!n || !r) return;
+  const name = r.image_name || r.image_id || "";
+  sheet({ title: `לעצור את הסבב ב-${n.label}?`, sub: `הסבב על "${name}" ייעצר`, danger: true,
+    note: impactList([["b", "השידור נפסק והגל נסגר"], ["w", "מגירות שלא נכתבו נשארות טריות"]]), submitLabel: "עצירת הסבב",
+    onSubmit: async () => { await post(`/storage-nodes/${encodeId(nid)}/console/room/close`, { confirm_name: name }); toast(`הסבב נעצר ב-${n.label}`); await refreshBranchLive(n); renderCurrent(); } });
 }
 
 function transferDirectionHtml(t) {
@@ -258,7 +373,9 @@ async function retryBranchTransfer(nidEnc, imageIdEnc) {
   try {
     const row = BRANCH_TRANSFERS.find((t) => t.node_id === nid && t.image_id === image_id);
     const kind = row && row.direction === "pull" ? "pull" : "transfer";
-    await post(`/storage-nodes/${encodeId(nid)}/${kind}`, { image_id });
+    const body = { image_id };
+    if (kind === "transfer") body.location_id = (row && row.location_id) || "loc_local";
+    await post(`/storage-nodes/${encodeId(nid)}/${kind}`, body);
     toast("ההעברה הופעלה מחדש");
     BRANCH_TRANSFERS = await api("/storage-transfers");
     renderCurrent();
@@ -293,7 +410,7 @@ async function startPullFromSecondary(nidEnc, imageIdEnc) {
 }
 
 function branchesGroupsTab() {
-  return `<div class="c12 card"><div class="chead"><div><h2>קבוצות סניפים</h2><p>ארגון המשניים לקבוצות תצוגה.</p></div>${isAdmin() ? `<button class="btn" id="add-branch-group">+ קבוצה חדשה</button>` : ""}</div><div id="branch-groups"></div></div>`;
+  return `<div class="c12 card"><div class="chead"><div><h2>קבוצות שרתי משנה</h2><p>ארגון שרתי המשנה לקבוצות תצוגה.</p></div>${isAdmin() ? `<button class="btn" id="add-branch-group">+ קבוצה חדשה</button>` : ""}</div><div id="branch-groups"></div></div>`;
 }
 
 /* מתעדכנת לאחר כל רינדור של לשונית "קבוצות" — renderBranchGroups
@@ -303,15 +420,15 @@ function wireBranchesGroupsTab() {
   renderBranchGroups(BRANCH_GROUPS, loadBranchesData);
 }
 
-/* 16/10 (ביקורת הקונסולה): הדף מוצג לראשי/עצמאי גם כשאין עדיין משני —
-   אחרת אין מאיפה לרשום את הראשון. בלי משני: לשונית אחת, מצב ריק וכפתור
-   רישום בולט; העברות וקבוצות מופיעות רק כשיש משני רשום. */
+/* 16/10 (ביקורת הקונסולה): הדף מוצג לראשי/עצמאי גם כשאין עדיין שרת משנה —
+   אחרת אין מאיפה לרשום את הראשון. בלי שרת משנה: לשונית אחת, מצב ריק וכפתור
+   רישום בולט; העברות וקבוצות מופיעות רק כשיש שרת משנה רשום. */
 function branchesEmptyState() {
   const button = isAdmin()
-    ? `<button class="btn primary" data-testid="enroll-first" onclick="openEnrollSheet()">+ רישום שרת משני</button>` : "";
+    ? `<button class="btn primary" data-testid="enroll-first" onclick="openEnrollSheet()">+ רישום שרת משנה</button>` : "";
   return `<div class="c12 card"><div class="card-b branches-empty" data-testid="branches-empty">
-    <h3>אין עדיין שרת משני</h3>
-    <p class="muted">שרת משני הוא שרת ImageSrv באתר אחר. במסך השרת של המשני, <b>F4</b> מציג את הכתובת, את טביעת הזהות ואת קוד הצימוד — ואותם מקלידים כאן.</p>
+    <h3>אין עדיין שרת משנה</h3>
+    <p class="muted">שרת משנה הוא שרת ImageSrv באתר אחר. במסך השרת של שרת המשנה, <b>F4</b> מציג את הכתובת, את טביעת הזהות ואת קוד הצימוד — ואותם מקלידים כאן.</p>
     ${button}</div></div>`;
 }
 
@@ -320,28 +437,65 @@ function branchesPage(tab = 0) {
   const groups = BRANCH_GROUPS || [];
   if (!nodes.length) {
     const header = UI.objHeader({
-      crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "סניפים" }],
-      icon: "server", name: "סניפים", sub: "אין שרתים משניים", pill: "", actions: "",
+      crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "שרתי משנה" }],
+      icon: "server", name: "שרתי משנה", sub: "אין שרתי משנה", pill: "", actions: "",
       tabs: ["שרתים"], tab: 0,
     });
     return `<div class="page">${header}<div class="body">${branchesEmptyState()}</div></div>`;
   }
   const notResponding = nodes.filter((n) => (BRANCH_CONN[n.id] || {}).state === "err").length;
-  const sub = `${nodes.length} ${nodes.length === 1 ? "שרת משני" : "שרתים משניים"} · ${groups.length} ${groups.length === 1 ? "קבוצה" : "קבוצות"}`;
+  const sub = `${nodes.length} ${nodes.length === 1 ? "שרת משנה" : "שרתי משנה"} · ${groups.length} ${groups.length === 1 ? "קבוצה" : "קבוצות"}`;
   const pill = notResponding ? UI.pill("err", `${notResponding} ${notResponding === 1 ? "לא מגיב" : "לא מגיבים"}`) : "";
   const actions = isAdmin()
-    ? `<button class="btn primary" onclick="openEnrollSheet()">+ רישום שרת משני</button><button class="btn" onclick="openBranchGroupSheet()">+ קבוצה</button>`
+    ? `<button class="btn primary" onclick="openEnrollSheet()">+ רישום שרת משנה</button><button class="btn" onclick="openBranchGroupSheet()">+ קבוצה</button>`
     : "";
   const header = UI.objHeader({
-    crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "סניפים" }],
-    icon: "server", name: "סניפים", sub, pill, actions,
+    crumbs: [{ label: "שרת אימג'ים", onclick: "selectPageById('home')" }, { label: "שרתי משנה" }],
+    icon: "server", name: "שרתי משנה", sub, pill, actions,
     tabs: ["שרתים", "העברות", "קבוצות"], tab,
   });
   const body = tab === 1 ? branchesTransfersTab() : tab === 2 ? branchesGroupsTab() : branchesServersTab();
   return `<div class="page">${header}<div class="body">${body}</div></div>`;
 }
 
-/* ---------- פעולות על משני מהטבלה (עריכה/השבתה/הסרה) ---------- */
+/* ---------- לשונית "שרתי משנה" בהגדרות (נדב 18/10) ----------
+   כרטיס אחד, שורה אחת לשרת המשנה: שם וכתובת בתחילת השורה, סטטוס החיבור כ-pill ופעולות בסופה. אותם נתונים
+   ופעולות של דף שרתי המשנה (BRANCH_NODES / BRANCH_CONN, ‏openEnrollSheet, ‏editBranchNode, ‏checkBranchNow). */
+async function loadSettingsSecondaries() {
+  try { await loadBranchesData(); }
+  catch (e) { BRANCH_ERR = e.message; if (current === "settings") renderCurrent(); }
+}
+function branchPillHtml(n) {
+  const c = BRANCH_CONN[n.id] || { state: "checking" };
+  const seen = branchWhen(c.lastSeenAt), failed = branchWhen(c.lastErrorAt);
+  if (c.state === "disabled") return [UI.pill("", "מושבת"), seen ? `ענתה לאחרונה ${esc(seen)}` : ""];
+  if (c.state === "checking") return [UI.pill("", "בודק חיבור…"), seen ? `ענתה לאחרונה ${esc(seen)}` : ""];
+  if (c.state === "ok") return [UI.pill("ok", "מחובר"), seen ? `ענתה ${esc(seen)}` : ""];
+  const err = c.error ? (isRawTechnical(c.error) ? `<details class="tech"><summary>פרטים טכניים</summary><code dir="ltr">${esc(c.error)}</code></details>` : esc(c.error)) : "";
+  return [UI.pill("err", "לא ענה"), [failed ? esc(failed) : "", err].filter(Boolean).join(" · ")];
+}
+function settingsSecondaryRow(n) {
+  const idEnc = encodeId(n.id), c = BRANCH_CONN[n.id] || {};
+  const [pill, sub] = branchPillHtml(n);
+  const meta = [`נרשם ${esc(fmtDate(n.enrolled_at))}`, Array.isArray(c.machines) ? `${c.machines.length} מחשבים` : "", n.group_label ? esc(n.group_label) : ""].filter(Boolean).join(" · ");
+  const acts = (n.disabled_at ? "" : ghostBtn("בדוק חיבור", `checkBranchNow('${idEnc}')`)) + ghostBtn("עריכה…", `editBranchNode('${idEnc}')`)
+    + (n.disabled_at ? "" : ghostBtn("פתח", `openSecondaryPage('${idEnc}','home',null)`));
+  return `<dt class="sec"><span class="name">${esc(n.label)}</span><span class="sub mono" dir="ltr">${esc(n.base_url)}</span><span class="sub">${meta}</span></dt>`
+    + `<dd class="sec" data-node-row="${esc(n.id)}">${pill}${sub ? `<span class="sub">${sub}</span>` : ""}${acts}</dd>`;
+}
+function settingsSecondariesTab() {
+  if (BRANCH_ERR) return UI.note("err", `לא הצלחתי לקרוא את רשימת שרתי המשנה: ${esc(BRANCH_ERR)}`);
+  if (!BRANCH_READY) return `<div class="set-col"><div class="muted">טוען…</div></div>`;
+  const nodes = BRANCH_NODES || [];
+  const enroll = `<button class="btn primary" type="button" data-testid="enroll-first" onclick="openEnrollSheet()">+ רישום שרת משנה</button>`;
+  const body = nodes.length ? `<dl class="mkv sec-list">${nodes.map(settingsSecondaryRow).join("")}</dl>`
+    : UI.empty("שרת משנה הוא שרת ImageSrv באתר אחר. מרשמים אותו כאן, ורק אז מופיעים דף שרתי המשנה והעברת אימג'ים.", enroll, "אין עדיין שרת משנה");
+  const acts = nodes.length ? `<button class="btn sm" type="button" onclick="openEnrollSheet()">+ רישום שרת משנה</button>` : "";
+  return `<div class="set-col"><section class="set-grp">${UI.card({ title: "שרתי משנה", acts, body })}`
+    + `<p class="set-foot">שרת משנה הוא שרת ImageSrv באתר אחר. במסך השרת של שרת המשנה, F4 מציג את הכתובת, את טביעת הזהות ואת קוד הצימוד — ואותם מקלידים ברישום. העברת אימג'ים וקבוצות בין שרתי המשנה — בדף "שרתי משנה".</p></section></div>`;
+}
+
+/* ---------- פעולות על שרת משנה מהטבלה (עריכה/השבתה/הסרה) ---------- */
 
 function editBranchNode(idEnc) {
   let id = idEnc; try { id = decodeURIComponent(id); } catch (e) {}
@@ -349,7 +503,7 @@ function editBranchNode(idEnc) {
   if (!node) return;
   const options = [{ value: "", label: "ללא קבוצה" }].concat(BRANCH_GROUPS.map((g) => ({ value: g.id, label: g.label })));
   sheet({
-    title: "עריכת שרת משני", sub: node.base_url,
+    title: "עריכת שרת משנה", sub: node.base_url,
     fields: [
       { id: "label", label: "שם", value: node.label },
       { id: "group_id", label: "קבוצה", type: "select", value: node.group_id || "", options },
@@ -377,7 +531,7 @@ function removeBranchNode(idEnc) {
   const node = BRANCH_NODES.find((n) => n.id === id);
   if (!node) return;
   sheet({
-    title: "להסיר את השרת המשני?", sub: node.label,
+    title: "להסיר את שרת המשנה?", sub: node.label,
     note: impactList([["b", "השרת יוסר מהמרשם"], ["w", "הרישום מחדש דורש כתובת ואישורים"]]),
     danger: true, submitLabel: "הסרת השרת",
     onSubmit: async () => { await del(`/storage-nodes/${encodeId(id)}`); await loadBranchesData(); },
@@ -391,35 +545,97 @@ function openTransferSheetForNode(idEnc) {
   api("/images").then((images) => openTransferSheet(node, images, loadBranchesData)).catch((e) => toast(e.message));
 }
 
-/* ---------- רישום שרת משני (enroll): כתובת → preview SPKI → קוד ----------
-   ‏POST /storage-nodes/enroll/preview קורא את ה-SPKI של המשני שבכתובת,
-   ורק אחרי שהמנהל השווה אותו למה שמוצג על המשני עצמו הוא מקליד את הקוד
+/* ---------- רישום שרת משנה (enroll): כתובת → preview SPKI → קוד ----------
+   ‏POST /storage-nodes/enroll/preview קורא את ה-SPKI של שרת המשנה שבכתובת,
+   ורק אחרי שהמנהל השווה אותו למה שמוצג על שרת המשנה עצמו הוא מקליד את הקוד
    החד-פעמי; ‏POST /storage-nodes/enroll מצמיד את ה-SPKI מהשלב הקודם
-   (לא מהצהרת ה-JSON של המשני — #883). גרסת הפרוטוקול קבועה כמו בשרת
+   (לא מהצהרת ה-JSON של שרת המשנה — #883). גרסת הפרוטוקול קבועה כמו בשרת
    (interserver_auth.PROTOCOL_VERSION). */
 const ENROLL_PROTOCOL_VERSION = "2.1";
 
-function openEnrollSheet() {
-  const options = [{ value: "", label: "ללא קבוצה" }].concat(BRANCH_GROUPS.map((g) => ({ value: g.id, label: g.label })));
+/* נדב 18/10: ברישום מקלידים רק את כתובת ה-IP של שרת המשנה — הקונסולה בונה את
+   ‏https://<ip>:<פורט>. הפורט הוא פורט ה-API הבין-שרתי של השרת
+   (health.DEFAULT_OWN_PORTS["interserver"] = ברירת המחדל של ‎--interserver-port
+   ב-main.py); טסט ב-test_console_static מצמיד את שניהם, כדי שלא ייסחפו. */
+const INTERSERVER_PORT = 8443;
+const ENROLL_NEW_GROUP = "__new__";
+const ENROLL_IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+const ENROLL_HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+
+/* מה שהמפעיל הקליד → ‏base_url מלא, או חריגה עם הסירוב בעברית. כתובת מלאה
+   שהודבקה (‏https://10.20.0.5:8443/, ‏10.20.0.5:8443, גם עם ‎/api/interserver/v1)
+   מנורמלת ולא נדחית; פורט מפורש נשמר. השרת ממשיך לקבל base_url מלא. */
+function enrollUrlFromInput(raw) {
+  const bad = "כתובת לא תקינה — הקלידו את כתובת ה-IP של שרת המשנה (למשל 10.20.0.5) או את שם השרת";
+  let s = String(raw || "").trim();
+  if (!s) throw new Error("חסרה כתובת IP של שרת המשנה");
+  const scheme = s.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+  if (scheme) {
+    if (!/^https?$/i.test(scheme[1])) throw new Error(bad);
+    s = s.slice(scheme[0].length);
+  }
+  s = s.replace(/\/api\/interserver\/v1\/?$/i, "").replace(/\/+$/, "");
+  if (/[/?#@\s]/.test(s)) throw new Error(bad);
+  const m = s.match(/^([^:]+)(?::(\d{1,5}))?$/);
+  if (!m) throw new Error(bad);
+  const host = m[1].toLowerCase(), port = m[2] === undefined ? INTERSERVER_PORT : Number(m[2]);
+  if (!(port >= 1 && port <= 65535)) throw new Error("פורט לא תקין בכתובת שרת המשנה");
+  const ipLike = /^[\d.]+$/.test(host);
+  if (ipLike ? !ENROLL_IPV4_RE.test(host) : !ENROLL_HOST_RE.test(host)) throw new Error(bad);
+  return `https://${host}:${port}`;
+}
+
+/* ‏prefill: {url, label, group_id} — כשחוזרים מ"+ קבוצה חדשה…" עם הקבוצה שנוצרה. */
+function openEnrollSheet(prefill = {}) {
+  const options = [{ value: "", label: "ללא קבוצה" }]
+    .concat(BRANCH_GROUPS.map((g) => ({ value: g.id, label: g.label })))
+    .concat(isAdmin() ? [{ value: ENROLL_NEW_GROUP, label: "+ קבוצה חדשה…" }] : []);
   sheet({
-    title: "רישום שרת משני — שלב 1 מתוך 2: כתובת",
-    sub: "כתובת ה-API הבין-שרתי של המשני (mTLS). השלב הבא יציג את טביעת ה-TLS שלו (SPKI) — יש להשוות אותה למה שהמשני עצמו מציג, לפני שליחת הקוד.",
+    title: "רישום שרת משנה — שלב 1 מתוך 2: כתובת",
+    sub: "השלב הבא יציג את טביעת ה-TLS של שרת המשנה (SPKI) — יש להשוות אותה למה ששרת המשנה עצמו מציג, לפני שליחת הקוד.",
     fields: [
-      { id: "url", label: "כתובת (base_url)", value: "https://", dir: "ltr" },
-      { id: "label", label: "שם" },
-      { id: "group_id", label: "קבוצה", type: "select", value: "", options },
+      { id: "url", label: "כתובת IP של שרת המשנה", value: prefill.url || "", placeholder: "10.20.0.5", dir: "ltr",
+        help: `מספיק ה-IP — הקונסולה מוסיפה https:// ואת הפורט הבין-שרתי (${INTERSERVER_PORT}).` },
+      { id: "label", label: "שם", value: prefill.label || "" },
+      { id: "group_id", label: "קבוצה", type: "select", value: prefill.group_id || "", options },
     ],
     submitLabel: "בדוק SPKI",
     onSubmit: async (v) => {
-      const preview = await post("/storage-nodes/enroll/preview", { url: v.url });
-      openEnrollConfirmSheet(v, preview);
+      const url = enrollUrlFromInput(v.url);
+      const step1 = { ...v, url, group_id: v.group_id === ENROLL_NEW_GROUP ? "" : v.group_id };
+      const preview = await post("/storage-nodes/enroll/preview", { url });
+      openEnrollConfirmSheet(step1, preview);
+    },
+  });
+  const select = $("#sf-group_id");
+  if (select) select.onchange = () => {
+    if (select.value !== ENROLL_NEW_GROUP) return;
+    const keep = { url: ($("#sf-url") || {}).value || "", label: ($("#sf-label") || {}).value || "" };
+    openEnrollNewGroup(keep);
+  };
+}
+
+/* "+ קבוצה חדשה…" ברשימת הקבוצות של הרישום: הקבוצה נוצרת בחלון הקיים (אותו גוף כמו
+   ‏openBranchGroupSheet), ואחריו חלון הרישום חוזר — עם מה שהוקלד, והקבוצה החדשה
+   בחורה. "חזרה" — חוזר בלי ליצור. עד 18/10 הייתה רק "ללא קבוצה": יצירת קבוצה ישבה
+   בלשונית "קבוצות" של דף "שרתי משנה", שמוצג רק כשכבר יש שרת משנה. */
+function openEnrollNewGroup(keep) {
+  sheet({
+    title: "קבוצת שרתי משנה חדשה",
+    fields: [{ id: "label", label: "שם הקבוצה", placeholder: "למשל: צפון" }],
+    submitLabel: "צור קבוצה",
+    extra: { label: "חזרה", onClick: () => openEnrollSheet(keep) },
+    onSubmit: async (v) => {
+      const created = await post("/storage-node-groups", { label: v.label });
+      BRANCH_GROUPS = await api("/storage-node-groups");
+      return () => openEnrollSheet({ ...keep, group_id: created && created.id ? created.id : "" });
     },
   });
 }
 
-/* 16/10 (מוקאפ #1525, ג׳1–ג׳3): המשני מציג את הקוד ואת "זהות השרת" במסך
+/* 16/10 (מוקאפ #1525, ג׳1–ג׳3): שרת המשנה מציג את הקוד ואת "זהות השרת" במסך
    השרת שלו (F4). כאן: הטביעה בקבוצות של ארבעה, עם ארבע הראשונות מודגשות —
-   הן "זהות השרת" שעל המשני וגם סיומת מזהה המשני — ושמונה תיבות לקוד
+   הן "זהות השרת" שעל שרת המשנה וגם סיומת מזהה שרת המשנה — ושמונה תיבות לקוד
    (interserver_auth: ‏XXXX-XXXX, בלי 0/O/1/I/L). הכפתור כבוי עד שכל
    השמונה מלאות. */
 const ENROLL_CODE_LEN = 8;
@@ -433,13 +649,13 @@ function enrollConfirmHtml(step1, preview) {
   const groups = enrollSpkiGroups(preview.secondary_spki);
   const boxes = Array.from({ length: ENROLL_CODE_LEN }, (_, i) =>
     `${i === ENROLL_CODE_LEN / 2 ? '<span class="enroll-d" aria-hidden="true">-</span>' : ""}<input class="enroll-c" id="enroll-c-${i}" maxlength="1" inputmode="text" autocomplete="off" spellcheck="false" aria-label="תו ${i + 1} מתוך ${ENROLL_CODE_LEN}">`).join("");
-  return `<div class="enroll-cmp"><div class="t">① השווה לטביעה שמוצגת על מסך המשני — שם "זהות השרת"</div>
+  return `<div class="enroll-cmp"><div class="t">① השווה לטביעה שמוצגת על מסך שרת המשנה — שם "זהות השרת"</div>
       <div class="enroll-fp mono" dir="ltr">${groups.slice(0, 4).map((g) => `<span class="enroll-hl">${esc(g)}</span>`).join(" ")}</div>
       <div class="enroll-rest mono" dir="ltr">${esc(groups.join(" "))}</div></div>
-    <div class="detail-grid"><div class="detail-box"><span class="k">מזהה משני</span><span class="v mono" dir="ltr">${esc(preview.node_id)}</span></div><div class="detail-box"><span class="k">כתובת שנבדקה</span><span class="v mono" dir="ltr">${esc(step1.url)}</span></div></div>
-    <div class="enroll-code-h">② קוד חד-פעמי (מוצג על המשני)</div>
+    <div class="detail-grid"><div class="detail-box"><span class="k">מזהה שרת משנה</span><span class="v mono" dir="ltr">${esc(preview.node_id)}</span></div><div class="detail-box"><span class="k">כתובת שנבדקה</span><span class="v mono" dir="ltr">${esc(step1.url)}</span></div></div>
+    <div class="enroll-code-h">② קוד חד-פעמי (מוצג על שרת המשנה)</div>
     <div class="enroll-cin" dir="ltr">${boxes}</div>
-    <div class="n-help">מוצג על מסך המשני תחת "צימוד לשרת ראשי" (F4). 8 תווים, שימוש חד-פעמי.</div>`;
+    <div class="n-help">מוצג על מסך שרת המשנה תחת "צימוד לשרת ראשי" (F4). 8 תווים, שימוש חד-פעמי.</div>`;
 }
 
 function enrollCodeBoxes(form) {
@@ -477,10 +693,10 @@ function wireEnrollCode(form) {
 
 function openEnrollConfirmSheet(step1, preview) {
   sheet({
-    title: "רישום שרת משני — שלב 2 מתוך 2: אישור והקוד",
-    sub: "הטביעה למטה נקראה מהכתובת שהוקלדה. אם היא אינה זהה למה שמוצג על המשני — אל תמשיך.",
+    title: "רישום שרת משנה — שלב 2 מתוך 2: אישור והקוד",
+    sub: "הטביעה למטה נקראה מהכתובת שהוקלדה. אם היא אינה זהה למה שמוצג על שרת המשנה — אל תמשיך.",
     note: enrollConfirmHtml(step1, preview),
-    submitLabel: "רשום שרת משני",
+    submitLabel: "רשום שרת משנה",
     onSubmit: async () => {
       const form = $("#sheet");
       const code = enrollCodeValue(form);
@@ -494,9 +710,9 @@ function openEnrollConfirmSheet(step1, preview) {
         });
       } catch (error) {
         enrollCodeBoxes(form).forEach((b) => b.classList.add("err"));
-        throw new Error(`${error.message} — אם הקוד שגוי או שפג תוקפו: על המשני F5 ← קוד חדש, ואז נסה שוב.`);
+        throw new Error(`${error.message} — אם הקוד שגוי או שפג תוקפו: על שרת המשנה F5 ← קוד חדש, ואז נסה שוב.`);
       }
-      toast(`השרת המשני "${step1.label}" נרשם.`);
+      toast(`שרת המשנה "${step1.label}" נרשם.`);
       await loadBranchesData();
     },
   });
@@ -505,14 +721,14 @@ function openEnrollConfirmSheet(step1, preview) {
 
 function openBranchGroupSheet() {
   sheet({
-    title: "קבוצת סניפים חדשה",
+    title: "קבוצת שרתי משנה חדשה",
     fields: [{ id: "label", label: "שם הקבוצה", placeholder: "למשל: צפון" }],
     submitLabel: "צור קבוצה",
     onSubmit: async (v) => { await post("/storage-node-groups", { label: v.label }); await loadBranchesData(); },
   });
 }
 
-/* ---------- משותף לשני הדפים: מכונות המשני, העברת אימג' ---------- */
+/* ---------- משותף לשני הדפים: מכונות שרת המשנה, העברת אימג' ---------- */
 
 function branchMonitor(nid, mac, name) {
   if (!isAdmin()) return;
@@ -545,28 +761,43 @@ function renderBranchTransfers(nid, target = null, limit = 8) {
   }).join("");
 }
 
-function openTransferSheet(n, images, afterSubmit) {
+async function openTransferSheet(n, images, afterSubmit) {
   if (!images.length) { toast("אין אימג'ים בספרייה להעברה"); return; }
+  let locations;
+  try {
+    locations = (await api(`/storage-nodes/${encodeId(n.id)}/console/storage-locations`)).locations;
+  } catch (e) {
+    toast(`לא ניתן לקרוא את מיקומי האחסון של ${n.label}: ${e.message}`);
+    return;
+  }
+  const writable = (locations || []).filter((loc) => loc.state === "connected");
+  if (!writable.length) { toast("אין בשרת המשנה מיקום אחסון זמין לקליטה"); return; }
   const options = images.map((m) => ({
     value: m.id, label: `${m.folder ? m.folder + " / " : ""}${m.name} (${formatGB(m.total_compressed_bytes)})`,
   }));
   sheet({
     title: `העברת אימג' אל ${n.label}`,
-    sub: "האימג' ייכנס לספריית הסניף רק אחרי שהסניף אימת sha256 של כל מחיצה. ניתוק באמצע = כשל גלוי, ומתחילים מחדש.",
-    fields: [{ id: "image_id", label: "אימג'", type: "select", value: options[0].value, options }],
+    sub: "האימג' ייכנס לספריית שרת המשנה רק אחרי ששרת המשנה אימת sha256 של כל מחיצה. ניתוק באמצע = כשל גלוי, ומתחילים מחדש.",
+    fields: [
+      { id: "image_id", label: "אימג'", type: "select", value: options[0].value, options },
+      { id: "location_id", label: "מיקום אחסון בשרת המשנה", type: "select",
+        value: writable.some((loc) => loc.id === "loc_local") ? "loc_local" : writable[0].id,
+        options: writable.map((loc) => ({value: loc.id, label: `${loc.name} (${loc.id})`})) },
+    ],
     submitLabel: "התחל העברה",
     onSubmit: async (v) => {
-      await post(`/storage-nodes/${encodeId(n.id)}/transfer`, { image_id: v.image_id });
+      await post(`/storage-nodes/${encodeId(n.id)}/transfer`,
+                 { image_id: v.image_id, location_id: v.location_id });
       toast("ההעברה התחילה");
       await afterSubmit();
     },
   });
 }
 
-/* ---------- #936: דף "העברות" של משני אחד ----------
-   ‏#1179: שאר העלים בעץ של המשני הם העמודים של הראשי עצמם בהקשר המשני (SERVER_CTX
-   ב-console.js). כאן נשאר מה שאין לו מקבילה בראשי: ספריית המשני עם "העבר לראשי",
-   ו"העבר אימג'" + יומן ההעברות. משני שלא ענה — "‹שם› לא ענה: ‹סיבה›", לא דף ריק. */
+/* ---------- #936: דף "העברות" של שרת משנה אחד ----------
+   ‏#1179: שאר העלים בעץ של שרת המשנה הם העמודים של הראשי עצמם בהקשר שרת המשנה (SERVER_CTX
+   ב-console.js). כאן נשאר מה שאין לו מקבילה בראשי: ספריית שרת המשנה עם "העבר לראשי",
+   ו"העבר אימג'" + יומן ההעברות. שרת משנה שלא ענה — "‹שם› לא ענה: ‹סיבה›", לא דף ריק. */
 
 let BRANCH_VIEW_GEN = 0;
 
@@ -585,7 +816,7 @@ async function loadBranchView() {
   const host = $("#branch-view");
   if (!host) return;
   stopBranchPolling();
-  // מעבר מהיר בין משניים בעץ — טעינה שהתיישנה בזמן ה-await לא כותבת ל-DOM שכבר הוחלף.
+  // מעבר מהיר בין שרתי משנה בעץ — טעינה שהתיישנה בזמן ה-await לא כותבת ל-DOM שכבר הוחלף.
   const gen = ++BRANCH_VIEW_GEN;
   const stale = () => gen !== BRANCH_VIEW_GEN || $("#branch-view") !== host;
   const nid = BRANCH_NODE;
@@ -593,13 +824,13 @@ async function loadBranchView() {
   if (stale()) return;
   const n = nodes.find((x) => x.id === nid);
   if (!n) {
-    host.innerHTML = `<div class="card"><div class="card-b"><div class="empty">השרת המשני אינו רשום עוד. בחר שרת אחר בעץ.</div></div></div>`;
+    host.innerHTML = `<div class="card"><div class="card-b"><div class="empty">שרת המשנה אינו רשום עוד. בחר שרת אחר בעץ.</div></div></div>`;
     return;
   }
   BRANCH_NODES = nodes;
   const disabled = !!n.disabled_at;
   const remoteP = disabled
-    ? Promise.resolve({ connected: false, error: "השרת המשני מושבת", images: [] })
+    ? Promise.resolve({ connected: false, error: "שרת המשנה מושבת", images: [] })
     : api(`/storage-nodes/${encodeId(n.id)}/images`).catch((e) => (
       { connected: false, unchecked: true, error: e.message, images: [] }));
   const [transfers, images, remote] = await Promise.all([
@@ -624,10 +855,10 @@ async function loadBranchView() {
   const libBody = !remote.connected ? c.note
     : (libRows
       ? `<table><thead><tr><th>שם</th><th>גודל</th><th>תאריך</th><th>קיים בראשי</th><th></th></tr></thead><tbody>${libRows}</tbody></table>`
-      : `<div class="empty">אין אימג'ים בספריית המשני.</div>`);
+      : `<div class="empty">אין אימג'ים בספריית שרת המשנה.</div>`);
   host.innerHTML = `<div class="card"><div class="card-h"><span>${esc(n.label)} · העברות <small class="muted">${esc(n.group_label || "ללא קבוצה")}</small></span>${c.status}</div><div class="card-b">
       <div class="action-strip"><button class="btn primary" id="branch-view-transfer" ${disabled ? "disabled" : ""}>העבר אימג'</button></div>
-      <h4>ספריית האימג'ים של המשני</h4>
+      <h4>ספריית האימג'ים של שרת המשנה</h4>
       ${libBody}
       <h4>העברות</h4>
       ${transferCapStrip("sub")}
@@ -671,17 +902,17 @@ function transferCapText() {
   return `עד ${ltr(`${m} Mb/s`)} (${ltr(`${Number.isInteger(mb) ? mb : mb.toFixed(1)} MB/s`)}) לכל העברה`;
 }
 
-/* cls: "card-h" — שורת כותרת בכרטיס (לשונית "העברות"); "sub" — שורה מתחת ל-h4 (דף המשני). */
+/* cls: "card-h" — שורת כותרת בכרטיס (לשונית "העברות"); "sub" — שורה מתחת ל-h4 (דף שרת המשנה). */
 function transferCapStrip(cls) {
   const btn = isAdmin() && TRANSFER_CAP.mbps != null
     ? ` <button class="btn sm flat" type="button" onclick="transferCapSheet()">שינוי</button>` : "";
-  return `<div class="${cls} transfer-cap" title="חל על העברה לסניף ועל העברה מסניף לראשי; השינוי תופס גם העברה שכבר רצה"><span>הגבלת קצב בין אתרים: <b>${transferCapText()}</b></span>${btn}</div>`;
+  return `<div class="${cls} transfer-cap" title="חל על העברה לשרת המשנה ועל העברה משרת המשנה לראשי; השינוי תופס גם העברה שכבר רצה"><span>הגבלת קצב בין אתרים: <b>${transferCapText()}</b></span>${btn}</div>`;
 }
 
 function transferCapSheet() {
   if (!isAdmin()) return;
   sheet({ title: "הגבלת קצב בין אתרים",
-    sub: "כמה מהקו בין האתרים מותר להעברת אימג' אחת — לסניף ומהסניף. 0 = ללא הגבלה (ברירת המחדל). השינוי תופס גם העברה שכבר רצה.",
+    sub: "כמה מהקו בין האתרים מותר להעברת אימג' אחת — לשרת המשנה ומשרת המשנה. 0 = ללא הגבלה (ברירת המחדל). השינוי תופס גם העברה שכבר רצה.",
     fields: [{ id: "v", label: `קצב מרבי לכל העברה (Mb/s, 0–${TRANSFER_CAP_MAX})`, type: "number", value: String(TRANSFER_CAP.mbps || 0) }],
     onSubmit: async (v) => {
       const raw = String(v.v == null ? "" : v.v).trim();

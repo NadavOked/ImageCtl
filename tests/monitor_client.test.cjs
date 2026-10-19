@@ -13,7 +13,9 @@ const root = path.resolve(__dirname, '../server/static');
 
 function setup(search = '?mac=aa:bb:cc:dd:ee:ff&name=Cloner01', doc = {}, extra = {}) {
   const listeners = {}, docListeners = {}, timers = [];
+  const classList = () => ({_s: new Set(), add(c) { this._s.add(c); }, remove(c) { this._s.delete(c); }, contains(c) { return this._s.has(c); }});
   const stub = () => ({textContent: '', className: '', value: '', style: {}, onclick: null, disabled: false, title: '',
+    classList: classList(),
     addEventListener(name, fn) { (listeners[name] ||= []).push(fn); (this.__l ||= {})[name] = fn; }, focus() {}, getBoundingClientRect() { return {left: 0, top: 0, width: 1, height: 1}; },
     getContext() { return {fillRect() {}, createImageData(w, h) { return {data: new Uint8ClampedArray(w * h * 4)}; }, putImageData() {}, drawImage() {}}; }});
   const sockets = [];
@@ -38,6 +40,17 @@ function setup(search = '?mac=aa:bb:cc:dd:ee:ff&name=Cloner01', doc = {}, extra 
   const run = (s) => vm.runInContext(s, ctx);
   return {ctx, run, sockets, fetches, listeners, docListeners, timers};
 }
+
+test('machine-side close dims the last frame and shows the Hebrew disconnect message', () => {
+  const {run, sockets} = setup();
+  const reason = 'החיבור למחשב נותק — ייתכן שהמחשב כבה';
+  sockets[0].onclose({code: 4513, reason: ''});
+  // rc6 (18/10): ואחרי הסיבה — הספירה לניסיון החוזר (ראו "הריענון" למטה).
+  assert.ok(run('statusEl.textContent').startsWith(reason + ' — ניסיון חוזר'), run('statusEl.textContent'));
+  assert.ok(run('disconnectOverlay.textContent').startsWith(reason));
+  assert.equal(run('canvas.classList.contains("disconnected")'), true);
+  assert.equal(run('disconnectOverlay.classList.contains("visible")'), true);
+});
 
 /* מזרים למחלקת ByteStream של הדף בייטים ומריץ קורוטינה של הפרסור. */
 function feed(run, bytes) {
@@ -128,6 +141,29 @@ test('a 403 from the server surfaces its detail — the name check is the server
   await assert.rejects(run('sendPower("reboot", "wrong")'), /השם שהוקלד אינו זהה לשם המחשב/);
 });
 
+test('every printable ASCII key uses its US physical keysym, independent of layout and Shift', () => {
+  const {run} = setup();
+  const rows = [
+    ['Backquote', '`~'], ['Digit1', '1!'], ['Digit2', '2@'], ['Digit3', '3#'],
+    ['Digit4', '4$'], ['Digit5', '5%'], ['Digit6', '6^'], ['Digit7', '7&'],
+    ['Digit8', '8*'], ['Digit9', '9('], ['Digit0', '0)'], ['Minus', '-_'],
+    ['Equal', '=+'], ['BracketLeft', '[{'], ['BracketRight', ']}'],
+    ['Backslash', '\\|'], ['Semicolon', ';:'], ['Quote', "'\""],
+    ['Comma', ',<'], ['Period', '.>'], ['Slash', '/?'], ['Space', ' '],
+  ];
+  for (let i = 0; i < 26; i++) rows.push([`Key${String.fromCharCode(65 + i)}`, String.fromCharCode(97 + i, 65 + i)]);
+  const covered = new Set();
+  for (const [code, characters] of rows) {
+    const expected = characters.charCodeAt(0);
+    for (const key of characters) {
+      covered.add(key);
+      assert.equal(run(`keysymFor(${JSON.stringify({code, key})})`), expected, `${JSON.stringify(key)} via ${code}`);
+    }
+  }
+  assert.deepEqual([...covered].sort(), Array.from({length: 95}, (_, i) => String.fromCharCode(32 + i)).sort());
+  assert.equal(run(`keysymFor(${JSON.stringify({code: 'KeyT', key: 'א'})})`), 't'.charCodeAt(0), 'Hebrew layout still sends the physical T key');
+});
+
 /* ---------- מסך מלא (stage 3, console-full.html) ---------- */
 test('stage 3: fullscreen button — the whole page goes fullscreen (so the power-action modal stays visible), the bar shows on mouse move and hides after 2.5s, Esc/exit restores', async () => {
   const calls = [];
@@ -171,7 +207,7 @@ const HALF = {left: 0, top: 0, width: 960, height: 540};
 function pointerPage(rect) {
   const clock = {now: 1000};
   const page = setup(undefined, {}, {Date: {now: () => clock.now}});
-  page.run('fbWidth = 1920; fbHeight = 1080;');
+  page.run('fbWidth = 1920; fbHeight = 1080; rfbReady = true;');   // אחרי לחיצת היד (rc6)
   const canvas = page.run('canvas');
   canvas.getBoundingClientRect = () => ({...rect, right: rect.left + rect.width, bottom: rect.top + rect.height});
   canvas.setPointerCapture = (id) => { (canvas.captured ||= []).push(id); };
@@ -229,4 +265,142 @@ test('#1475: one shared cursor — the browser hides its own over the canvas; th
   const rule = html.match(/#screen\s*\{([^}]*)\}/);
   assert.ok(rule, 'no #screen rule in monitor.html');
   assert.match(rule[1], /cursor:\s*none\s*;/);
+});
+
+/* ---------- 18/10 (rc6): "שגיאה: סוג אבטחה לא צפוי" — קלט לפני לחיצת היד ----------
+   ‏#1686 השאיר את ה-WebSocket פתוח עד 15 ש' בזמן שהשרת ממתין למוניטור של מכונה שעולה.
+   כל אותו זמן ה-canvas קיבל אירועי עכבר/מקלדת, ו-send() שלח אותם כי ה-WS "פתוח" — לפני
+   גרסת ה-RFB. הפרוקסי (monitor.bridge_browser) קרא אותם כ-12 בייטי הגרסה, והבייט שאחריהם
+   כבחירת אבטחה ≠ 1 → ‏close 1002 "סוג אבטחה לא צפוי", מסך שחור בלי ניסיון חוזר. */
+const enc = (s) => Array.from(new TextEncoder().encode(s));
+const SERVER_INIT = [...u16(4), ...u16(2), ...new Array(16).fill(0), ...u32(0)];
+const tick = () => new Promise((r) => setImmediate(r));
+function serverSays(sock, bytes) { sock.onmessage({data: new Uint8Array(bytes).buffer}); }
+const sentBytes = (sock) => sock.sent.flatMap((b) => Array.from(b));
+
+test('rc6: pointer and keys before the RFB handshake are not sent — the proxy would read them as the version', async () => {
+  const {fire, sockets, run} = pointerPage(FULL);
+  run('connect()');                                          // מה שהדף עושה בטעינה / בניסיון חוזר
+  const sock = sockets.at(-1);
+  sock.onopen();                                             // WS פתוח, השרת עוד מתחבר למכונה
+  fire('pointermove', 10, 10);
+  fire('pointerdown', 11, 11);
+  fire('pointerup', 11, 11);
+  fire('keydown', 0, 0, {code: 'KeyA', key: 'a'});
+  assert.deepEqual(sock.sent, [], 'input went out before the handshake');
+  serverSays(sock, enc('RFB 003.008\n'));
+  await tick();
+  serverSays(sock, [1, 1]);
+  await tick();
+  serverSays(sock, u32(0));
+  await tick();
+  serverSays(sock, SERVER_INIT);
+  await tick();
+  const bytes = sentBytes(sock);
+  assert.deepEqual(bytes.slice(0, 12), enc('RFB 003.008\n'), 'the first 12 bytes the proxy reads are the version');
+  assert.equal(bytes[12], 1, 'the 13th byte is the security choice None');
+  assert.equal(bytes[13], 1, 'then ClientInit');
+});
+
+test('rc6: after the handshake, input goes out as before', async () => {
+  const {fire, sockets, timers} = pointerPage(FULL);
+  const sock = sockets[0];
+  sock.onopen();
+  serverSays(sock, [...enc('RFB 003.008\n'), 1, 1, ...u32(0), ...SERVER_INIT]);
+  for (let i = 0; i < 5; i++) await tick();
+  const before = sock.sent.length;
+  fire('pointerdown', 1, 1);
+  timers.splice(0).forEach((t) => t.fn());
+  assert.equal(sock.sent.length, before + 1);
+  assert.equal(sock.sent.at(-1)[0], 5, 'a PointerEvent');
+});
+
+/* ---------- 18/10 (rc6): "הריענון" — אחרי סגירה המסך לא נשאר שחור ותקוע ----------
+   עד כאן כל סגירה (מכונה שעולה, 4502, 1002, ‏4513) השאירה canvas שחור ושורת סטטוס, ורק
+   "התחבר מחדש" ידני החזיר תמונה. עכשיו: הסיבה גלויה על המסך עצמו, ספירה לאחור, וניסיון
+   חוזר לבד — בהשהיה שגדלה ועם תקרה. מה שחוזר על עצמו בלי קשר לזמן (התחברות, הרשאה, מכונה
+   לא מוכרת, סגירת חוסר-פעילות מכוונת) — לא חוזר לבד. */
+function drainUntil(page, done, limit = 200) {
+  for (let i = 0; i < limit && !done(); i++) {
+    const t = page.timers.shift();
+    if (!t) break;
+    t.fn();
+  }
+}
+
+test('rc6: a retryable close shows the reason on the screen with a countdown, then reconnects by itself', () => {
+  const page = setup();
+  const reason = 'שירות המוניטור במכונה אינו זמין לאחר 15 שניות: המכונה סירבה לחיבור';
+  page.sockets[0].onclose({code: 4502, reason});
+  assert.match(page.run('statusEl.textContent'), /אינו זמין לאחר 15 שניות: המכונה סירבה לחיבור — ניסיון חוזר בעוד 2 שנ'/);
+  assert.equal(page.run('disconnectOverlay.classList.contains("visible")'), true, 'the black canvas says why');
+  assert.match(page.run('disconnectOverlay.textContent'), /המכונה סירבה לחיבור/);
+  drainUntil(page, () => page.sockets.length > 1);
+  assert.equal(page.sockets.length, 2, 'reconnected without a click');
+  assert.equal(page.run('statusEl.textContent'), 'מתחבר…');
+  assert.equal(page.run('disconnectOverlay.classList.contains("visible")'), true, 'not live until the handshake succeeds');
+});
+
+test('rc6: the unexpected-security-type close is retried too', () => {
+  const page = setup();
+  page.sockets[0].onclose({code: 1002, reason: 'סוג אבטחה לא צפוי'});
+  drainUntil(page, () => page.sockets.length > 1);
+  assert.equal(page.sockets.length, 2);
+});
+
+test('rc6: sign-in, permission, unknown machine and the deliberate idle close are not retried', () => {
+  for (const code of [4401, 4403, 4404, 4408]) {
+    const page = setup();
+    page.sockets[0].onclose({code, reason: ''});
+    drainUntil(page, () => page.sockets.length > 1);
+    assert.equal(page.sockets.length, 1, `code ${code} retried`);
+  }
+});
+
+test('rc6: the wait grows between failures and stops at a ceiling with a visible "התחבר מחדש"', () => {
+  const page = setup();
+  const waits = [];
+  for (let i = 0; i < 40; i++) {
+    page.sockets.at(-1).onclose({code: 4502, reason: 'x'});
+    const m = page.run('statusEl.textContent').match(/בעוד (\d+) שנ'/);
+    if (!m) break;
+    waits.push(Number(m[1]));
+    const n = page.sockets.length;
+    drainUntil(page, () => page.sockets.length > n);
+  }
+  assert.deepEqual(waits.slice(0, 5), [2, 4, 8, 15, 30]);
+  assert.ok(waits.length < 40, 'retries forever');
+  assert.ok(waits.every((w) => w <= 30));
+  assert.match(page.run('statusEl.textContent'), /התחבר מחדש/);
+  assert.equal(page.timers.length, 0, 'no timer left after the ceiling');
+});
+
+test('rc6: a completed handshake clears the overlay and resets the backoff', async () => {
+  const page = setup();
+  page.sockets[0].onclose({code: 4502, reason: 'x'});
+  drainUntil(page, () => page.sockets.length > 1);
+  const sock = page.sockets[1];
+  sock.onopen();
+  serverSays(sock, [...enc('RFB 003.008\n'), 1, 1, ...u32(0), ...SERVER_INIT]);
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(page.run('statusEl.textContent'), 'מחובר');
+  assert.equal(page.run('disconnectOverlay.classList.contains("visible")'), false);
+  sock.onclose({code: 4513, reason: ''});
+  assert.match(page.run('statusEl.textContent'), /בעוד 2 שנ'/, 'the backoff starts over after a good connection');
+});
+
+test('rc6: "התחבר מחדש" leaves the old socket unable to touch the new connection', () => {
+  const page = setup();
+  const old = page.sockets[0];
+  const onclose = old.onclose, onmessage = old.onmessage;
+  page.run('document.getElementById("reconnect")').__l.click();
+  assert.equal(page.sockets.length, 2);
+  assert.equal(old.closed, true);
+  onmessage({data: new Uint8Array([9, 9, 9]).buffer});
+  onclose({code: 1006, reason: ''});
+  assert.equal(page.run('stream.closed'), false, 'the old close failed the new stream');
+  assert.equal(page.run('stream.length'), 0, 'old bytes landed in the new stream');
+  assert.equal(page.run('statusEl.textContent'), 'מתחבר…');
+  drainUntil(page, () => page.sockets.length > 2);
+  assert.equal(page.sockets.length, 2, 'the old close scheduled a retry');
 });

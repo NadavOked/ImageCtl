@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 import sqlite3
 import threading
@@ -106,6 +107,7 @@ CREATE TABLE IF NOT EXISTS room_rounds (
     target_drives   INTEGER NOT NULL,      -- כמה כוננים צריך הפעם, סה"כ
     written_drives  INTEGER NOT NULL DEFAULT 0,
     written_serials TEXT NOT NULL DEFAULT '[]',  -- JSON; מגירה נספרת פעם אחת
+    skipped_serials TEXT NOT NULL DEFAULT '[]',  -- JSON; ‏#1760: מגירות שדולגו כאדומות — סגורות, לא נכתבו
     target_slots_json TEXT,                -- בחירת דיסקי יעד לכל מכונה; NULL=סבב ישן
     expand_partition TEXT,                 -- בחירת ההרחבה לכל גלי הסבב (#59); NULL=אוטומטי
     driver_models_json TEXT,               -- דגם דרייברים לכל דיסק יעד (#1269); NULL=בלי דרייברים
@@ -134,6 +136,19 @@ CREATE TABLE IF NOT EXISTS power_requests (
     requested_at TEXT NOT NULL,
     requested_by TEXT NOT NULL,
     confirmed    INTEGER NOT NULL DEFAULT 0   -- #1367: אושר מעל אזהרת שיכפול מקומי
+);
+
+-- ‏#1386: "בטל דיסק זה" באמצע גל (`drawer_cancel.py`). שורה למגירה בגל; ‏`done_at`
+-- = הסוכן דיווח `cancelled` (הראיה). ‏source: console | build | cloner (מסך המשכפל).
+CREATE TABLE IF NOT EXISTS drawer_cancels (
+    session_id   TEXT NOT NULL,
+    mac          TEXT NOT NULL,
+    dev          TEXT NOT NULL,
+    requested_by TEXT,
+    source       TEXT NOT NULL CHECK (source IN ('console', 'build', 'cloner')),
+    requested_at TEXT NOT NULL,
+    done_at      TEXT,
+    PRIMARY KEY (session_id, mac, dev)
 );
 
 -- ‏#989 ס׳ 2: שאלת ה-SMART של משכפל (`smart_ask.py`) — שורה אחת למכונה, והתשובה
@@ -179,7 +194,9 @@ CREATE TABLE IF NOT EXISTS users (
     mfa_last_step INTEGER,
     -- #1008: הכניסה האחרונה שהנפיקה עוגייה, ומאיזו כתובת. NULL = לא נרשמה.
     last_login_at TEXT,
-    last_login_from TEXT
+    last_login_from TEXT,
+    -- נדב 18/10: "דרוש אימות דו-שלבי" למשתמש — רישום MFA בכניסה גם כשהחיוב הכללי כבוי
+    mfa_required INTEGER NOT NULL DEFAULT 0
 );
 
 -- ‏#1085: קודי גיבוי חד-פעמיים ל-TOTP. מוצגים פעם אחת בהפעלה, נשמרים כ-hash.
@@ -224,6 +241,13 @@ CREATE TABLE IF NOT EXISTS console_sessions (
     last_seen  TEXT NOT NULL,
     expires_at REAL NOT NULL,
     auth_epoch INTEGER NOT NULL DEFAULT 0
+);
+
+-- ‏#1633: עוגיות שיצאו ב-logout. העוגייה חסרת-מצב, ובלי השורה הזו עותק
+-- שלה נשאר תקף עד התפוגה. לפי ה-sha256 שלה; נמחקת אחרי ``expires_at``.
+CREATE TABLE IF NOT EXISTS revoked_tokens (
+    token_hash TEXT PRIMARY KEY,
+    expires_at REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS journal (
@@ -360,7 +384,7 @@ CREATE TABLE IF NOT EXISTS machine_slot_names (
 
 -- זיכרון כשלי כתיבה (#874): במקום סימון על הדיסק (#845, נפסל) השרת זוכר
 -- **איזה דיסק (סידורי) ואיזה חריץ (מכונה+פורט)** נכשלו, ומה הקרנל אמר.
--- הסוכן שולח את שורות ה-ATA; הסיווג (cable/disk/unclassified) נעשה כאן
+-- הסוכן שולח את שורות ה-ATA; הסיווג (cable/disk/removed/unclassified) נעשה כאן
 -- (`ata_cause.py`). ‏`cleared_at` הוא "נקה" מהקונסולה — הדיסק הוחלף או
 -- הכבל תוקן; רשומה מנוקה אינה צובעת עוד. שורה אחת לכל (סבב, מכונה, יעד):
 -- הדיווח חוזר כל 2 שניות, והכשל נרשם פעם אחת.
@@ -373,7 +397,7 @@ CREATE TABLE IF NOT EXISTS disk_failures (
     port       INTEGER,              -- החריץ (SATA N, כמו ב-hello) -- זהות המקום
     ata_port   INTEGER,              -- ata<N> של הקרנל, לקריאה מול dmesg
     at         TEXT NOT NULL,
-    cause      TEXT NOT NULL,        -- cable|disk|unclassified
+    cause      TEXT NOT NULL,        -- cable|disk|removed|unclassified
     error      TEXT,
     ata_log    TEXT,                 -- JSON: שורות הקרנל, הראיה
     cleared_at TEXT,
@@ -485,7 +509,8 @@ CREATE TABLE IF NOT EXISTS parent_credentials (
     bound_cert_ref     TEXT NOT NULL,
     pinned_parent_spki TEXT NOT NULL,
     protocol_version   TEXT NOT NULL,
-    enrolled_at        TEXT NOT NULL
+    enrolled_at        TEXT NOT NULL,
+    last_contact_at    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pairing_windows (
@@ -528,7 +553,8 @@ CREATE TABLE IF NOT EXISTS storage_transfers (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     direction   TEXT NOT NULL DEFAULT 'push'
-                CHECK (direction IN ('push', 'pull'))
+                CHECK (direction IN ('push', 'pull')),
+    location_id TEXT NOT NULL DEFAULT 'loc_local'
 );
 
 -- מיקומי אחסון לספרייה (#1066 שלב א'): תיקייה / NFS / SMB / iSCSI.
@@ -573,11 +599,30 @@ CREATE TABLE IF NOT EXISTS drive_rates (
 -- `sessions` לפי רשימת עמודות מפורשת, ועמודה חדשה הייתה נמחקת שם.
 -- ‏`stream` — מה ש-udp-sender ספר בסוף הגל (`drive_rates.record_stream`):
 -- ‏JSON של `sent_bytes` ו-`loss_blocks`; ‏NULL = השולח לא דיווח.
+-- ‏`drops` — ‏`udp_drops` של כל מקלט בגל (`drive_rates.record_wave`, 17/10):
+-- ‏JSON ‏{mac: {"rcvbuf", "inerrors"} | null}; ‏NULL = הגל לא נסגר דרך החדר.
+-- ‏`delivered` — מה שכל מחשב שיכפול כתב בגל (‏#1758, `drive_rates.record_wave`):
+-- ‏JSON ‏{mac: {"drawers", "done", "written_bytes"} | null} — המונה של goodput.
 CREATE TABLE IF NOT EXISTS wave_rates (
     session_id TEXT PRIMARY KEY,
     decision   TEXT NOT NULL,
     at         TEXT NOT NULL,
-    stream     TEXT
+    stream     TEXT,
+    drops      TEXT,
+    delivered  TEXT
+);
+
+-- ‏#1761: קצב שהיה לא בטוח למכונה (`drive_rates._unsafe` — udp-sender ניתק
+-- מקלט, או מגירה אבדה עם שידורים חוזרים) — נזכר גם אחרי שהגל יוצא מחלון
+-- ה-goodput, ומעליו לא מחפשים. שורה לכל (מכונה, מגירות, קצב): חסומה במספר
+-- הקצבים, ואינה נמחקת (`housekeeping` אינו נוגע בה) — לשכוח היא הבאג.
+CREATE TABLE IF NOT EXISTS unsafe_rates (
+    mac        TEXT NOT NULL,
+    drawers    INTEGER NOT NULL,
+    rate_bps   INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    at         TEXT NOT NULL,
+    PRIMARY KEY (mac, drawers, rate_bps)
 );
 """
 
@@ -603,7 +648,15 @@ DEFAULT_SETTINGS = {
     # שידורים חוזרים וכוננים איטיים, לעולם לא מעל `IMAGECTL_MAX_BITRATE`
     # (בלעדיו 900m). ‏"false" = קצב הפתיחה (600m), קבוע.
     "learned_rate_enabled": "true",
+    # נדב 18/10: "תכלס לא צריך לזה MFA" — אין חיוב MFA למנהלים, גם בשדרוג של שרת שבו
+    # היה (‏console_mfa.SETTING; ‏_initialize רושם ביומן כשהשדרוג מכבה חיוב שהיה).
+    "mfa_required_for_admins": "false",
 }
+
+#: השורה ביומן כששדרוג מכבה את החיוב שהיה לכל מנהל עד rc6 (נדב 18/10).
+MFA_UPGRADE_NOTE = ("mfa_required_for_admins=false — בשדרוג: חיוב אימות דו-שלבי למנהלים"
+                    " כבוי (הכרעת נדב 18/10). מי שהפעיל MFA ממשיך להתבקש לקוד;"
+                    " להחזרת החיוב: הגדרות ← אבטחה")
 
 
 def now_iso() -> str:
@@ -660,6 +713,9 @@ ADDED_COLUMNS = [
     # (‏staged / no_match / skipped / failed + סיבה). NULL = השלב לא רץ
     # (סוכן ישן, או שהדיווח הסופי הגיע בלי השדה) — לא "אין התאמה".
     ("session_members", "drivers_json", "TEXT"),
+    # הכרעת נדב 17/10: מה שהקרנל של המקלט זרק בזמן הזרם (`udp_drops` בדיווח,
+    # סכום על מחיצות המולטיקאסט). NULL = לא דווח — לא "אפס", והקצב לא עולה.
+    ("session_members", "udp_drops_json", "TEXT"),
     # סבב לחלק מהכיתה: רשימת ה-MAC שנבחרו. NULL = כל הקבוצה.
     # רק הנבחרים מוערים ב-WoL ורק הם מצטרפים — השאר עולים מהדיסק.
     ("sessions", "roster_json", "TEXT"),
@@ -688,6 +744,8 @@ ADDED_COLUMNS = [
     # ה-login שם אינה נושאת כתובת).
     ("users", "last_login_at", "TEXT"),
     ("users", "last_login_from", "TEXT"),
+    # נדב 18/10: "דרוש אימות דו-שלבי" למשתמש (console_mfa.enrollment_required). קיים — 0.
+    ("users", "mfa_required", "INTEGER NOT NULL DEFAULT 0"),
     # ‏#530: האסימון שמוכיח שהפונה הוא בעל המשימה. ‏NULL בהתקנה קיימת,
     # כלומר משימות שנוצרו לפני המיגרציה **אינן ניתנות לכתיבה** —
     # ‏`claim` מסרב על `token` ריק. זו הכרעה: משימה ישנה שתיתקע עדיפה
@@ -698,6 +756,10 @@ ADDED_COLUMNS = [
     # הלא-דחוס (בלוקי partclone), שאין לו ייצוג בעמודות bytes_* הדחוסות.
     # ‏NULL בשורות שקדמו למיגרציה, כלומר "אין דיווח מפורט", לא "אפס".
     ("tasks", "targets_json", "TEXT"),
+    # ‏#1576 (נדב 17/10): מאיפה הוזמנה המשימה. ‏`build_gui` = הגואי של מחשב
+    # הבנייה -- ערוץ הסוכן, ‏kiosk.mark_build_gui; משימה כזו שלא התחילה כשהמכונה אותחלה
+    # מבוטלת (boot_cancel.py). שורה קיימת = `console` -- לא מבוטלת.
+    ("tasks", "origin", "TEXT NOT NULL DEFAULT 'console'"),
     # ‏#980 §4: שלב הקליטה שהסוכן דיווח (‏`tasks.CAPTURE_STAGES`) ומתי נכנס
     # אליו. NULL = לא דווח (סוכן ישן, או משימה שטרם החלה) — לא "שלב ראשון".
     ("tasks", "stage", "TEXT"),
@@ -728,12 +790,18 @@ ADDED_COLUMNS = [
     ("room_rounds", "source_task_id", "TEXT"),
     ("room_rounds", "live_manifest_json", "TEXT"),
     ("room_rounds", "failed_reason", "TEXT"),
+    # ‏#1760: מגירות שהסוכן דילג עליהן כאדומות (‏SMART fail / קריאה בלבד) בסבב —
+    # סגורות, לא נכתבו: אינן "טריות", אינן פותחות גל ואינן מעירות. סבב קיים — אין.
+    ("room_rounds", "skipped_serials", "TEXT NOT NULL DEFAULT '[]'"),
     # ‏#929: רשומת כיווץ לדיסק עם כמה מחיצות. NULL בשורה שנפתחה לפני —
     # רשומה של מחיצה אחת, והעמודות idx/start_sector/… הן היא.
     ("shrink_records", "partitions", "TEXT"),
     # ‏#1071: כיוון ההעברה. התקנה קיימת — כל השורות הן push, ברירת המחדל.
     ("storage_transfers", "direction",
      "TEXT NOT NULL DEFAULT 'push'"),
+    # #1697: יעד ה-push במשני. שורות קיימות נשלחו ל-loc_local.
+    ("storage_transfers", "location_id",
+     "TEXT NOT NULL DEFAULT 'loc_local'"),
     # ‏#1017: מתי המשני ענה לאחרונה, ומה הכשל של הקריאה האחרונה (ומתי).
     # נכתבים בכל קריאה בין-שרתית (`storage_nodes.record_contact`). NULL
     # בשורה קיימת = "לא נמדד עדיין", לא "לא ענה".
@@ -745,9 +813,17 @@ ADDED_COLUMNS = [
     # לא יודע את הגרסה שלו (אין תג). נכתבות ב-`storage_nodes.record_version`.
     ("storage_nodes", "server_version", "TEXT"),
     ("storage_nodes", "server_version_at", "TEXT"),
+    # #1564: positive evidence on the secondary itself. Updated only after
+    # the paired parent passes the shared mTLS/SPKI/token guard.
+    ("parent_credentials", "last_contact_at", "TEXT"),
     # קצב אוטומטי (הכרעת נדב 11/10): מה ש-udp-sender ספר בסוף הגל. NULL בשורות
     # שקדמו למיגרציה = "לא נמדד" — הקצב אינו עולה מהן.
     ("wave_rates", "stream", "TEXT"),
+    # הכרעת נדב 17/10: ‏`udp_drops` של מקלטי הגל. NULL בשורות שקדמו = "לא נקרא".
+    ("wave_rates", "drops", "TEXT"),
+    # ‏#1758: מה שכל מחשב שיכפול כתב בגל — goodput. NULL בשורות שקדמו = "לא נמדד",
+    # והגל ההוא נבחן בכלל של לפני #1758 (`drive_rates._next_from`).
+    ("wave_rates", "delivered", "TEXT"),
 ]
 
 
@@ -837,6 +913,7 @@ def _rebuild_state_tables(conn: sqlite3.Connection) -> None:
                     target_drives INTEGER NOT NULL,
                     written_drives INTEGER NOT NULL DEFAULT 0,
                     written_serials TEXT NOT NULL DEFAULT '[]',
+                    skipped_serials TEXT NOT NULL DEFAULT '[]',
                     target_slots_json TEXT,
                     expand_partition TEXT,
                     driver_models_json TEXT,
@@ -857,12 +934,14 @@ def _rebuild_state_tables(conn: sqlite3.Connection) -> None:
             conn.execute("""
                 INSERT INTO room_rounds_new
                     (id, image_id, target_drives, written_drives, written_serials,
+                     skipped_serials,
                      target_slots_json, expand_partition, driver_models_json,
                      source_kind, source_mac,
                      source_disk, source_task_id, live_manifest_json, state,
                      wave_session_id, wave_number, opened_by, created_at, closed_at,
                      failed_reason)
                 SELECT id, image_id, target_drives, written_drives, written_serials,
+                       skipped_serials,
                        target_slots_json, expand_partition, driver_models_json,
                        source_kind, source_mac,
                        source_disk, source_task_id, live_manifest_json, state,
@@ -908,14 +987,14 @@ _STORAGE_SCHEMA_COLUMNS = {
                       "disabled_at"},
     "parent_credentials": {"singleton", "parent_id", "token_hash",
                            "bound_cert_ref", "pinned_parent_spki",
-                           "protocol_version", "enrolled_at"},
+                           "protocol_version", "enrolled_at", "last_contact_at"},
     "pairing_windows": {"singleton", "code_hash", "code_salt", "opened_at",
                         "expires_at", "attempts_remaining"},
     "storage_identity": {"singleton", "node_id", "server_spki",
                          "server_cert_ref", "server_key_ref"},
     "storage_transfers": {"id", "node_id", "image_id", "image_name", "state",
                           "bytes_sent", "bytes_total", "error", "started_by",
-                          "created_at", "updated_at", "direction"},
+                          "created_at", "updated_at", "direction", "location_id"},
     "storage_locations": {"id", "name", "type", "params_json", "mount_point",
                           "state", "state_since", "state_detail", "created_by",
                           "created_at", "last_images_json", "last_df_json"},
@@ -1005,6 +1084,20 @@ def _open(path: str) -> sqlite3.Connection:
     return conn
 
 
+def _restrict_mode(path: str) -> None:
+    """‏#1632: הקובץ מחזיק את ``console_secret`` (חותם העוגיות) ואת גיבובי
+    הסיסמאות, ו-umask ברירת המחדל יצר אותו 0644. ‏0600 — רק root (השרת,
+    ה-DCUI והמתקין רצים כ-root). ‏sqlite יוצר את ``-wal``/``-shm`` בהרשאות
+    של הקובץ הראשי, אבל קבצים שכבר נוצרו 0644 נשארים כך — ולכן גם הם.
+    ‏``chmod`` שנכשל זורק: השרת לא עולה עם סוד קריא לכל (עיקרון 5)."""
+    if os.name != "posix":
+        return
+    for suffix in ("", "-wal", "-shm"):
+        target = path + suffix
+        if os.path.exists(target):
+            os.chmod(target, 0o600)
+
+
 def _initialize(conn: sqlite3.Connection) -> None:
     """הסכימה וברירות המחדל — פעם אחת לקובץ, לא פעם אחת לחיבור."""
     conn.executescript(SCHEMA)
@@ -1032,6 +1125,12 @@ def _initialize(conn: sqlite3.Connection) -> None:
     _verify_storage_schema(conn)
     _close_duplicate_actives(conn)
     _create_unique_indexes(conn)
+    # נדב 18/10: שרת קיים שבו כל מנהל (לא המקומי) חויב ב-MFA — השדרוג מכבה את החיוב,
+    # ובגלוי: שורת יומן. התקנה חדשה (אין עדיין מנהל כזה) — בלי שורה.
+    mfa_upgrade = (
+        conn.execute("SELECT 1 FROM settings WHERE key = 'mfa_required_for_admins'").fetchone() is None
+        and conn.execute("SELECT 1 FROM users WHERE role = 'admin' AND is_builtin = 0"
+                         " LIMIT 1").fetchone() is not None)
     for key, value in DEFAULT_SETTINGS.items():
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value)
@@ -1047,6 +1146,8 @@ def _initialize(conn: sqlite3.Connection) -> None:
             (gid, label, role),
         )
     conn.commit()
+    if mfa_upgrade:
+        journal(conn, "setting_change", MFA_UPGRADE_NOTE, "")
 
 
 class Database:
@@ -1087,6 +1188,7 @@ class Database:
             with self._init_lock:
                 if not self._ready:
                     _initialize(conn)
+                    _restrict_mode(self._path)
                     self._ready = True
             self._local.conn = conn
         return conn

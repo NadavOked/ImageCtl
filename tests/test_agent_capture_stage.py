@@ -66,7 +66,7 @@ def test_the_capture_flow_marks_every_stage_in_order():
     order = [capture.index(s) for s in (
         "capture_stage ntfs_check", "capture_ntfs_hibernation_reason \"$_node\"",
         "capture_stage shrink", "capture_space_preflight \"$_task\"",
-        "capture_stage stream", "capture_stage restore_size", "shrink_restore_source \"$_disk\"\n")]
+        "capture_stage stream", "capture_stage restore_size", "shrink_restore_source \"$_disk\"")]
     assert order == sorted(order)
     sink = (LIB / "capturesink.sh").read_text(encoding="utf-8")
     upload = sink[sink.index("upload_manifest() {"):]

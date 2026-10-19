@@ -148,11 +148,13 @@ def test_no_answer_powers_off_and_no_key_is_read(tmp_path, reports):
 @native_tools
 def test_the_question_is_the_gui_dialog_through_attended(tmp_path, reports):
     """‏`attended` נושא את השאלה לקונסולה (#906); השאלה עצמה היא הדיאלוג
-    capture-end, עם השניות של CAPTURE_END_ASK_S כ-subject וכתקרה."""
+    capture-end. ‏#1560 (ברזל 17/10): התקרה 20 ש׳ (CAPTURE_END_ASK_S, נדב), והנושא
+    הוא רגע הכיבוי — הגואי סופר אליו; עד אז "20" כטקסט קבוע שלא זז."""
     result = run_end(tmp_path, url_of(reports), answer=None, gui="poweroff")
     asked = [t for t in result["trace"] if t.startswith("ASKED ")]
     assert asked == ["ASKED הקליטה הושלמה: לכבות או לחזור לתפריט"]
-    assert "DIALOG capture-end 20  20" in result["trace"], result["trace"]
+    from test_end_of_task_1560 import asked_dialog
+    assert asked_dialog(result["trace"], "capture-end"), result["trace"]
 
 
 @native_tools

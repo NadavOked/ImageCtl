@@ -351,6 +351,21 @@ def test_timer_expiry_starts_the_round(store):
     assert sessions.maybe_start(sessions.active())["state"] == "running"
 
 
+def test_a_future_last_join_is_due_instead_of_freezing_the_round(store):
+    """#1771: a forward wall-clock stamp cannot extend the relative wait."""
+    sessions, clock = store
+    sessions.open("g", "img_1", "LAB1", 30, "noc", wait_seconds=300)
+    sessions.record_hello(sessions.active(), "aa:aa:aa:aa:aa:01")
+    sessions.conn.execute(
+        "UPDATE sessions SET last_join_at = ? WHERE id = ?",
+        (clock() + 3 * 60 * 60, sessions.active()["id"]),
+    )
+    sessions.conn.commit()
+
+    assert sessions.starts_in_seconds(sessions.active()) == 0
+    assert sessions.maybe_start(sessions.active())["state"] == "running"
+
+
 def test_empty_round_never_starts_by_itself(store):
     """סבב בלי אף מצטרף לא "מבשיל" — הוא נסגר מהקונסולה."""
     sessions, clock = store

@@ -7,6 +7,14 @@ TZif file -- tzdata's own rule, not a table in this code.
 
 ``None`` means unknown (rule 5: never a guess); the GUI then shows its clock
 as UTC with a ``UTC`` label. The file is read once per path per process.
+
+The same zone is the server's own (the DCUI clock, auto-reboot's "03:00"):
+the console changes it with ``timedatectl`` and the setting together, and
+``apply_on_start`` brings an OS zone that differs -- a server installed with
+Debian's Etc/UTC before #1447 -- to the setting. Only the display changes:
+the DB keeps UTC timestamps. Every touch of the machine goes through hooks
+(``default_hooks``) that tests replace; success is a read-back, not an exit
+code (rule 5).
 """
 
 from __future__ import annotations
@@ -14,13 +22,21 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+import subprocess
+import time
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
-from .db import get_setting
+from .db import get_setting, journal
 
 DEFAULT_ZONE = "Asia/Jerusalem"
 ZONEINFO = Path("/usr/share/zoneinfo")
+#: tzdata's own list: one row per country, the zone in the third column.
+ZONE_TAB = "zone.tab"
+SETTING = "timezone"
+
+Hooks = dict[str, Callable]
 
 _ZONE_RE = re.compile(r"^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$")
 _POSIX_RE = re.compile(r"^[A-Za-z0-9<>+\-,./:]{1,64}$")
@@ -28,7 +44,7 @@ log = logging.getLogger(__name__)
 
 
 def zone_name(conn: sqlite3.Connection) -> str:
-    value = get_setting(conn, "timezone")
+    value = get_setting(conn, SETTING)
     return value.strip() if value and value.strip() else DEFAULT_ZONE
 
 
@@ -72,3 +88,73 @@ def _footer(path: str, zone: str) -> str | None:
         _unknown(zone, "invalid TZif footer")
         return None
     return value
+
+
+def zones(root: Path | None = None) -> list[str]:
+    """The zones the console offers: tzdata's zone.tab plus UTC, sorted.
+    ``OSError`` when the list cannot be read -- never an empty "no zones"."""
+    names = {"UTC"}
+    for line in ((root or ZONEINFO) / ZONE_TAB).read_text(encoding="utf-8").splitlines():
+        cols = line.split("	")
+        if not line.startswith("#") and len(cols) >= 3 and _ZONE_RE.fullmatch(cols[2]):
+            names.add(cols[2])
+    return sorted(names)
+
+
+def _timedatectl_zone() -> str | None:
+    """The OS zone as systemd reports it; ``None`` = could not read it."""
+    try:
+        done = subprocess.run(["timedatectl", "show", "-p", "Timezone", "--value"],
+                              capture_output=True, text=True, timeout=10,
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    value = done.stdout.strip()
+    return value if done.returncode == 0 and value else None
+
+
+def _timedatectl_set(zone: str) -> str | None:
+    try:
+        done = subprocess.run(["timedatectl", "set-timezone", zone],
+                              capture_output=True, text=True, timeout=20,
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"timedatectl לא רץ: {exc}"
+    if done.returncode != 0:
+        return f"timedatectl החזיר {done.returncode}: {(done.stderr or done.stdout).strip()}"
+    return None
+
+
+def default_hooks() -> Hooks:
+    return {"timezone": _timedatectl_zone, "set_timezone": _timedatectl_set}
+
+
+def set_system_zone(zone: str, hooks: Hooks) -> str | None:
+    """``None`` once the OS reads ``zone`` back, else why not. On success this
+    process re-reads the zone too (``time.tzset``): glibc keeps the zone it
+    read first, and auto-reboot's local "03:00" lives in this process."""
+    error = hooks["set_timezone"](zone)
+    if not error:
+        seen = hooks["timezone"]()
+        if seen != zone:
+            error = f"הפקודה הצליחה אך המערכת מדווחת {seen!r} — השינוי לא אומת"
+    if not error and hasattr(time, "tzset"):
+        time.tzset()
+    return error
+
+
+def apply_on_start(conn: sqlite3.Connection, hooks: Hooks) -> None:
+    """The server's start: the OS zone follows the setting (else the default).
+    Every outcome other than "already equal" is a journal line."""
+    zone = zone_name(conn)
+    seen = hooks["timezone"]()
+    if seen is None:
+        journal(conn, "timezone_apply_failed", f"אזור הזמן של המערכת לא נקרא; הרצוי {zone}")
+        return
+    if seen == zone:
+        return
+    error = set_system_zone(zone, hooks)
+    if error:
+        journal(conn, "timezone_apply_failed", f"{seen} → {zone}: {error}")
+    else:
+        journal(conn, "timezone_applied", f"{seen} → {zone}")

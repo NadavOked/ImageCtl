@@ -174,6 +174,17 @@ def test_native_gui_literals_are_hebrew():
     assert not bad, "מחרוזת ASCII-בלבד מצוירת בגואי:\n" + "\n".join(bad)
 
 
+def test_installer_inventory_machine_values_are_translated_at_the_display_boundary():
+    draw = (REPO / "native-gui" / "src" / "screens_install_setup.c").read_text(encoding="utf-8")
+    assert 'strcmp(raw,"empty")' in draw and 'snprintf(out,n,"ריק")' in draw
+    assert 'strcmp(raw,"unknown")' in draw and 'snprintf(out,n,"לא ידוע")' in draw
+    assert '"%s:%d מחיצות (%s)"' in draw
+    assert '"מערכת קבצים %s"' in draw
+    assert 'strcmp(d->bus,"unknown")' in draw
+    assert 'strcmp(n->link,"unknown")' in draw
+    assert 'install_text_r(cr,t,d->iso?"מדיית ההתקנה":(d->has[0]?d->has:"—")' not in draw
+
+
 def test_the_c_scan_sees_a_drawn_literal():
     probe = 'Text t = rtl(g, 12, 400, "This disk could not be verified", w);'
     m = C_SINKS.search(probe)
@@ -209,6 +220,50 @@ def test_the_installer_field_error_is_not_the_engine_english_line():
     text = _bridge()
     assert 'emit "errors.$(field_for_code "${_ev_code:-unknown}")" "$_ev_msg"' not in text
     assert 'he_for_code "${_ev_code:-unknown}"' in text
+
+
+# --------------------------------------------------------------------------- #
+# שאלה שהמכונה ממתינה עליה (prompt ב-hello → "ממתין למפעיל: …" בקונסולה)
+# --------------------------------------------------------------------------- #
+
+#: ‏`attended_start "…"` / ‏`attended "…" cmd` עם שאלה קבועה — מה שעולה כ-`prompt` כמו שהוא.
+ATTENDED_QUESTION = re.compile(r"""\battended(?:_start)?\s+"([^"$]+)"(?:\s|;|$)""")
+
+
+def _attended_questions() -> list[tuple[str, str]]:
+    found = []
+    for path in sh_files():
+        for n, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if line.strip().startswith("#"):
+                continue
+            for m in ATTENDED_QUESTION.finditer(line):
+                found.append((f"{path.relative_to(REPO)}:{n}", m.group(1)))
+    return found
+
+
+def _prompt_he() -> dict[str, str]:
+    js = (REPO / "server" / "static" / "console.js").read_text(encoding="utf-8")
+    block = re.search(r"const PROMPT_HE = \{(.*?)\};", js, re.S)
+    assert block, "PROMPT_HE לא נמצא ב-console.js"
+    pairs = re.findall(r'(?:"([^"]*)"|([A-Za-z_]\w*))\s*:\s*"([^"]*)"', block.group(1))
+    return {quoted or bare: value for quoted, bare, value in pairs}
+
+
+def test_every_fixed_attended_question_has_a_hebrew_prompt_line():
+    """rc6, 18/10: בדף המוניטור משכפל 2 הוצג "ממתין למפעיל: Local clone screen: from
+    the server, or a local clone". השאלה של `attended_start` עולה ב-hello כ-`prompt`,
+    ו-promptHe ב-console.js מציג טקסט שאין לו תרגום כמו שהוא. לכל שאלה קבועה באנגלית
+    בסוכן — שורה עברית ב-PROMPT_HE, מילה במילה."""
+    questions = _attended_questions()
+    texts = {q for _, q in questions}
+    # בקרה: הסריקה רואה את שלוש השאלות הקבועות של השיכפול המקומי (סריקה עיוורת = ירוק שקרי).
+    assert "Local clone screen: from the server, or a local clone" in texts, questions
+    assert "Restore an image from the server onto this machine's drawers" in texts, questions
+    table = _prompt_he()
+    assert table.get("menu") == "תפריט", table   # הפרסור קורא גם מפתח בלי גרשיים
+    bad = [f"{where} {q}" for where, q in questions
+           if is_english_sentence(q) and not HEBREW.search(table.get(q, ""))]
+    assert not bad, "שאלה באנגלית שתגיע לקונסולה בלי שורה ב-PROMPT_HE:\n" + "\n".join(bad)
 
 
 # --------------------------------------------------------------------------- #

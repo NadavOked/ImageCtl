@@ -25,7 +25,7 @@ enum { DEV_KEYBOARD = 1, DEV_MOUSE = 2, DEV_TOUCH = 4, DEV_ABSPTR = 8 };
 
 /* #1475: agent/monitor.c's UINPUT_NAME, verbatim. The rescan keeps looking
  * for this device when a monitor serves the screen (input_want_remote). */
-#define MONITOR_UINPUT_NAME "ImageCtl remote monitor"
+#define MONITOR_UINPUT_NAME "ImageSrv remote monitor"
 
 typedef struct {
     int fd, kinds;
@@ -249,6 +249,7 @@ static void key_event(Input *in, Dev *d, int code, int value) {
                         e.type = UIEV_KEY; e.key = KEYSYM_ENTER; push(in, e); return;
     case KEY_BACKSPACE: e.type = UIEV_KEY; e.key = KEYSYM_BACKSPACE; push(in, e); return;
     case KEY_ESC:       e.type = UIEV_KEY; e.key = KEYSYM_ESC; push(in, e); return;
+    case KEY_DELETE:    e.type = UIEV_KEY; e.key = KEYSYM_DELETE; push(in, e); return;   /* #1386 */
     case KEY_UP:        e.type = UIEV_KEY; e.key = KEYSYM_UP; push(in, e); return;
     case KEY_DOWN:      e.type = UIEV_KEY; e.key = KEYSYM_DOWN; push(in, e); return;
     case KEY_LEFT:      e.type = UIEV_KEY; e.key = KEYSYM_LEFT; push(in, e); return;    /* the menu grid (mockup 10/10) */

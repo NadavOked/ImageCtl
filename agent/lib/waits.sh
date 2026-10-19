@@ -17,8 +17,8 @@
 
 # --- התקרות, במקום אחד -------------------------------------------------------
 
-# כמה זמן בין דגימות. שנייה: גס מספיק כדי לא לבזבז CPU לאורך שחזור של
-# רבע שעה, דק מספיק כדי שבדיקה תיכשל בשניות ולא בדקות.
+# כמה זמן בין דגימות (מונה, יומן, פעימה). שנייה: לא מבזבז CPU לאורך שחזור. סוף
+# התהליך נתפס תוך 0.1ש' (_nap, #1705: ‏3ש' בכל מעבר מחיצה, ברזל 17/10).
 WAIT_POLL_S="${WAIT_POLL_S:-1}"
 
 # עד הבייט הראשון. השרת מפעיל udp-sender רק אחרי ש-min-receivers הצטרפו
@@ -65,6 +65,12 @@ WAIT_HELPER_S="${WAIT_HELPER_S:-30}"
 # שלא מציג את השאלה (מצב שלא נקרא, רשומה שנדחתה) או חדר ריק. פקיעה =
 # הקליטה **מבוטלת** בגלוי, ושום דבר לא כווץ -- לעולם לא "כווץ" בשקט.
 WAIT_SHRINK_GUI_S="${WAIT_SHRINK_GUI_S:-1800}"
+
+# שאלת ה-SMART במסך מחשב השיכפול (‏clonergui.sh). אותה חצי שעה: אחריה --
+# "בלי תשובה" של הצבע (נדב 16/09): כתום כותב, אדום מדלג. עד 17/10 לא הייתה
+# תקרה, והשולח חיכה לשאלה לנצח. ‏server/smart_ask.py ‏ASK_HOLD_MAX_SECONDS
+# הוא התקרה הזו + 300: הסוכן מוותר ראשון, והשרת הוא רשת הביטחון.
+WAIT_SMART_GUI_S="${WAIT_SMART_GUI_S:-1800}"
 
 # בדיקת הכתיבה לפני הגל (#1366, writecheck.sh), לכל דיסק: 3×4MiB כתיבה ישירה
 # עם fsync וקריאה חוזרת — שנייה על דיסק תקין, גם על 15 MB/s פחות מ-2ש'. חצי
@@ -119,6 +125,7 @@ next_stream_ceiling() {
 # `sleep 0.1` at once -- and a refused tick must cost a real second, never
 # zero: a hot loop would call every smartctl "timed out" within milliseconds.
 poll_tick() { if sleep 0.1 2>/dev/null; then _tk=1; else sleep 1; _tk=10; fi; }
+_nap() { _nap_t=0; while [ "$_nap_t" -lt $((WAIT_POLL_S * 10)) ] && kill -0 "$1" 2>/dev/null; do poll_tick; _nap_t=$((_nap_t + _tk)); done; }   # $1 ends = back now
 
 capped_run() {
     # $1 = תקרה בשניות, $2 = קובץ ל-stdout של הפקודה, $3.. = הפקודה (‏stderr
@@ -148,17 +155,16 @@ wait_pid() {
     # $1 = pid, $2 = תקרה בשניות, $3 = על מה מחכים (לשורת הלוג).
     # 0 = הסתיים בזמן. 1 = פג הזמן: התהליך נהרג, נכתבה שורת לוג שאומרת
     # על מה ולכמה, והקורא ממשיך לסמן failed ולעבור הלאה.
-    _w_pid="$1"; _w_max="$2"; _w_what="$3"; _w_spent=0
+    _w_pid="$1"; _w_max="$2"; _w_what="$3"; _w_spent=0   # tenths (#1705)
     while kill -0 "$_w_pid" 2>/dev/null; do
         if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi
-        if [ "$_w_spent" -ge "$_w_max" ]; then
+        if [ "$_w_spent" -ge $((_w_max * 10)) ]; then
             log "פג הזמן: $_w_what לא הסתיים תוך $_w_max שניות -- נכשל"
             kill -9 "$_w_pid" 2>/dev/null
             wait "$_w_pid" 2>/dev/null
             return 1
         fi
-        sleep "$WAIT_POLL_S"
-        _w_spent=$((_w_spent + WAIT_POLL_S))
+        _nap "$_w_pid"; _w_spent=$((_w_spent + _nap_t))
     done
     wait "$_w_pid" 2>/dev/null
     return 0
@@ -170,6 +176,8 @@ wait_progress() {
     # $6.. = fifos whose blocked readers must be released after a timeout.
     # WAIT_STARTED_LOG + WAIT_STARTED_TEXT optionally delay the quiet clock
     # until explicit start evidence appears (#1497); they are one-shot.
+    # WAIT_ABORT_FILE (one-shot, metal 17/10): when that file appears the
+    # stream is stopped at once and rc=1 -- the server closed the session.
     #
     # כל עוד המונה זז ממתינים בלי שום הגבלה — זו כל הנקודה: כונן איטי
     # מעכב, הוא לא נתקע. השעון מתחיל לרוץ רק כשהמונה עומד, והתקרה
@@ -177,14 +185,19 @@ wait_progress() {
     # נפסק באמצע" הם שני מצבים שונים עם סבלנות שונה.
     _p_pid="$1"; _p_file="$2"; _p_max="$3"; _p_stall="$4"; _p_what="$5"
     _p_glog="${WAIT_STARTED_LOG:-}"; _p_gtxt="${WAIT_STARTED_TEXT:-}"
-    WAIT_STARTED_LOG=""; WAIT_STARTED_TEXT=""
+    _p_abort="${WAIT_ABORT_FILE:-}"
+    WAIT_STARTED_LOG=""; WAIT_STARTED_TEXT=""; WAIT_ABORT_FILE=""
     _p_gopen=1
     [ -n "$_p_glog" ] && [ -n "$_p_gtxt" ] && _p_gopen=0
     shift 5
     _p_seen=""; _p_still=0
     while kill -0 "$_p_pid" 2>/dev/null; do
         if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi
-        sleep "$WAIT_POLL_S"
+        _nap "$_p_pid"
+        if [ -n "$_p_abort" ] && [ -e "$_p_abort" ]; then
+            log "$_p_what: the server closed the session -- stopped"
+            _p_kill "$@"; return 1
+        fi
         # Missing text (grep 1) and a log not written yet or unreadable (grep 2,
         # its message dropped: it is this branch, not a lost one) both keep the
         # bounded START ceiling -- never success: the caller judges that.
@@ -211,13 +224,16 @@ wait_progress() {
         _p_still=$((_p_still + WAIT_POLL_S))
         [ "$_p_still" -lt "$_p_max" ] && continue
         log "פג הזמן: $_p_what -- $_p_max שניות בלי התקדמות (עצר על ${_p_seen:-0} בייטים) -- נכשל"
-        kill -9 "$_p_pid" 2>/dev/null
-        wait "$_p_pid" 2>/dev/null
-        for _p_fifo in "$@"; do unblock_fifo "$_p_fifo"; done
-        return 1
+        _p_kill "$@"; return 1
     done
     wait "$_p_pid" 2>/dev/null
     return 0
+}
+
+_p_kill() {   # wait_progress's way out: $@ = the fifos to release
+    kill -9 "$_p_pid" 2>/dev/null
+    wait "$_p_pid" 2>/dev/null
+    for _p_fifo in "$@"; do unblock_fifo "$_p_fifo"; done
 }
 
 unblock_fifo() {
@@ -228,4 +244,57 @@ unblock_fifo() {
     # ברקע בכוונה: אם הקורא כבר איננו, ה-open הזה הוא שייחסם, ואסור לו
     # לגרור איתו את מי שקרא לו. תהליך תלוי אחד ב-tmpfs שממילא מאותחל.
     ( exec 3<> "$1"; : ) 2>/dev/null &
+}
+
+# #1571: this machine's own UDP drops around one multicast stream. RcvbufErrors =
+# the kernel dropped datagrams because udp-receiver's socket buffer was full (it
+# did not get the CPU in time) -- a re-xmit the network did not cause. Counters
+# are machine-wide; on a cloner the stream is the only UDP of any volume.
+udp_drops() {   # "<RcvbufErrors> <InErrors>"; rc 1 = not read -- never "0 0"
+    awk '$1 == "Udp:" { if (!h) { for (i = 2; i <= NF; i++) c[$i] = i; h = 1; next }
+        if (c["RcvbufErrors"] && c["InErrors"] && $c["RcvbufErrors"] ~ /^[0-9]+$/ &&
+            $c["InErrors"] ~ /^[0-9]+$/) { print $c["RcvbufErrors"], $c["InErrors"]; ok = 1 }
+        exit } END { exit !ok }' "${SYSROOT:-}/proc/net/snmp" 2>/dev/null || return 1
+}
+udp_drops_mark() { UDP_DROPS0=""; [ "$1" != multicast ] || UDP_DROPS0=$(udp_drops) || :; }
+udp_drops_log() {   # $1 = mode, $2 = what was streamed
+    [ "$1" = multicast ] || return 0
+    _ud1=$(udp_drops) || _ud1=""
+    if [ -n "${UDP_DROPS0:-}" ] && [ -n "$_ud1" ]; then
+        set -- "$2" $UDP_DROPS0 $_ud1
+        log "$1: udp drops on this machine rcvbuf=$(($4 - $2)) inerrors=$(($5 - $3))"
+        udp_drops_add $(($4 - $2)) $(($5 - $3))
+    else
+        log "$2: udp drops not read (/proc/net/snmp)"
+        udp_drops_add null null
+    fi
+}
+# Rate policy (Nadav 17/10): the server raises the next wave only when every
+# receiver reported rcvbuf=0. The sum over this restore's multicast partitions
+# rides in the progress report (udp_drops); one unread partition makes the whole
+# sum unread -- a partial sum would read as "no drops" (principle 5).
+udp_drops_reset() { rm -f "$RUN_DIR/udp_drops.sum" "$RUN_DIR/udp_drops.json"; }
+udp_drops_add() {   # $1 = rcvbuf, $2 = inerrors of one partition ("null" = not read)
+    _ua=$(cat "$RUN_DIR/udp_drops.sum" 2>/dev/null) || _ua="0 0"
+    case "$1 $_ua" in
+        *null*) set -- null null ;;
+        *) set -- $(($1 + ${_ua% *})) $(($2 + ${_ua#* })) ;;
+    esac
+    echo "$1 $2" > "$RUN_DIR/udp_drops.sum"
+    printf '{"rcvbuf":%s,"inerrors":%s}\n' "$1" "$2" > "$RUN_DIR/udp_drops.json"
+}
+
+reread_table() {
+    # $1 = the disk node. blockdev --rereadpt is refused (EBUSY) while anything holds a
+    # partition open -- udev probing the nodes the previous reread or sgdisk just made.
+    # Under load that met the next table write (#1594): a target failed "the kernel
+    # refused" and its twin did not. Tried every second, at most REREAD_TRIES times; a
+    # refusal that outlasts them is the kernel's answer (1, last message in the log).
+    _rr_n=0
+    while :; do
+        blockdev --rereadpt "$1" >> "$LOG_FILE" 2>&1 && return 0
+        _rr_n=$((_rr_n + 1))
+        [ "$_rr_n" -lt "${REREAD_TRIES:-10}" ] || return 1
+        sleep 1
+    done
 }

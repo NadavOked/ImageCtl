@@ -55,6 +55,9 @@ ui_error_hold() {
     # then ran the heartbeat as `"$2" > /dev/null 2>&1 || true`, which threw
     # away the very evidence the heartbeat exists to produce (#109).
     HOLD_PROMPT="FAILED: $1"   # #906: rides on every hold beat (hold.sh)
+    # #1569 (owner 17/10): the same line as one Hebrew screen on the GUI
+    # (failscreen.sh); the tty text below stays behind it, for the journal.
+    command -v fail_screen >/dev/null 2>&1 && fail_screen hold "$1" || :
     ui_clear
     ui_header
     echo "  FAILED: $1"

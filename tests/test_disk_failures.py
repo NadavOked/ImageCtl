@@ -234,3 +234,96 @@ def test_a_failure_without_a_port_on_this_machine_needs_a_serial_to_match(conn):
     disk_failures.record(conn, "ses1", "b4:2e:99:07:1a:c4", failed_target(serial=None, port=None))
     assert disk_failures.open_for(conn, "b4:2e:99:07:1a:c4", [{"serial": "S1"}]) == []
     assert len(disk_failures.list_open(conn)) == 1
+
+
+# --- מגירה שנשלפה אינה אשמת הדיסק (נדב 17/10) ----------------------------------
+# המקרה מהמעבדה: ‏`disk_failures` id=1241 (17/10 12:24 UTC), ‏`cause=unclassified`,
+# המגירה "נשלפה" ב-`echo 1 > /sys/block/sdb/device/delete`. הכונן לא החזיר שגיאה
+# משלו — הקרנל דחה כתיבה להתקן שכבר אינו שם — והדיסק נצבע כתום (failed_last).
+# הכלל: ירוק בהפצה הבאה, כמו "זרם שנקטע". רק על ראיה חיובית (עיקרון 5).
+
+PULLED_ERROR = ("מחיצה 3: הקרנל דחה כתיבה לכונן: device offline error, dev sdb, sector 5963736"
+                " op 0x1:(WRITE) flags 0x100000 phys_seg 1 prio class 2")
+PULLED_LINES = ["[  200.000001] sd 2:0:0:0: [sdb] tag#3 device offline error, dev sdb,"
+                " sector 5963736 op 0x1:(WRITE) flags 0x100000 phys_seg 1 prio class 2"]
+
+#: ‏hot-unplug אמיתי של SATA: ה-AHCI מדווח שנוכחות ההתקן השתנתה (`DevExch`).
+HOTPLUG_LINES = [
+    "[  900.100001] ata3: exception Emask 0x10 SAct 0x0 SErr 0x4010000 action 0xe frozen",
+    "[  900.100005] ata3: irq_stat 0x00400040, connection status changed",
+    "[  900.100008] ata3: SError: { PHYRdyChg DevExch }",
+    "[  900.100011] ata3: hard resetting link",
+    "[  905.200001] ata3: SATA link down (SStatus 0 SControl 300)",
+]
+
+
+@pytest.mark.parametrize("lines, error", [
+    (PULLED_LINES, PULLED_ERROR),       # 1241: ה-ata_log מ-#1602 והשגיאה של הסוכן
+    ([], PULLED_ERROR),                 # סוכן לפני #1602: הראיה רק ב-error
+    ([], "מחיצה 2: הכונן נעלם מהמערכת (נשלף או נותק)"),   # ‏/sys/block/<d> נעלם
+    (HOTPLUG_LINES, "מחיצה 1: הכתיבה נכשלה (partclone rc=1)"),
+])
+def test_a_pulled_drawer_is_classified_removed(conn, lines, error):
+    """דרך `record` — המסלול של דיווח ההתקדמות, עם `error` של הסוכן."""
+    row = disk_failures.record(conn, "ses1", "b4:2e:99:07:1a:c4", failed_target(
+        dev="sdb", error=error, ata_log=lines))
+    assert row["cause"] == "removed"
+
+
+@pytest.mark.parametrize("lines, error, cause", [
+    # שגיאת כתיבה אמיתית: ‏errno 5 עם ata exception ו-UnrecovData — כמו id=1 במעבדה.
+    (CABLE_LINES, "partition 3: fsync errno=5", "cable"),
+    (CABLE_LINES, PULLED_ERROR, "cable"),          # סימן קו גובר גם על offline
+    (DISK_LINES + PULLED_LINES, PULLED_ERROR, "disk"),
+    # הכונן עבר טיפול שגיאות של ATA ואחריו הקרנל הוציא אותו offline — זה דיסק
+    # שגווע, לא מגירה ששלפו. בלי סימן קו/דיסק: לא סווג, לא ניחוש.
+    (["[ 50.0] ata2.00: exception Emask 0x0 SAct 0x0 SErr 0x0 action 0x6 frozen"] + PULLED_LINES,
+     PULLED_ERROR, "unclassified"),
+    ([], "מחיצה 3: הכתיבה נכשלה (partclone rc=1)", "unclassified"),
+    ([], "", "unclassified"),
+])
+def test_without_evidence_of_a_pull_the_cause_is_unchanged(conn, lines, error, cause):
+    row = disk_failures.record(conn, "ses1", "b4:2e:99:07:1a:c4", failed_target(
+        dev="sdb", error=error, ata_log=lines))
+    assert row["cause"] == cause
+
+
+def test_a_pulled_drawer_is_recorded_removed_and_does_not_colour_the_disk(conn):
+    """הרשומה נשמרת (ראיה, ביומן), אבל hello אינו מחזיר אותה והקונסולה אינה
+    מציגה אותה — הדיסק ירוק בהפצה הבאה. ‏**בקרה שלילית:** על הקוד הישן היא
+    ‏`unclassified` וחוזרת בשניהם — כתום."""
+    mac = "b4:2e:99:07:1a:c4"
+    row = disk_failures.record(conn, "ses1", mac, failed_target(
+        dev="sdb", serial="S-PULLED", port=2, error=PULLED_ERROR, ata_log=PULLED_LINES))
+    assert row["cause"] == "removed"
+    assert disk_failures.open_for(conn, mac, [{"serial": "S-PULLED"}]) == []
+    assert disk_failures.list_open(conn) == []
+
+
+def test_a_row_recorded_before_the_fix_as_unclassified_is_green_too(conn):
+    """הרשומה 1241 כבר ב-DB כ-`unclassified`: היא נקראת שוב לפי הראיה שבה,
+    ולא נשארת כתומה עד "נקה"."""
+    mac = "78:ac:c0:9b:11:c2"
+    conn.execute(
+        "INSERT INTO disk_failures (session_id, mac, dev, serial, port, ata_port, at, cause,"
+        " error, ata_log) VALUES ('ses_1241', ?, 'sdb', 'S-1241', 2, 3,"
+        " '2026-10-17T12:24:00+00:00', 'unclassified', ?, '[]')", (mac, PULLED_ERROR))
+    conn.commit()
+    assert disk_failures.open_for(conn, mac, [{"serial": "S-1241"}]) == []
+    assert disk_failures.list_open(conn) == []
+
+
+def test_a_real_write_error_still_colours_the_disk_orange(conn):
+    mac = "b4:2e:99:07:1a:c4"
+    disk_failures.record(conn, "ses1", mac, failed_target())       # CABLE_LINES, errno=5
+    (rec,) = disk_failures.open_for(conn, mac, [{"serial": "S3TWNE0JB04745"}])
+    assert rec["cause"] == "cable"
+
+
+def test_the_pull_phrases_are_what_the_agent_and_the_kernel_write():
+    """הביטוי של הסוכן חייב להיות המילים שהסוכן כותב, אחרת הסיווג "עובד" בטסט
+    ולא על ברזל."""
+    agent = Path(__file__).resolve().parent.parent / "agent"
+    source = "\n".join(p.read_text(encoding="utf-8") for p in agent.rglob("*.sh"))
+    for phrase in ata_cause.REMOVED_AGENT_PHRASES:
+        assert phrase in source, phrase

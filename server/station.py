@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import json
-import socket
 from collections.abc import Callable
 
 from fastapi import APIRouter, Request
@@ -19,9 +18,9 @@ from fastapi.responses import JSONResponse
 
 from .progress_view import capture_progress
 from .agent_version import server_version
-from . import capabilities, storage_locations, timezone
+from . import capabilities, ports, storage_locations, timezone
 from .api import ServerContext, _error, agent_credentials, identity_gate
-from .db import get_setting, journal
+from .db import journal
 from .hello import class_deploy_enabled
 from .images import restore_refusal
 from .registry import normalize_mac
@@ -162,7 +161,7 @@ def create_station_router(ctx: ServerContext,
             # name); the version is /me's (#915: the git tag) and null when it was
             # not read -- the screen then says "unknown", never a number.
             # The version itself is "server_version" above (#1257: read once).
-            "server_name": get_setting(ctx.conn, "server_name") or socket.gethostname(),
+            "server_name": ports.server_name(ctx.conn),
             "tz": timezone.posix_tz(ctx.conn),
             "task": {
                 "id": task["id"], "type": task["type"], "state": task["state"],

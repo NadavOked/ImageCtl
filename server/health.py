@@ -539,7 +539,7 @@ def _own_row(ctx, hooks: dict, port_id: str, ss_tcp: str, *,
         # כרטיס שרתים ("אתה שם?" בלבד, #1310); בלעדיהם אין מה לכבות.
         state, detail = ports.measured_state(None, listening)
         return _port(port_id, name, str(port), "tcp", desc, target, state,
-                     detail + " · לא מוגדר בשרת הזה (משני: עם --interserver-host; "
+                     detail + " · לא מוגדר בשרת הזה (שרת משנה: עם --interserver-host; "
                      "ראשי: כשהקונסולה על כרטיס שרתים, #1310)", note,
                      listening=listening, bind=bind, off_means=off_means)
     flag = ports.enabled(ctx.conn, port_id)
@@ -666,7 +666,7 @@ def ports_snapshot(ctx, hooks: dict, server_base: str) -> list[dict]:
                   "מפעילה שירות RFB"))
 
     entries.append(_own_row(ctx, hooks, "interserver", ss_tcp, name="HTTPS (mTLS)",
-        desc="רישום וסנכרון של שרתים משניים (#740)", target="שרת ראשי/משני",
+        desc="רישום וסנכרון של שרתי משנה (#740)", target="שרת ראשי/שרת משנה",
         note="לפתוח ב-FW: TCP 8443 בין השרתים בלבד"))
 
     ruleset = hooks["nft_ruleset"]()

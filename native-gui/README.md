@@ -188,9 +188,11 @@ stdout is line-buffered so a record arrives as it happens.
 | `back` | חזרה on pick / room / class | — | back at the menu; stop feeding that screen |
 | `again` | קליטה נוספת | — | back at the menu after `#st-done` |
 | `capture-start` | התחל קליטה | `dev=`, `name=`, `desc=`, `folder=`, `folder_new=yes\|no` | POST `/api/console/tasks/capture` (`resolveFolder`: with `folder_new=yes` create the folder first). `folder=` is never empty (#1251: no "ללא תיקייה" -- the screen refuses before emitting, and the server answers 400 anyway). The screen stays on `#st-pick` until the file says `task=pending`/`running`; a failure goes back as `form_error=` |
-| `room-open` | פתח סבב והער את החדר | `image=<id>`, `target=<n>`; with "להוסיף דרייברים" on also `slots=` (as `direct-open`) and `drivers=` (#1269) | POST `/api/console/room`; answer with `round=` or `room_error=`. #1269: with drivers the body adds `target_slots` and `driver_models` — the server binds a model only to a disk chosen as a target; switch off = the body as before |
+| `room-open` | פתח סבב והער את המחשבים שנבחרו (17/10: the server wakes only the cloners in `target_slots`) | `image=<id>`, `target=<n>`; with "להוסיף דרייברים" on also `slots=` (as `direct-open`) and `drivers=` (#1269) | POST `/api/console/room`; answer with `round=` or `room_error=`. #1269: with drivers the body adds `target_slots` and `driver_models` — the server binds a model only to a disk chosen as a target; switch off = the body as before |
 | `direct-open` | פתח סבב והער את המחשבים שנבחרו | `slots=<mac>@<port>,<port>/<mac>@<port>` | #715: POST `/api/console/room` with `source: {kind: build_disk, mac, disk}` + `target_slots`; the disk is the first non-removable one in the server inventory. Only ticked, present, fresh drawers are listed; none → `room_error=` locally. #1269: with drivers on, also `drivers=` → `driver_models` in the same body |
-| `room-wake` | העֵר … | — | POST `/api/console/room/wake`; answer with `toast=` |
+| `room-drawer-cancel` | "בטל…" on a writing drawer's row · "בטל דיסק…" / `X` (a choice among the writers) — #1386, after the window: "המשך לכתוב" (`Esc`) / the red "בטל את דיסק N" (`Del`, never `Enter`) | `cloner=<mac>`, `dev=<dev>` | POST `/api/console/room/drawer/cancel {mac, dev}` with the signed-in session (`roomflow.sh:room_drawer_cancel`); a refusal's reason is the toast |
+| `drawer-cancel\|<dev>` | the cloner's own screen (#1386): the drawer's number key or its "בטל…", then the same window | — | no sign-in, like the SMART choice: the bridge (`cancel.sh:cancel_request`) takes only a drawer of this machine that is writing now, and writes its request; the agent carries it out in the stream |
+| `room-wake` | העֵר את המחשבים שנבחרו (picker) · העֵר שוב (live round) | `cloner=<mac>[,<mac>...]` — Nadav 17/10: the picked cloners (a whole machine, off ones too, or one with a ticked drawer); in a live round, the round's cloners. None picked → a toast, nothing sent | POST `/api/console/room/wake {macs}` — only those wake; a record without `cloner=` is refused (`roomflow.sh`), never the whole room; answer with `toast=` |
 | `room-start` | התחל עכשיו (with `room_warn=` lines: after the orange "התחל בכל זאת" of the confirm dialog, #432) · "התחל בכל זאת" of the missing-machines box (#65) | — | POST `/api/console/room/start` |
 | `room-poweroff` | "כבה אותו" on a line of the missing-machines box → the confirm dialog's "כבה אותו" (#65, #1270) | `cloner=<mac>`, `confirm=<machine name>` (both from `room_missing=`, not typed) | `room_poweroff` (`roomflow.sh`): POST `/api/console/room/missing/<mac>/poweroff {confirm_name}`; the server checks again that the machine is missing, can hear and the wave is open; a refusal → `room_error=` |
 | `room-close` | עצור סבב… → the confirm dialog's "עצור סבב" (#1270) | `confirm=<round image>` (filled from `round=`, not typed) | POST `/api/console/room/close {confirm_name}`; the server decides (#533), answer with `room_error=` or drop `round=` |
@@ -241,6 +243,15 @@ title=<text>  sub=<text>            # override the head texts (cloner / receiver
 # forces #st-message (the !state.known / wrong-role cases)
 message=<title>|<sub>
 
+# #1569: the one failure screen (agent/lib/failscreen.sh; mockup PR #1550).
+# fail= opens the block; a non-empty title routes to it before everything.
+fail=<tone bad|warn>|<hold 0/1>|<title>|<sub>|<role>   # all Hebrew; the English line is in fail_code only
+fail_why=<text>  fail_safe=<text>   # "מה קרה" / "מה בטוח"
+fail_ctx=<label>|<value>            # 4: machine · disk/drawers · image · stage; a capitals/digits value is mono
+fail_row=<label>|<sub>|<ok|wn|bad|off>|<pill>   # up to 8, one per target
+fail_step=<text>                    # up to 4; fail_code=<line> up to 12 (folded; Enter)
+fail_at=<epoch>                     # die_local only: the reboot moment (the pill counts)
+
 # #st-menu: the "הפצה לכיתות" card only when the edition flag AND the
 # operator switch are on (#1081 classrooms + #880 class_deploy_enabled
 # in hello /state). Missing = 0.
@@ -288,11 +299,24 @@ room_drawer=<machine-index>|<port or 0>|<serial>|<model>|<size>|<smart>|<fresh>|
                                     # #432: |<link state> -- a 12th field, drawer_list[].link_state:
                                     # ok / slow / unknown; only "slow" colours the slot orange (SMART red wins)
                                     # #1366: |<crc> -- a 13th field, the CRC count when drawer_list[].crc_suspect
+                                    # #1386: |<dev>|<cancel text>|<cancel done> -- fields 18-20: the device the
+                                    # "בטל…" button names, drawer_list[].cancel.text_he ("בוטל על ידי nadav ·
+                                    # 16:06", empty = not cancelled), 1 = the agent reported `cancelled`
+                                    # #1331: |<boot state>|<boot service>|<boot error> -- fields 21-23,
+                                    # drawer_list[].drivers.boot (guistate.sh); empty = not reported
                                     # (over crc_warn_threshold); empty = not over / not read. Orange like slow
                                     # #1495: |<drawer>|<conn> -- fields 14-15, drawer_list[].drawer (null -> 0
                                     # = not in the mapping) and the connection ("SATA 2", "NVMe 03:00.0").
                                     # The grid places a drawer by this number, never by port; a 0 is an extra
                                     # row "<conn> (לא ממופה)" that cannot be picked. Absent = by port, as before
+                                    # 17/10: |<pct>|<target state> -- fields 16-17, this drawer's OWN target in
+                                    # the wave (drawer_list[].bytes_written/bytes_total/state): -1 = no total,
+                                    # "" = not a target (no bar: "לא נבחרה" / "ממתינה"). Absent = an older
+                                    # agent: the live grid draws the machine's progress on every drawer, as before
+                                    # #1742: |<smart reason> -- field 27, drawer_list[].smart_reason, sent only
+                                    # when there is one (fields 24-26 are then padded empty if there is no linux
+                                    # object). "readonly" = red because the disk is read-only: the note says
+                                    # "הדיסק במצב קריאה בלבד", not "SMART תקול". Absent = as before
 room_slot=<machine-index>|<drawer>|<conn>|<name>
                                     # #1495: one per drawer of machines[].drawer_slots, empty ones too -- the
                                     # grid's rows 1..N and the name of an empty one. Selection stays by port
@@ -309,9 +333,15 @@ room_slot_name=<machine-index>|<port>|<name>
 driver_models=<n>                   # #1269: models read from GET /api/console/room/driver-models; -1 = not read
                                     # (absent = -1). 0 and -1 both disable "להוסיף דרייברים", with two reasons
 driver_model=<vendor>|<model>       # one per model, the library's spelling (only models with a package)
-round=<image_name>|<wave_number>|<open 0/1>|<written>|<target>|<ready>|<remaining>|<elapsed_s>|<rate_bps>|<eta_s>
+round=<image_name>|<wave_number>|<open 0/1>|<written>|<target>|<ready>|<remaining>|<elapsed_s>|<rate_bps>|<eta_s>|<wave_state>
                                     # #410: the last three from GET /room .round (-1 = not measured, never 0);
                                     # a seven-field record from an older agent reads as all three unmeasured
+                                    # 17/10: |<wave_state> -- running / closed / failed ("" = an older agent).
+                                    # Only running (or "") says "הגל משדר"; failed draws a red line.
+                                    # A round whose own state is failed is never round= -- see room_failed=.
+                                    # A live round's machine= rows are only the cloners in round.target_slots
+room_failed=<reason>                # 17/10: the last round failed (GET /room .round.state failed). Not a live
+                                    # round: the picker stays usable, with one red line "הסבב הקודם נכשל: <reason>"
 updated=<epoch seconds>             # #410: when the agent wrote this snapshot -- the room and cloner heads say
                                     # "עודכן לפני N שניות" (דקות, שעות) and keep counting when the file stops changing
 
@@ -322,6 +352,12 @@ drawer=<port>|<dev>|<state>|<bytes>|<total>|<error>|<rate_bps>|<eta_s>|<drawer>|
                                     # #1495: fields 9-10 = slotnames.sh disk_drawer: the drawer by the mapping
                                     # (0 = not in it: "SATA n (לא ממופה)", sorted last) and the connection.
                                     # Absent = an older agent: drawer = port, as before
+                                    # #1386: |<cancel>|<cancelled_at> -- fields 11-12: who asked to cancel
+                                    # the drawer as the screen says it ("על ידי nadav", "ממסך מחשב השיכפול";
+                                    # empty = nobody) and when the agent carried it out (epoch; empty = not
+                                    # yet: "מבטל…"). State `cancelled` = grey row, "בוטל", an empty bar
+                                    # #1331: |<state>|<detail>|<boot state>|<boot service>|<boot error> --
+                                    # fields 13-17, targets/<dev>/drivers.json (drvgui.sh); absent = did not run
 cdisk=<port>|<dev>|<model>|<size>|<smart>|<cause>|<link>|<link_max>|<crc>|<drawer>|<conn>
                                     # the idle inventory (no round targets) -- see the #1304 table below;
                                     # #1495: fields 10-11 as drawer= fields 9-10
@@ -335,6 +371,10 @@ coptical=<drawer>|<conn>|<model>    # #1495: a CD/DVD drive (/sys/block/sr*, onl
 cslot_name=<port>|<name>            # #704: the operator's name of SATA slot <port>, from the last hello's
                                     # slot_names (slotnames.sh). Drawn instead of "דיסק N" on the cloner
                                     # cards, its SMART question and the standby list; absent = "דיסק N"
+drawer_count=<1..8>                 # #1565: the hello's drawer_count (#1315, clonergui.sh). Without a
+                                    # cdrawer_slot= mapping the cage has this many bays instead of the
+                                    # legacy 3; a disk in a later port still adds its bay. Absent or out
+                                    # of range = the legacy 3
 
 # #st-class
 class=<id>|<label>|<machines>       # /api/console/groups, role classroom
@@ -409,6 +449,7 @@ machine=<the name the operator must type for rw/destroy>
 `app_route()` in `screens.c` is `station.js poll()` in its order, run before
 every draw:
 
+0. `fail=` with a title → the failure screen (#1569), whatever else is there.
 1. `message=` present → `#st-message`.
 2. `task=pending|running` (or `--screen progress`) → `#st-progress`; it
    remembers that it was watching.
@@ -444,7 +485,7 @@ make png STATE=/tmp/state.txt # the same cards from a real state file
 ```
 
 Cards: `login menu pick progress done room room-live class class-live
-cloner standby message restore direct tools tools-confirm tools-output
+cloner standby message restore direct tools tools-confirm tools-output failure failure-open
 shrink logout restore-folder room-images restore-confirm room-drivers pick-hebrew` (`logout` is the menu with the question Esc opens; `restore-folder`/`room-images` are the folder-first image pickers inside a folder and open; `restore-confirm` is the #1270 confirm dialog; `room-drivers` (#1269) is the room setup with "להוסיף דרייברים" on, in pick mode, one disk set to "בלי"; `pick-hebrew` (#1245) is the capture form with the description focused and the typing-language chip on "עב"). Since the
 10/10 mockup every screen is laid out in logical pixels and drawn at
 `ui_scale(H)` = clamp(H/800, 1, 1.4) in quarter steps: 1024x768 and 1280x800
@@ -472,7 +513,7 @@ status bar, no background art. What each part is drawn from:
 | bay name, "דיסק N · SATA n" | the bay is drawer N of the mapping (`cdrawer_slot=`, #1495); its name is the slot name there (or `cslot_name=` without a mapping, #704), else "דיסק N"; the connection is that record's `conn`. A disk whose `cdisk=` drawer is 0 is an extra row after the bays: "—" / "לא ממופה" in the number box, "SATA n (לא ממופה)" as its name. A `coptical=` drive is "כונן CD/DVD" in its bay (or an extra row), never "ריק" |
 | size, model | `cdisk=` fields 3–4; the size in market units (500107862016 → "500 GB") |
 | SMART chip, its colour, the bar on the bay, the orange/red line under the cage | `cdisk=` field 5 by the #872 rule: `failed_last` red, `fail` (and an old agent's `warn`) orange, the rest green; `unchecked` says "SMART לא נבדק" |
-| the reason under the name | `fail` → "ה-BIOS יעצור ב-F1 — SMART: …" by field 6, the SMART reason (#1366: `health_failed` / `pending_sectors` 197 / `uncorrectable` 198); `failed_last` → field 6, the server's cause (כבל/חריץ, הדיסק) |
+| the reason under the name | `fail` → "ה-BIOS יעצור ב-F1 — SMART: …" by field 6, the SMART reason (#1366: `health_failed` / `pending_sectors` 197 / `uncorrectable` 198); `fail` with `readonly` (#1742) → "הדיסק במצב קריאה בלבד"; `failed_last` → field 6, the server's cause (כבל/חריץ, הדיסק) |
 | the CRC line (#1366) | `cdisk=` field 9: the CRC count when over the hello's `crc_warn_threshold` (empty = not over, not read, or an older server). The bay orange like a slow link, "כבל או מגירה חשודים — N שגיאות" under the name (when SMART and the link have no reason of their own), and a line under the cage |
 | the link, "· 6.0 Gb/s" after SATA N-1, and its orange line (#432) | `cdisk=` fields 7–8 (`disk_link`: the speed and the port's maximum, `null` = not read → "קישור לא ידוע", never blank and never green). Below the maximum: the bay's bar and border orange, "קישור 1.5 מתוך 6.0 Gb/s — לבדוק כבל" under the name (when SMART has no reason of its own), and a line under the cage. The SMART chip and LED stay SMART |
 | IP, MAC | `--ip` / `--mac` (the kiosk's) |

@@ -199,9 +199,10 @@ def test_the_pull_screen_is_the_build_restore_screen_with_the_drawers(driver, tm
     out = drive(driver, tmp_path, PULL, "hits", "hit:PULL0")
     h, base = hits(out), ids(out)["base"]
     drawers = sorted(i - base for i in h if i > base)
-    assert drawers == [1, 2, 3], drawers                                 # the disk with no slot is not offered
+    # #1732 (owner 18/10): drawer 2 is red (SMART fail) -- drawn, dimmed, never a target: no hit
+    assert drawers == [1, 3], drawers                                    # the disk with no slot is not offered
     assert "@ nohit PULL0" in out
-    assert h[base + 1][0] > h[base + 2][0] > h[base + 3][0], h              # RTL: drawer 1 on the right
+    assert h[base + 1][0] > h[base + 3][0], h                              # RTL: drawer 1 on the right
 
 
 def test_nothing_is_ticked_and_the_red_button_needs_an_image_and_a_drawer(driver, tmp_path):
@@ -222,8 +223,9 @@ def test_nothing_is_ticked_and_the_red_button_needs_an_image_and_a_drawer(driver
 def test_only_the_dialogs_ok_sends_the_drawers(driver, tmp_path):
     ok = drive(driver, tmp_path, PULL, "img:1", "hit:PULL3", "hit:PULL1", "hit:PULL2", "hit:PULL2", "hit:START", "hit:OK")
     assert records(ok) == ["lc-pull|img_7f3a91|1,3"], ok
-    enter = drive(driver, tmp_path, PULL, "img:2", "hit:PULL2", "key:ENTER", "key:ENTER")
-    assert records(enter) == ["lc-pull|img_2c8e04|2"], enter
+    assert "@ nohit PULL2" in ok, ok                                      # #1732: the red drawer takes no click
+    enter = drive(driver, tmp_path, PULL, "img:2", "hit:PULL3", "key:ENTER", "key:ENTER")
+    assert records(enter) == ["lc-pull|img_2c8e04|3"], enter
     cancel = drive(driver, tmp_path, PULL, "img:1", "hit:PULL1", "hit:START", "key:ESC", "hit:START", "hit:CANCEL")
     assert records(cancel) == [], cancel
 
@@ -269,7 +271,8 @@ def test_keyboard_only_ticks_drawers_and_sends_them(driver, tmp_path):
                 "key:ENTER", "key:ENTER")
     st = states(out)
     assert "pf=1" in st[0] and "pf=1" in st[1] and "sel=1," in st[1], st      # Tab: the first drawer; Space ticks it
-    assert "pf=2" in st[2] and "pf=3" in st[3], st                            # Left = the next disk number (RTL)
+    # Left = the next disk number (RTL); #1732: the red drawer 2 is skipped, and 3 is the row's end
+    assert "pf=3" in st[2] and "pf=3" in st[3], st
     assert "sel=1,3," in st[4] and "confirm=1" in st[5], st
     assert records(out) == ["lc-pull|img_7f3a91|1,3"], out
 
@@ -283,11 +286,13 @@ def test_the_row_ends_stop_and_space_untoggles(driver, tmp_path):
 
 
 def test_a_ticks_only_the_healthy_drawers(driver, tmp_path):
-    """PULL: disk 1 green, disk 2 orange (SMART fail), disk 3 red (failed before)."""
+    """PULL: disk 1 green, disk 2 red (SMART fail), disk 3 orange (failed before) -- smart_level."""
     st = states(drive(driver, tmp_path, PULL, "char:a"))
     assert "sel=1, " in st[0], st
-    st = states(drive(driver, tmp_path, PULL, "char:A", "hit:PULL2"))
-    assert "sel=1,2, " in st[1], st                     # an orange one is still the person's to tick
+    st = states(drive(driver, tmp_path, PULL, "char:A", "hit:PULL3"))
+    assert "sel=1,3, " in st[1], st                     # an orange one is still the person's to tick
+    out = drive(driver, tmp_path, PULL, "char:A", "hit:PULL2")
+    assert "@ nohit PULL2" in out and "sel=1, " in states(out)[-1], out   # #1732: a red one never is
 
 
 def test_enter_opens_the_dialog_only_with_a_drawer(driver, tmp_path):

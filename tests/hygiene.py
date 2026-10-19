@@ -167,3 +167,41 @@ def session_verdict(basetemp: str | None, native_required: bool) -> list[str]:
     lines.append("נהרגו, ואימות חוזר ב-/proc מראה שמתו." if not survivors
                  else f"ו-{len(survivors)} מהם שרדו גם את SIGKILL: {survivors}")
     return lines
+
+
+# --- #1736: תהליך שהטסט הפעיל אינו נשאר אחרי שהטסט נגמר --------------------------
+#
+# ‏`subprocess.run([bash, "-c", ...])` מחכה לתהליך הישיר בלבד. כל מה שהסקריפט
+# הפעיל ברקע (`( ... ) &`, ‏`sleep 300 &`, ‏stub של fanout) נשאר חי אחריו --
+# בלי `/proc` הם נראו כ-`bash -c` יתומים בני 23 שעות על ה-Testrunner. כאן
+# התהליך הישיר הוא ראש session משלו, ובסוף -- גם כשהטסט עבר, גם בפקיעה --
+# כל הקבוצה נהרגת.
+
+def kill_group(pgid: int) -> None:
+    """SIGKILL לכל הקבוצה. אין קבוצה (כולם כבר מתו) = לא שגיאה."""
+    if not hasattr(os, "killpg"):              # ווינדוס: אין קבוצות
+        return
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def run_group(argv, *, timeout: float | None = None, **kwargs) -> subprocess.CompletedProcess:
+    """כמו `subprocess.run`, אבל התהליך ראש session משלו וכל הקבוצה נהרגת
+    בסוף. בווינדוס (אין `start_new_session`/`killpg`) זה `subprocess.run`
+    רגיל -- ושם הסריקה של ה-guard מדולגת במוצהר."""
+    if not hasattr(os, "killpg"):
+        return subprocess.run(argv, timeout=timeout, **kwargs)
+    if kwargs.pop("capture_output", False):
+        kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
+    with subprocess.Popen(argv, start_new_session=True, **kwargs) as proc:
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_group(proc.pid)               # לפני ה-communicate השני: צינור שיתום מחזיק
+            proc.communicate()
+            raise
+        finally:
+            kill_group(proc.pid)
+        return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)

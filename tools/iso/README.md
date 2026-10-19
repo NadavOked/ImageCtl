@@ -12,7 +12,7 @@
 | קובץ | תפקיד |
 |---|---|
 | `packages.txt` | **האיחוד** של כל רשימות ה-apt: ‏`PKGS` של המתקין, הבסיס/GUI/toolbox של `build_initramfs.sh`, ומה שרק ה-ISO מוסיף. ‏`tests/test_iso_build.py` נופל אם רשימה זזה בלי הקובץ הזה |
-| `make-pool.sh` | ‏`apt-get download` של הרשימה **וכל התלויות** (מול status ריק — כלום לא "כבר מותקן") → `pool/{main,contrib}/imagectl/`, ואינדקסי `dists/` (‏`--index-only` מאנדקס עץ ISO) |
+| `make-pool.sh` | ‏`apt-get download` של הרשימה **וכל התלויות** (מול status ריק — כלום לא "כבר מותקן") → `pool/{main,contrib}/imagectl/`, ואינדקסי `dists/` (‏`--index-only` מאנדקס עץ ISO). נכשל בלי `trixie-security` במקורות של המארח (‏#1411). ‏`--security`: רק חבילות trixie-security של הסגירה, כ-tar + `security-pool.json` לכפתור העדכון |
 | `preseed.cfg` | ‏d-i אוטומטי: mirror כבוי, חבילות מה-ISO (מסלול ה-cdrom של d-i), הדיסק הראשון שאינו USB, root בלבד, `late_command` |
 | `late-command.sh` | רץ **בתוך המתקין**: מעתיק את הקוד ל-`/opt/imagectl-src`, מתקין את היחידה, ורושם ל-`/etc/imagectl/` **עובדות** — הכרטיס ש-d-i הגדיר (‏`installer-nic`), התפקיד (‏`installer-role`), המניפסט (‏`iso-release.json`) |
 | `firstboot.sh` + `imagectl-firstboot.service` | האתחול הראשון: בונה `initrd.img`/`initrd.img.gui`/`vmlinuz`, ואז מפעיל את אשף ה-HTTPS עם עובדות הכרטיס והתפקיד כברירות מחדל |

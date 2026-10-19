@@ -61,3 +61,10 @@ def test_first_hello_does_not_wait_for_the_lldp_listener(fake_machine, tmp_path)
     took = time.monotonic() - t0
     assert first == {"pending": True}
     assert took < 4, f"the first hello waited {took:.1f}s for the background LLDP listener"
+    # The background listener (6 s) outlives the hello: the test waits for its end -- the
+    # cache stamp it writes last -- instead of leaving it to #1736's orphan guard.
+    stamp, end = run / "netprobe.json.at", time.monotonic() + 20
+    while not (stamp.is_file() and stamp.read_text().strip()) and time.monotonic() < end:
+        time.sleep(0.1)
+    assert stamp.is_file() and stamp.read_text().strip(), "the background LLDP listener never finished"
+    time.sleep(0.2)   # its subshell exits right after the stamp

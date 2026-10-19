@@ -33,7 +33,8 @@ from . import drive_rates, registry, room, room_drivers, sender as sender_module
 from .db import _write_lock, journal, now_iso, writing
 from .images import restore_refusal
 from .sessions import SessionError
-from .tasks import OPEN_STATES, TOKEN_HEADER, active_task, claim_task, new_token
+from .tasks import (ORIGIN_CONSOLE, OPEN_STATES, TOKEN_HEADER, active_task, claim_task,
+                    new_token)
 
 log = logging.getLogger("imagectl.direct")
 
@@ -79,7 +80,7 @@ def _reported_devs(conn: sqlite3.Connection, mac: str) -> set[str]:
 
 
 def open_direct_round(ctx, source: dict, target_slots, target_drives,
-                      user: str, driver_models=None) -> dict:
+                      user: str, driver_models=None, origin: str = ORIGIN_CONSOLE) -> dict:
     """פותח סבב חדר שהמקור שלו הוא דיסק במחשב בנייה.
 
     כל הבדיקות לפני כל כתיבה (עיקרון 5/7): המקור חייב להיות מחשב
@@ -134,10 +135,10 @@ def open_direct_round(ctx, source: dict, target_slots, target_drives,
     with _write_lock, writing(ctx.conn):
         ctx.conn.execute(
             "INSERT INTO tasks (id, mac, type, disk, image_id, name, description,"
-            " folder, created_by, created_at, updated_at, token)"
-            " VALUES (?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)",
+            " folder, created_by, created_at, updated_at, token, origin)"
+            " VALUES (?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?)",
             (task_id, mac, DIRECT_SEND, disk, image_id,
-             f"{machine['suffix']}:{disk}", user, now, now, new_token()),
+             f"{machine['suffix']}:{disk}", user, now, now, new_token(), origin),
         )
         ctx.conn.execute(
             "INSERT INTO room_rounds (id, image_id, target_drives, target_slots_json,"
@@ -249,7 +250,30 @@ def task_block(conn: sqlite3.Connection, store, task: dict,
             "SELECT id, state FROM sessions WHERE id = ?",
             (round_row["wave_session_id"],),
         ).fetchone()
-    receivers = store.joined_count(wave["id"]) if wave is not None else 0
+    receivers = store.live_count(wave["id"]) if wave is not None else 0
+    # ‏#1613: אפס חיים כי **מישהו סיים** (`done`/`partial` — מצבים שהסוכן
+    # מדווח רק אחרי הזרם האחרון) הוא גל שנכתב וממתין לדופק שיסגור אותו,
+    # לא "לא נשאר מי שיקבל". רק כשאף חבר לא קיבל את הזרם כולו — כישלון.
+    if (wave is not None and wave["state"] == "running" and receivers == 0
+            and conn.execute(
+                "SELECT 1 FROM session_members WHERE session_id = ?"
+                " AND state IN ('done', 'partial') LIMIT 1", (wave["id"],),
+            ).fetchone() is None):
+        reason = "ההפצה הישירה נכשלה: לא נשארו מחשבי יעד חיים לקבלת המחיצה הבאה"
+
+        def fail_direct_round() -> None:
+            room.fail_wave(conn, wave["id"], reason, commit=False)
+            conn.execute(
+                "UPDATE tasks SET state = 'failed', error = ?, updated_at = ?"
+                " WHERE id = ? AND state IN ('pending', 'running')",
+                (reason, now_iso(), task["id"]),
+            )
+
+        store.fail(wave["id"], reason, related=fail_direct_round)
+        wave = conn.execute(
+            "SELECT id, state FROM sessions WHERE id = ?", (wave["id"],)
+        ).fetchone()
+        journal(conn, "direct_failed", f'{task["id"]} {reason}')
     params = dict(multicast or default_multicast())
     params["min_receivers"] = max(1, receivers)
     # קצב אוטומטי: מה שנבחר לגל כשיצא, ולפני כן קצב הפתיחה — לא "בלי תקרה".

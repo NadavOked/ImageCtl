@@ -55,10 +55,11 @@ STREAM_FULL = 0.95                  # ‏udp-sender מגיע ל-95.7% מהתקר
 
 def _wave(conn, session, serials=("S1", "S2"), ceiling=None, loss=CLEAN,
           sent=SENT, kept_up=True, measured=True, stream=STREAM_FULL,
-          stream_s=600, mac=MAC_A):
+          stream_s=600, mac=MAC_A, rcvbuf=0):
     """גל שלם: השרת בחר קצב ויצא, כל כונן השאיר דגימה, והשולח דיווח.
     ‏`stream` — הקצב הממוצע של הזרם עצמו, כחלק מקצב הגל (‏None = לא נמדד).
-    ‏`mac` — מחשב השיכפול של כל הכוננים בגל (#1471)."""
+    ‏`mac` — מחשב השיכפול של כל הכוננים בגל (#1471).
+    ‏`rcvbuf` — מה שהמקלט דיווח שהקרנל שלו זרק (הכרעת נדב 17/10; ‏None = לא דיווח)."""
     rate = drive_rates.decide(conn, session,
                               lambda: [_drive(s, mac=mac) for s in serials], ceiling)
     cap = drive_rates.parse_bitrate(rate) // 8
@@ -69,6 +70,10 @@ def _wave(conn, session, serials=("S1", "S2"), ceiling=None, loss=CLEAN,
             "sent_bytes": sent, "loss_blocks": loss,
             "stream_bps": int(cap * stream) if stream is not None else None,
             "stream_s": stream_s})
+    drive_rates.record_wave(conn, session, [{
+        "mac": mac, "targets_json": "[]",
+        "udp_drops_json": None if rcvbuf is None
+        else json.dumps({"rcvbuf": rcvbuf, "inerrors": 0})}])
     return rate
 
 
@@ -152,8 +157,10 @@ def test_a_missing_count_is_not_zero_retransmissions(conn, stream):
     assert got["basis"] == "unmeasured"
 
 
-def test_a_few_retransmissions_hold_the_rate(conn):
-    _wave(conn, "ses_1", loss=FEW)
+def test_a_few_retransmissions_with_a_receiver_that_dropped_hold_the_rate(conn):
+    """הכרעת נדב 17/10: מעט שידורים חוזרים עם מקלט נקי — עולים
+    (`test_wave_rate_policy`); עם מקלט שהקרנל שלו זרק — נשארים."""
+    _wave(conn, "ses_1", loss=FEW, rcvbuf=100_000)          # מעל 0.1% מהבלוקים
     got = _next(conn)
     assert got["max_bitrate"] == "600m"
     assert got["basis"] == "held"
@@ -174,6 +181,8 @@ def test_a_drive_of_the_wave_with_no_sample_is_no_evidence(conn):
     drive_rates.decide(conn, "ses_1", lambda: [_drive("S1"), _drive("S2")], None)
     _kept(conn, "ses_1", "S1", 75 * MB, 75 * MB)
     drive_rates.record_stream(conn, "ses_1", {"sent_bytes": SENT, "loss_blocks": 0})
+    drive_rates.record_wave(conn, "ses_1", [{"mac": MAC_A, "targets_json": "[]",
+                                             "udp_drops_json": '{"rcvbuf": 0}'}])
     got = _next(conn)
     assert got["max_bitrate"] == "600m"
     assert got["basis"] == "held"
@@ -332,9 +341,11 @@ def test_the_next_wave_of_a_round_with_fewer_drives_continues(conn):
 def test_new_drawers_on_a_known_machine_continue_from_its_last_wave(conn):
     """#1471, הכרעת נדב 16/10 — בקרה שלילית: בחדר מחליפים מגירות בכל גל.
     עד היום כונן שלא היה בגל הקודם החזיר את כל הגל לפתיחה (600m), ולכן
-    הקצב לא טיפס לעולם. הזיכרון הוא של המכונה: הגל הקודם שלה נקי — עולים."""
+    הקצב לא טיפס לעולם. הזיכרון הוא של המכונה: הגל הקודם שלה נקי — עולים.
+    (אותו מספר מגירות: מגל עם פחות מגירות אין עלייה — הכרעת נדב 17/10,
+    ‏`test_wave_rate_policy`.)"""
     _wave(conn, "ses_1", serials=("S1", "S2"))
-    got = _next(conn, serials=("N1", "N2", "N3"))
+    got = _next(conn, serials=("N1", "N2"))
     assert got["max_bitrate"] == "700m"
     assert got["basis"] == "up"
     assert got["previous"]["session_id"] == "ses_1"

@@ -16,7 +16,7 @@ import sqlite3
 
 from boot.grub_menu import normalize_mac as lenient_mac
 
-from . import slot_names
+from . import disk_failures, slot_names
 from .db import _write_lock, journal, now_iso, writing
 
 log = logging.getLogger("imagectl.disk_events")
@@ -84,6 +84,11 @@ def ingest(conn: sqlite3.Connection, payload: dict) -> dict:
              _int(smart.get("uncorrectable")), _int(smart.get("crc")),
              payload.get("write_state"), decision, now_iso()),
         )
+
+    # ‏#1760: דילוג אדום על דיסק לקריאה בלבד נזכר בשרת עם הסיבה שלו — אחרת אחרי
+    # אתחול (‏setro נעלם) הדיסק חוזר בלי סימן, ורשומה ישנה עליו צובעת אותו כתום.
+    if verdict == "fail" and smart.get("reason") == "readonly" and decision == "skip":
+        disk_failures.record_readonly(conn, session_id, mac, disk, serial)
 
     # רק הכרעה מפורשת נרשמת ביומן — לא כל probe. "החלף"/"דלג" על דיסק
     # פגום הוא מה שהמפעיל צריך לראות בהיסטוריה.

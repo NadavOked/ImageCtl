@@ -459,10 +459,13 @@ def server(tmp_path: Path, images_root, classrooms_on):
 
 
 def test_the_console_wake_button_wakes_the_room_and_nothing_else(server):
-    """‏7.6 — הקבוצה אינה נבחרת מהדפדפן. גם כשהבקשה מנסה להכתיב
-    קבוצה אחרת, השרת מעיר את מחשבי השיכפול בלבד."""
+    """‏7.6 — הקבוצה אינה נבחרת מהדפדפן. בקשה שמנסה להכתיב קבוצה אחרת אינה
+    מעירה דבר (17/10: גוף בלי `macs` הוא 400, לא "כל החדר"); בלי גוף — מחשבי
+    השיכפול בלבד."""
     result = server["deploy"].post("/api/console/room/wake",
                                    json={"group_id": "grp_LAB1"})
+    assert result.status_code == 400 and server["woken"] == []
+    result = server["deploy"].post("/api/console/room/wake")
     assert result.status_code == 200 and result.json()["sent"] == 1
     assert macs_of(server["woken"]) == {CLONER}      # לא הכיתה
 

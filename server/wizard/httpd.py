@@ -39,7 +39,7 @@ class WizardHTTPServer(ThreadingHTTPServer):
 
 class WizardHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "ImageCtlWizard/1"
+    server_version = "ImageSrvWizard/1"
 
     @property
     def app(self) -> WizardHTTPServer:
@@ -149,7 +149,7 @@ class WizardHandler(BaseHTTPRequestHandler):
             if path.endswith("/validate"):
                 self._json(HTTPStatus.OK, {"ok": True, "errors": {}})
                 return
-            job = self.app.wizard.start_apply(config)
+            job = self.app.wizard.start_apply(config, client_ip=self.client_address[0])
             self._json(HTTPStatus.ACCEPTED, {"ok": True, "job": job})
             return
         self.send_error(HTTPStatus.NOT_FOUND)

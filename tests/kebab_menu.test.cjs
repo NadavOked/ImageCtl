@@ -115,7 +115,7 @@ test('#1262/#1268: the builtin admin row offers only password reset and revoke-s
   assert.match(run('userRowHtml(USERS[0]).cells[0]'),/<span class="sub">נוצר בהתקנה · לא ניתן למחיקה<\/span>/,'#1300: the sub-line of the mockup (MFA is its own column)');
   // מנהל רגיל באותו מצב — עדיין עם תפקיד/השבתה/מחיקה (לא סינון-יתר).
   // ‏#1268: למשתמש אחר — "איפוס סיסמה…" במקום "סיסמה…" (הקלדת סיסמה קבועה נשארת רק לעצמך).
-  assert.deepEqual(labels(2),['שנה תפקיד…','איפוס סיסמה…','השבת משתמש…','נתק את כל ההפעלות…','מחק משתמש…']);
+  assert.deepEqual(labels(2),['שנה תפקיד…','איפוס סיסמה…','השבת משתמש…','דרוש אימות דו-שלבי…','נתק את כל ההפעלות…','מחק משתמש…']);
   for(const i of [0,2]) assert.doesNotMatch(run(`userRowHtml(USERS[${i}]).cells.at(-1)`),/userPasswordSheet/,'no typed password for another user');
   // ה-builtin כשהוא המחובר: אין פעולות בשורה — אין ניתוק הפעלות של עצמך, השרת מסרב לאפס את
   // עצמך, ו"שנה סיסמה" עבר ל"החשבון שלי" (#1268). בלי ⋯ ריק.

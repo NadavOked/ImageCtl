@@ -21,6 +21,7 @@ from . import (bootguard, capabilities, crcwarn, direct, disk_failures, drawer_s
                inventory, minfree, probe, registry, room, room_drivers, shrink_records,
                slot_names, timezone)
 from .agent_version import server_version
+from .boot_cancel import cancel_gui_tasks_on_boot
 from .db import get_setting, journal, net_seen
 from .images import ImageLibrary
 from .ports import server_name
@@ -355,7 +356,9 @@ def build_answer(
             # היא לא מצטרפת לגל, וממשיכה להמתין (wait_poll).
             return answer
 
-    session = store.active_for_group(machine["group_id"])
+    # ‏#1554: גל החדר הוא session על grp_CLONERS; משכפל מכל קבוצת משכפלים מצטרף אליו.
+    session = store.active_for_group(
+        room.CLONERS_GROUP if machine["role"] == "cloner" else machine["group_id"])
     if session is None:
         return answer
 
@@ -375,6 +378,13 @@ def build_answer(
             # הגל עשוי היה לצאת אחרי הקריאה מ-`active_for_group`. מכונה
             # שאיחרה עולה מקומית, ואינה מצטרפת לגל שכבר עזב.
             return answer
+        if machine["role"] == "cloner":
+            # ‏#1703: הדופק שלמעלה רץ לפני ההצטרפות, ולא ספר את המגירות של
+            # המכונה הזו. ה-hello שמשלים את הגל מוציא אותו כאן, באותה
+            # תשובה — אחרת התשובה `open`, והסוכן לומד שהגל יצא רק מה-hello
+            # הבא (22–23 ש' על ברזל במשכפל שהוער ב-WoL). אותו תנאי בדיוק
+            # (`room.tick`): גל שעוד חסרות לו מגירות נשאר פתוח.
+            room.pulse(conn, store, mac)
         session = conn.execute(
             "SELECT * FROM sessions WHERE id = ?", (session["id"],)
         ).fetchone()
@@ -383,6 +393,12 @@ def build_answer(
 
     if session["state"] == "running" and not store.is_member(session["id"], mac):
         # מאחרים נכנסים לסבב הבא (סעיף 13.3) — עכשיו: דיסק מקומי.
+        return answer
+
+    if (session["state"] == "running" and joining and session["prefix"] == "ROOM"
+            and room.rejoined_mid_stream(conn, session, mac)):
+        # ‏#1728: משכפל שאותחל באמצע הזרם אינו חוזר לאמצע אותו זרם — הוא
+        # ממתין לגל הבא (`room._revived` פותח אותו גם כשהגל לא כתב דבר).
         return answer
 
     answer["session"] = {
@@ -433,6 +449,11 @@ def make_resolver(conn: sqlite3.Connection, library: ImageLibrary,
         local_request = server_source(scope)
         invalid_mac = not valid_machine_mac(mac)
         do_not_record = off_vlan or probe or local_request or invalid_mac
+        if not do_not_record:
+            # ‏#1576: אתחול שנספר (אותו תנאי כמו net_seen והספירה של #75)
+            # מבטל משימת גואי שלא התחילה -- **לפני** בניית התשובה, כדי שהתפריט
+            # והסוכן שעולה לא יראו אותה.
+            cancel_gui_tasks_on_boot(conn, store, mac)
         answer = build_answer(
             conn, library, store, mac, client_ip=client_ip, joining=False,
             # ‏#585: בקשת תפריט מחוץ לווילן ההפצה אינה כותבת `net_seen` —

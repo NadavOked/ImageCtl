@@ -109,7 +109,7 @@ def test_the_local_screen_left_alone_goes_on_from_the_server(tmp_path):
               LC_BOOT_S="20", LC_QUIET_S="2", ATTENDED_BEAT_S="1")
     assert out.returncode == 0, out.stderr
     assert "no touch for 2s on the local clone screen -- from the server" in out.stdout, out.stdout
-    assert out.stdout.count("boot choice on screen") == 1   # on to the server, not back to the choice
+    assert out.stdout.count("boot choice offered") == 1   # on to the server, not back to the choice
     assert "going on from the server" in out.stdout
 
 

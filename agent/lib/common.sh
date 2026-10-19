@@ -8,10 +8,10 @@ RUN_DIR="${RUN_DIR:-/run/imagectl}"
 LOG_FILE="$RUN_DIR/agent.log"
 
 log() {
-    # Timestamped line to the log file and the console.
+    # Timestamped line to the log file; to the console only while no screen of ours owns it (owner 17/10): the live GUI (gui.pid, guiparent.sh) or the static one (splash.on).
     _ts=$(date -u +%H:%M:%S 2>/dev/null || echo "--:--:--")
     echo "[$_ts] $*" >> "$LOG_FILE" 2>/dev/null
-    echo "imagectl: $*"
+    { read -r _lp < "$RUN_DIR/gui.pid" && kill -0 "$_lp"; } 2>/dev/null || [ -e "$RUN_DIR/splash.on" ] || echo "imagectl: $*"
 }
 
 die_local() {
@@ -29,6 +29,7 @@ die_local() {
     # agent that dies before it has a network -- the case that was reproduced
     # on hardware -- never reports anything, and is covered all the same.
     log "FATAL: $1 -- rebooting; the server decides where the next boot goes"
+    command -v fail_fatal >/dev/null 2>&1 && fail_fatal "$1" || :   # #1569: the reason on a screen first, held FAIL_SHOW_S (failscreen.sh)
     sleep 3
     if [ "${IMAGECTL_TEST:-0}" = "1" ]; then
         echo "TEST-REBOOT: $1"

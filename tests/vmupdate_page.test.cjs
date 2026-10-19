@@ -305,3 +305,19 @@ test('the NICs tab card shows the MAC with the reservation text, the lease, and 
   run(`VMNET = null; VMNET_ERR = 'שגיאה 500'`);
   assert.match(run('vmnetCardHtml()'), /לא נקרא: שגיאה 500/);   // unread is said, not shown as "no card"
 });
+
+test('#1535: the start dialog titles each source version with its plain text (stripTags, not the regex)', async () => {
+  const {run} = setup();
+  run(`api = async () => ({latest_id: 'img_b', versions: [
+      {id: 'img_b', version: 2, name: 'Office', origin: 'vm', description: '<b>אימג׳ים</b> & עדכון', created_by: 'nadav',
+       created: '2026-10-13T09:00:00+03:00', total_compressed_bytes: 2e9, is_default: true},
+      {id: 'img_a', version: 1, name: 'Office', origin: 'capture', created_by: 'dana', created: '2026-10-01T09:00:00+03:00'}]});
+    vmuCall = async () => ({ok: true, memory_mib: 16384, cpus: 4, disk_bytes: 1e11});
+    vmuWin = (o) => { globalThis.VMU_TEST_BODY = o.body; };`);
+  await run(`vmuStartDialog('img_b')`);
+  const titles = [...run('VMU_TEST_BODY').matchAll(/class="vmu-vopt" title="([^"]*)"/g)].map((m) => m[1]);
+  assert.equal(titles.length, 2);
+  for (const t of titles) assert.ok(!t.includes('<') && !t.includes('>'), t);
+  assert.match(titles[0], /אימג׳ים.* · עודכן ב-VM · nadav/);
+  assert.match(titles[1], /^גרסה ראשונה · נקלט ממחשב בנייה · dana/);
+});

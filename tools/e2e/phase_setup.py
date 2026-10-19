@@ -1,9 +1,10 @@
 """שלב 0 — הקונסולה: משתמשים, קבוצות, וטבלת ה-MAC.
 
 משתמש ההתחלה נוצר ישירות ב-DB (כמו בהתקנה); כל השאר דרך ה-API
-של הקונסולה, בדיוק כפי שנדב היה עושה בדפדפן. הוא admin שאינו המקומי,
-ולכן הכניסה הראשונה שלו היא רישום MFA (#1085) — הסימולציה עוברת אותו
-ב-HTTP, כמו הדפדפן, ולא עוקפת אותו ב-DB.
+של הקונסולה, בדיוק כפי שנדב היה עושה בדפדפן. הוא admin שאינו המקומי.
+נדב 18/10: חיוב MFA למנהלים הוא מתג (`mfa_required_for_admins`, ברירת מחדל
+כבוי), ולכן הכניסה הראשונה **אינה** דורשת רישום; הסימולציה מפעילה MFA
+מרצון ב-HTTP, כמו הדפדפן, ולא עוקפת אותו ב-DB.
 """
 
 from __future__ import annotations
@@ -28,8 +29,8 @@ def run(data_dir, images_dir) -> SimpleNamespace:
     console = Client()
     status, body = console.json("POST", "/api/console/login", ADMIN)
     check("כניסה לקונסולה", status == 200, str(status))
-    check("admin שאינו המקומי נדרש לרישום MFA בכניסה הראשונה",
-          body.get("mfa_enrollment_required") is True, str(body))
+    check("בלי המתג, admin אינו נדרש לרישום MFA בכניסה הראשונה (נדב 18/10)",
+          not body.get("mfa_enrollment_required"), str(body))
     from server import totp as totp_mod       # noqa: PLC0415
     status, setup = console.json("POST", "/api/console/me/mfa/setup")
     check("הגדרת MFA מחזירה סוד", status == 200 and bool(setup.get("secret")), str(setup))

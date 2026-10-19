@@ -199,8 +199,8 @@ def test_the_same_request_twice_is_the_same_pull(server):
 def test_a_pull_that_reported_is_not_handed_out_again(server):
     """מרגע שדווח משהו זו עבודה קיימת ולא בקשה שאבדה — וחוזרים לחסימה.
 
-    כך גם משיכה שנכשלה: היא נשארת נראית עד שמפעיל סוגר אותה, ובקשה
-    חדשה של אותה תחנה אינה משתלטת עליה בשקט (עיקרון 5).
+    משיכה שנכשלה היא מקרה אחר: היא נסגרת כ-`failed` עם הסיבה ואינה
+    חוסמת (‏#1573, למטה).
     """
     lab2 = second_class(server)
     pull_id = pull(server, lab2["mac1"]).json()["id"]
@@ -250,21 +250,213 @@ def test_a_finished_pull_leaves_the_overview(server):
     assert overview(server)["pulls"] == []
 
 
-def test_a_failed_pull_stays_on_the_screen(server):
-    """‏"נכשל" אינו "הסתיים" — מפעיל חייב לראות אותו (עיקרון 5)."""
+def test_a_finished_pull_does_not_block_the_next_one(server):
+    """‏`sweep` רץ עד היום רק מ-`/overview`: בלי מפעיל מול הקונסולה, גם
+    משיכה **שהצליחה** החזירה 409 לשחזור הבא של אותה תחנה (‏#1573)."""
+    lab2 = second_class(server)
+    first = pull(server, lab2["mac1"]).json()["id"]
+    assert report(server, first, lab2["mac1"], "done").json() == {"ok": True}
+
+    again = pull(server, lab2["mac1"])
+
+    assert again.status_code == 200, again.text
+    assert again.json()["id"] != first
+
+
+def test_an_operator_can_still_close_a_running_pull(server):
+    """הסגירה הידנית מהקונסולה נשארת — באותו endpoint של כל סבב."""
     lab2 = second_class(server)
     pull_id = pull(server, lab2["mac1"]).json()["id"]
-    assert report(server, pull_id, lab2["mac1"], "failed").json() == {"ok": True}
+    assert report(server, pull_id, lab2["mac1"], "writing").json() == {"ok": True}
 
-    pulls = overview(server)["pulls"]
-
-    assert [p["id"] for p in pulls] == [pull_id]
-    assert pulls[0]["members"][0]["state"] == "failed"
-    # ומפעיל יכול לפנות אותו מהקונסולה, באותו endpoint של כל סבב.
     assert server["deploy"].post(
         f"/api/console/sessions/{pull_id}/close",
         json={"confirm_name": "Office 2024 Standard"}).status_code == 200
     assert overview(server)["pulls"] == []
+
+
+# --- כשל אינו נשאר "רץ" (#1573) ---------------------------------------------
+
+#: הסיבה שהסוכן שלח ב-17/10 על HP-BUILD (‏#1545) — מה שהמפעיל צריך לקרוא.
+SGDISK = "sgdisk דחה את תוכנית השחזור — הדיסק לא שונה"
+
+
+def report_failed(server, session_id: str, mac: str):
+    return server["anon"].post("/api/v1/agent/progress", json={
+        "session_id": session_id, "mac": mac, "state": "failed",
+        "targets": [{"dev": "sda", "bytes_written": 0, "bytes_total": 10,
+                     "state": "failed", "error": SGDISK}],
+    })
+
+
+def session_row(server, session_id: str):
+    return server["ctx"].conn.execute(
+        "SELECT state, failed_reason FROM sessions WHERE id = ?", (session_id,)
+    ).fetchone()
+
+
+def journal_of(server, event: str) -> list[str]:
+    return [r["detail"] for r in server["ctx"].conn.execute(
+        "SELECT detail FROM journal WHERE event = ? ORDER BY rowid", (event,))]
+
+
+def silence(server, session_id: str, seconds: float) -> str:
+    """מזיז את הדיווח האחרון של החבר אחורה בזמן; מחזיר את החותמת."""
+    from datetime import datetime, timedelta, timezone   # noqa: PLC0415
+    stamp = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(
+        timespec="seconds")
+    conn = server["ctx"].conn
+    conn.execute("UPDATE session_members SET updated_at = ? WHERE session_id = ?",
+                 (stamp, session_id))
+    conn.commit()
+    return stamp
+
+
+def test_a_failed_pull_does_not_block_the_next_pull_of_that_station(server):
+    """הבאג של 17/10: משיכה נכשלה, נשארה `running`, וכל משיכה חדשה — 409."""
+    lab2 = second_class(server)
+    first = pull(server, lab2["mac1"]).json()["id"]
+    assert report_failed(server, first, lab2["mac1"]).json() == {"ok": True}
+
+    again = pull(server, lab2["mac1"])
+
+    assert again.status_code == 200, again.text
+    assert again.json()["id"] != first
+    assert [p["id"] for p in overview(server)["pulls"]] == [again.json()["id"]]
+
+
+def test_a_failed_pull_closes_as_failed_with_its_reason(server):
+    """‏"נכשל" אינו "הסתיים" ואינו "רץ": המצב `failed`, והסיבה נשארת (עיקרון 4/5)."""
+    lab2 = second_class(server)
+    pull_id = pull(server, lab2["mac1"]).json()["id"]
+    assert report_failed(server, pull_id, lab2["mac1"]).json() == {"ok": True}
+
+    assert overview(server)["pulls"] == []
+    row = session_row(server, pull_id)
+    assert row["state"] == "failed"
+    assert SGDISK in row["failed_reason"]
+    assert any(pull_id in d and SGDISK in d for d in journal_of(server, "pull_failed"))
+    assert any(SGDISK in d for d in journal_of(server, "client_failed"))
+
+
+def test_a_pull_that_has_not_reported_for_too_long_closes_as_failed(server):
+    """רשת הביטחון: שתיקה מעבר לתקרה = כשל בשם, עם שעת הדיווח האחרון.
+    שעתיים — פחות מ-HP-BUILD (‏4 שעות, 17/10) ומעל כל תקרה סבירה."""
+    from datetime import datetime                          # noqa: PLC0415
+    lab2 = second_class(server)
+    pull_id = pull(server, lab2["mac1"]).json()["id"]
+    assert report(server, pull_id, lab2["mac1"], "writing").json() == {"ok": True}
+    stamp = silence(server, pull_id, 2 * 3600)
+
+    assert overview(server)["pulls"] == []
+    since = datetime.fromisoformat(stamp).astimezone().strftime("%H:%M")
+    reason = f"אין דיווח מהמכונה מאז {since}"
+    row = session_row(server, pull_id)
+    assert (row["state"], row["failed_reason"]) == ("failed", reason)
+    assert any(reason in d for d in journal_of(server, "pull_failed"))
+    assert pull(server, lab2["mac1"]).status_code == 200
+
+
+def test_a_pull_that_never_reported_is_also_bounded(server):
+    """גם חבר `waiting` שלא אמר דבר (התחנה מתה אחרי הפתיחה) אינו חוסם לנצח."""
+    lab2 = second_class(server)
+    pull_id = pull(server, lab2["mac1"]).json()["id"]
+    silence(server, pull_id, 2 * 3600)
+
+    assert pull(server, lab2["mac1"], image="img_2c8e04").status_code == 200
+    assert session_row(server, pull_id)["state"] == "failed"
+
+
+def test_a_stamp_without_a_timezone_is_not_measured_and_breaks_nothing(server):
+    """חותמת בלי אזור זמן (שורה ישנה/ידנית) — "לא נמדד", לא שתיקה ולא 500:
+    ‏naive מול aware זורק, והיה מפיל את `/overview` ואת פתיחת המשיכה."""
+    lab2 = second_class(server)
+    pull_id = pull(server, lab2["mac1"]).json()["id"]
+    conn = server["ctx"].conn
+    conn.execute("UPDATE session_members SET updated_at = '2026-10-10T13:00:00'"
+                 " WHERE session_id = ?", (pull_id,))
+    conn.commit()
+
+    assert [p["id"] for p in overview(server)["pulls"]] == [pull_id]
+    assert pull(server, lab2["mac1"]).json()["id"] == pull_id
+    assert session_row(server, pull_id)["state"] == "running"
+
+
+def test_a_pull_that_reports_within_the_ceiling_still_blocks(server):
+    """משיכה שבאמת כותבת אינה מוחלפת: דיווח לפני שתי דקות הוא ראיה שהיא
+    חיה (‏curl איטי, שרת שאותחל) — לא שתיקה."""
+    lab2 = second_class(server)
+    pull_id = pull(server, lab2["mac1"]).json()["id"]
+    assert report(server, pull_id, lab2["mac1"], "writing").json() == {"ok": True}
+    silence(server, pull_id, 120)
+
+    again = pull(server, lab2["mac1"])
+
+    assert again.status_code == 409
+    assert "כבר מושכת" in again.json()["error"]
+    assert session_row(server, pull_id)["state"] == "running"
+
+
+def test_the_ceiling_is_far_above_the_agents_report_gap():
+    """התקרה מעל קצב הדיווח (‏~2ש', ‏curl ‏--max-time 10 ‏--retry 3) וגם מעל
+    אתחול שרת; מתחת לחדר (‏180) הייתה מפילה משיכה בריאה בעדכון שרת."""
+    from server import room                                # noqa: PLC0415
+    from server.pulls import SILENT_SECONDS                # noqa: PLC0415
+    assert room.LOST_SECONDS < SILENT_SECONDS <= 30 * 60
+
+
+def test_the_background_clock_sweeps_pulls(tmp_path, monkeypatch):
+    """תחנה שאיש אינו צופה בה: בלי השעון, משיכה תקועה חוסמת גם את
+    האתחול הלילי (‏`auto_reboot.busy_reason`) ואת עדכון השרת — לנצח."""
+    import threading                                       # noqa: PLC0415
+    from fastapi.testclient import TestClient              # noqa: PLC0415
+    from conftest import Clock, write_image, MANIFEST_256  # noqa: PLC0415
+    from server import pulls as pulls_mod                  # noqa: PLC0415
+    from server.app import create_app                      # noqa: PLC0415
+
+    images = tmp_path / "images"
+    write_image(images, MANIFEST_256)
+    fired = threading.Event()
+    monkeypatch.setattr(pulls_mod, "sweep", lambda store: fired.set())
+
+    app = create_app(tmp_path / "data", images, "http://10.44.12.10:8080",
+                     now_fn=Clock(), room_clock_interval=0.02)
+    try:
+        with TestClient(app):
+            assert fired.wait(timeout=5.0), "שעון-הרקע אינו סוגר משיכות"
+    finally:
+        app.state.ctx.sender.stop()
+
+
+def test_a_pull_sweep_that_throws_is_journaled_and_the_clock_goes_on(tmp_path, monkeypatch):
+    """הרקע אינו מחזיר 500 לאיש — כשל נרשם ביומן, והלולאה ממשיכה לדגום."""
+    import threading                                       # noqa: PLC0415
+    from fastapi.testclient import TestClient              # noqa: PLC0415
+    from conftest import Clock, write_image, MANIFEST_256  # noqa: PLC0415
+    from server import pulls as pulls_mod                  # noqa: PLC0415
+    from server.app import create_app                      # noqa: PLC0415
+
+    images = tmp_path / "images"
+    write_image(images, MANIFEST_256)
+    calls, again = {"n": 0}, threading.Event()
+
+    def broken(store):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            again.set()
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pulls_mod, "sweep", broken)
+    app = create_app(tmp_path / "data", images, "http://10.44.12.10:8080",
+                     now_fn=Clock(), room_clock_interval=0.02)
+    try:
+        with TestClient(app):
+            assert again.wait(timeout=5.0), "הלולאה מתה על הכשל הראשון"
+    finally:
+        app.state.ctx.sender.stop()
+    rows = app.state.ctx.conn.execute(
+        "SELECT detail FROM journal WHERE event = 'pull_sweep_failed'").fetchall()
+    assert any("boom" in r["detail"] for r in rows)
 
 
 # --- בידוד: משיכה אינה "הסבב" ------------------------------------------------

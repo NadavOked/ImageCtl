@@ -1,6 +1,6 @@
 # ImageCtl first-boot installer on the server's own screen (#1188).
 [Unit]
-Description=ImageCtl native first-boot installer (tty1)
+Description=ImageSrv native first-boot installer (tty1)
 After=imagectl-wizard.service network-online.target
 Wants=imagectl-wizard.service network-online.target
 Conflicts=getty@tty1.service imagectl-dcui.service

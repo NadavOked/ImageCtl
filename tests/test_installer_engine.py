@@ -22,7 +22,7 @@ LINUX_ONLY = pytest.mark.skipif(os.name == "nt", reason="executable shims and bl
 FP = "3fa3221ea017f9ce3493fe0fe0c180aaa5ea6293a2a399b0f14977280a074915"
 KEYS = (
     "disk", "role", "primary_url", "primary_fingerprint", "servers_if", "servers_mac", "servers_mode",
-    "servers_addr", "servers_mask", "servers_gw", "servers_dns", "hostname", "admin_user", "admin_pass",
+    "servers_addr", "servers_mask", "servers_gw", "servers_dns", "hostname", "timezone", "admin_user", "admin_pass",
 )
 
 
@@ -76,7 +76,7 @@ def _answers(path: Path, **changes: str) -> Path:
         "disk": "/dev/sda", "role": "standalone", "primary_url": "", "primary_fingerprint": "",
         "servers_if": "ens33", "servers_mac": "00:50:56:01:02:01",
         "servers_mode": "dhcp", "servers_addr": "", "servers_mask": "",
-        "servers_gw": "", "servers_dns": "", "hostname": "imagectl-ta",
+        "servers_gw": "", "servers_dns": "", "hostname": "imagectl-ta", "timezone": "Asia/Jerusalem",
         "admin_user": "admin", "admin_pass": "correct horse battery staple",
     }
     data.update(changes)
@@ -335,7 +335,7 @@ install_bootloader
 
     recovery = target / "etc" / "grub.d" / "41_imagectl_recovery"
     text = recovery.read_text(encoding="utf-8")
-    assert 'menuentry "ImageCtl recovery (text console)"' in text
+    assert 'menuentry "ImageSrv recovery (text console)"' in text
     assert "root_uuid=$(grub-probe --target=fs_uuid /)" in text
     assert "root=UUID=$root_uuid ro nomodeset systemd.unit=multi-user.target" in text
     assert log.index("write-target 0755 /etc/grub.d/41_imagectl_recovery") < log.index(

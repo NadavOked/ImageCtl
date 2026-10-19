@@ -36,7 +36,7 @@ def valid(**changes) -> WizardConfig:
 
 
 @pytest.mark.parametrize(("changes", "field", "message"), [
-    ({"role": "secondary", "primary_url": ""}, "primary_url", "חובה להזין את כתובת השרת הראשי עבור שרת משני."),
+    ({"role": "secondary", "primary_url": ""}, "primary_url", "חובה להזין את כתובת השרת הראשי עבור שרת משנה."),
     ({"interface": "not-real"}, "interface", "יש לבחור כרטיס רשת קיים מרשימת הכרטיסים."),
     ({"mode": "static", "address": "999.1.1.1", "netmask": "255.255.255.0"}, "address", "כתובת ה-IP אינה תקינה (נדרש מבנה IPv4 תקין)."),
     ({"mode": "static", "address": "10.1.1.2", "netmask": "255.0.255.0"}, "netmask", "מסכת הרשת אינה תקינה."),
@@ -67,6 +67,72 @@ def _paths(tmp_path: Path, installer: Path, verify: Path) -> WizardPaths:
 
 def _write_fake(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
+
+
+def _rerun_over_http(tmp_path: Path):
+    """אשף בהרצה חוזרת (‏--rerun) מול DB אמיתי עם admin, דרך ה-HTTP — כך
+    שגם הכתובת שה-handler מוסר לבדיקה נבדקת. מחזיר (state, apply, close)."""
+    from server import db as server_db, users
+
+    paths = _paths(tmp_path, tmp_path / "unused", tmp_path / "unused2")
+    paths.data_dir.mkdir(parents=True)
+    conn = server_db.connect(paths.data_dir / "imagectl.db")
+    users.create(conn, "admin", "Curr3nt!admin", "admin", by="test", check_policy=False)
+    conn.close()
+    state = WizardState(paths, rerun=True, dev=True, interfaces_provider=lambda: NICS)
+    nic_fact, role_fact = tmp_path / "nic", tmp_path / "role"
+    nic_fact.write_text("", encoding="utf-8")
+    role_fact.write_text("", encoding="utf-8")
+    server = WizardHTTPServer(("127.0.0.1", 0), state, nic_fact, role_fact)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def apply(password: str) -> dict:
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        try:
+            conn.request("POST", "/api/wizard/apply",
+                         json.dumps(valid(current_password=password).__dict__).encode("utf-8"),
+                         {"Content-Type": "application/json"})
+            response = conn.getresponse()
+            assert response.status == 202, response.read()
+            response.read()
+        finally:
+            conn.close()
+        state.wait(10)
+        return state.progress()
+
+    def close() -> None:
+        server.shutdown()
+        server.server_close()
+
+    return state, apply, close
+
+
+def test_rerun_guesses_go_through_login_guard(tmp_path: Path) -> None:
+    """‏#1631: בהרצה החוזרת `_verify_current_admin` בדק את סיסמת admin בלי
+    `login_guard` — ערוץ ניחוש בלי השהיה ובלי נעילה. אחרי חמישה כשלונות
+    מאותה כתובת גם הסיסמה הנכונה נדחית עד תום ההשהיה, וההתקנה לא רצה."""
+    _state, apply, close = _rerun_over_http(tmp_path)
+    try:
+        for _ in range(5):
+            got = apply("wrong-guess")
+            assert got["state"] == "validation-failed", got
+        got = apply("Curr3nt!admin")
+        assert got["state"] == "validation-failed", "הסיסמה הנכונה התקבלה מיד אחרי חמישה ניחושים"
+        assert "נסה שוב" in got["error"], got
+        assert "fake setup-boot-server.sh completed" not in got["output"], "ההתקנה רצה למרות שהאימות נחסם"
+    finally:
+        close()
+
+
+def test_rerun_with_the_right_password_still_runs_the_installer(tmp_path: Path) -> None:
+    """שומר מהצד השני של #1631: ‏login_guard אינו חוסם את המנהל עצמו."""
+    _state, apply, close = _rerun_over_http(tmp_path)
+    try:
+        got = apply("Curr3nt!admin")
+        assert got["state"] != "validation-failed", got
+        assert "fake setup-boot-server.sh completed" in got["output"], "ההתקנה לא רצה עם הסיסמה הנכונה"
+    finally:
+        close()
 
 
 def test_installer_gets_password_on_fd_not_argv(tmp_path: Path) -> None:
