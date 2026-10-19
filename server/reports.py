@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from datetime import datetime
 
 from boot.grub_menu import normalize_mac as lenient_mac
 
-from . import capture_detail, disk_failures, slot_names
+from . import capture_detail, disk_failures, drawer_cancel, slot_names
 from .db import journal, now_iso, update_one
 from .tasks import CAPTURE_STAGES, OPEN_STATES, claim_task
 
@@ -63,6 +64,33 @@ def well_formed_drivers(value: object) -> dict | None:
     boot = _well_formed_boot(value.get("boot"))
     if boot is not None:
         out["boot"] = boot
+    linux = _well_formed_linux(value.get("linux"))
+    if linux is not None:
+        out["linux"] = linux
+    return out
+
+
+def well_formed_udp_drops(payload: dict) -> dict | None:
+    """‏`udp_drops` של הדיווח (הכרעת נדב 17/10, ‏`agent/lib/waits.sh`):
+    ‏`{"rcvbuf", "inerrors"}` — מספר שלם לא שלילי, או ‏null = "לא נקרא".
+
+    ‏None = השדה **חסר** — הערך הקודם נשאר (‏COALESCE; דיווח לפני המחיצה
+    הראשונה). שדה **פגום** אינו נזנח אלא נשמר כ"לא נקרא": הסכום גדל רק
+    לאורך הזרם, ודיווח סופי פגום שהיה משאיר את האפס של מחיצה קודמת היה
+    נקרא כ"המקלט נקי" (עיקרון 5)."""
+    if "udp_drops" not in payload:
+        return None
+    value = payload["udp_drops"]
+    unread = {"rcvbuf": None, "inerrors": None}
+    if not isinstance(value, dict):
+        return unread
+    out = {}
+    for key in unread:
+        got = value.get(key)
+        if got is not None and (not isinstance(got, int) or isinstance(got, bool)
+                                or got < 0):
+            return unread
+        out[key] = got
     return out
 
 
@@ -82,6 +110,36 @@ def _well_formed_boot(value: object) -> dict | None:
         if isinstance(value.get(key), str):
             out[key] = value[key][:cap]
     return out
+
+
+#: ‏#1331 T8: ה-initramfs של יעד לינוקס (`agent/lib/linuxdrivers.sh`, בדיקה
+#: בלבד). ‏`generic` = מודול ה-bus של הדיסק נמצא ב-initrd או מובנה בקרנל ·
+#: ‏`hostonly` = לא נמצא — הדיסק עלול לא לעלות על מכונה אחרת · ‏`unsupported`
+#: = מבנה שלא נבדק (בלי initrd, ‏/boot נפרד) · ‏`failed` = הבדיקה עצמה נשברה ·
+#: ‏`skipped` = סוג דיסק שאין לו מיפוי. רק `generic` הוא ראיה (עיקרון 5).
+LINUX_STATES = frozenset({"generic", "hostonly", "unsupported", "failed", "skipped"})
+
+
+def _well_formed_linux(value: object) -> dict | None:
+    """‏`drivers.linux` בצורתו התקנית, או ``None``. פגום נזנח לבדו."""
+    if not isinstance(value, dict) or value.get("state") not in LINUX_STATES:
+        return None
+    out: dict = {"state": value["state"]}
+    for key, cap in (("module", 32), ("kver", 64), ("initrd", 128), ("os", 80),
+                     ("error", 300), ("reason", 300)):
+        if isinstance(value.get(key), str):
+            out[key] = value[key][:cap]
+    return out
+
+
+def _journal_linux(conn: sqlite3.Connection, outcome: dict | None, where: str,
+                   named: str = "") -> None:
+    """‏#1331: יעד לינוקס שה-initramfs שלו לא אומת — שורת יומן, פעם אחת, עם
+    המעבר הטרמינלי. ‏`generic` ו-`skipped` אינם נרשמים."""
+    linux = outcome.get("linux") if outcome else None
+    if linux and linux["state"] in ("hostonly", "unsupported", "failed"):
+        journal(conn, "linux_initramfs_warning",
+                f"{where} — {linux['state']}: {linux.get('error', '?')}{named}")
 
 
 def _journal_boot(conn: sqlite3.Connection, outcome: dict | None, where: str,
@@ -181,6 +239,7 @@ def ingest(conn: sqlite3.Connection, payload: dict,
         return {"ok": True}
 
     previous_targets = row["targets_json"]
+    was_cancelled = _cancelled_devs(previous_targets)
     _clean_target_drivers(targets)
     targets = stamp_movement(previous_targets, targets)
     targets = stamp_done_serials(conn, mac, previous_targets, targets)
@@ -191,18 +250,21 @@ def ingest(conn: sqlite3.Connection, payload: dict,
     )
     # ‏#720: תוצאת ה-staging — נכתבת כשהגיעה, ונשארת (COALESCE) כשלא.
     drivers = well_formed_drivers(payload.get("drivers"))
+    drops = well_formed_udp_drops(payload)
 
     previous = row["state"]
     conn.execute(
         "UPDATE session_members SET state = ?, bytes_written = ?, bytes_total = ?,"
         " error = ?, done = ?, targets_json = ?, updated_at = ?,"
-        " drivers_json = COALESCE(?, drivers_json)"
+        " drivers_json = COALESCE(?, drivers_json),"
+        " udp_drops_json = COALESCE(?, udp_drops_json)"
         " WHERE session_id = ? AND mac = ?",
         (
             state, bytes_written, bytes_total, errors or None,
             1 if state == "done" else row["done"],
             json.dumps(targets), now_iso(),
             json.dumps(drivers, ensure_ascii=False) if drivers else None,
+            json.dumps(drops) if drops else None,
             session_id, mac,
         ),
     )
@@ -219,12 +281,14 @@ def ingest(conn: sqlite3.Connection, payload: dict,
             journal(conn, "drivers_staged",
                     f"{mac} in {session_id} — {', '.join(drivers['packages'])}")
         _journal_boot(conn, drivers, f"{mac} in {session_id}")
+        _journal_linux(conn, drivers, f"{mac} in {session_id}")
         # ‏#1269: מגירות של מחשב שיכפול — התוצאה לכל מגירה, פעם אחת, באותו מעבר.
         for t in targets:
             outcome = t.get("drivers") if isinstance(t, dict) else None
             # ‏#704: השם שהמפעיל נתן לחריץ של המגירה (‏dev → port מה-hello).
             named = (slot_names.journal_suffix(slot_names.label(conn, mac, dev=t.get("dev")))
-                     if outcome and outcome["state"] in ("failed", "staged") else "")
+                     if outcome and (outcome["state"] in ("failed", "staged")
+                                     or "linux" in outcome) else "")
             if outcome and outcome["state"] == "failed":
                 journal(conn, "drivers_failed", f"{mac} {t.get('dev', '?')} in {session_id}"
                         f" — {outcome.get('error', '?')}{named}")
@@ -232,12 +296,29 @@ def ingest(conn: sqlite3.Connection, payload: dict,
                 journal(conn, "drivers_staged", f"{mac} {t.get('dev', '?')} in {session_id}"
                         f" — {', '.join(outcome['packages'])}{named}")
             _journal_boot(conn, outcome, f"{mac} {t.get('dev', '?')} in {session_id}", named)
+            _journal_linux(conn, outcome, f"{mac} {t.get('dev', '?')} in {session_id}", named)
     # ‏#874: יעד שנכשל בכתיבה נכנס לזיכרון הכשלים (סידורי + חריץ + שורות
     # ה-ATA). פעם אחת ליעד — הדיווח חוזר כל 2 שניות, ו-`record` מתעלם מכפול.
     for t in targets:
         if t.get("state") == "failed":
             disk_failures.record(conn, session_id, mac, t)
-    return {"ok": True}
+        # ‏#1386: "בוטל" נרשם כשהסוכן דיווח אותו — פעם אחת, במעבר. לא disk_failure:
+        # ביטול אינו כשל, ובסבב הבא הדיסק ירוק.
+        elif t.get("state") == "cancelled" and isinstance(t.get("dev"), str)                 and t["dev"] not in was_cancelled:
+            named = slot_names.label(conn, mac, dev=t["dev"]) or t["dev"]
+            drawer_cancel.confirmed(conn, session_id, mac, t["dev"], f"{mac} {named}")
+    # ‏#1386: בקשות "בטל דיסק זה" מהקונסולה/מחשב הבנייה נמסרות בתשובה הזו.
+    cancel = drawer_cancel.pending(conn, session_id, mac)
+    return {"ok": True, "cancel": cancel} if cancel else {"ok": True}
+
+
+def _cancelled_devs(previous_json: str | None) -> set[str]:
+    try:
+        previous = json.loads(previous_json or "[]")
+    except (TypeError, ValueError):
+        previous = []
+    return {t.get("dev") for t in previous
+            if isinstance(t, dict) and t.get("state") == "cancelled"}
 
 
 def _clean_target_drivers(targets: list) -> None:
@@ -331,8 +412,37 @@ def stamp_movement(previous_json: str | None, targets: list) -> list:
             t = {**t, "moved_at": before["moved_at"]}
         else:
             t = {**t, "moved_at": now_iso()}
-        stamped.append(_stamp_first_movement(before, t))
+        stamped.append(_stamp_window(before, _stamp_first_movement(before, t)))
     return stamped
+
+
+#: ‏17/10: על פני כמה שניות של דיווחים לפחות נמדד הקצב העדכני של מגירה.
+RATE_WINDOW_S = 10
+
+
+def _stamp_window(before: dict | None, t: dict) -> dict:
+    """‏17/10 (ברזל): ‏`recent_bps` — הבייטים שהמגירה כתבה בחלון האחרון של
+    ‏`RATE_WINDOW_S` שניות לפחות, חלקי אורכו. חותמות שרת בלבד.
+
+    הקצב שהמסך הציג היה ממוצע מאז שהגל יצא: ‏`ses_fbd8f9ca` יצא 08:24:11 והבייט
+    הראשון זז 08:24:49 (‏`first_moved_at`), כלומר 38 שניות של המתנה בתוך המכנה —
+    ובגל עם שאלת SMART פתוחה ההמתנה היא דקות. ‏`rate_at`/`rate_bytes` הם תחילת
+    החלון הנוכחי; כשהוא מלא — הקצב נמדד והחלון מתחיל מחדש. מונה שירד (התחלה
+    מחדש) או חותמת פגומה מתחילים חלון בלי קצב: "לא נמדד", לא 0."""
+    t = {k: v for k, v in t.items() if k not in ("rate_at", "rate_bytes", "recent_bps")}
+    now, written = now_iso(), _int(t.get("bytes_written"))
+    since, base = (before or {}).get("rate_at"), _int((before or {}).get("rate_bytes"))
+    try:
+        seconds = (datetime.fromisoformat(now) - datetime.fromisoformat(since)).total_seconds()
+    except (TypeError, ValueError):
+        seconds = None
+    if seconds is None or seconds < 0 or written < base:
+        return {**t, "rate_at": now, "rate_bytes": written}
+    if seconds < RATE_WINDOW_S:
+        kept = {"recent_bps": before["recent_bps"]} if "recent_bps" in before else {}
+        return {**t, "rate_at": since, "rate_bytes": base, **kept}
+    return {**t, "rate_at": now, "rate_bytes": written,
+            "recent_bps": int((written - base) / seconds)}
 
 
 def _stamp_first_movement(before: dict | None, t: dict) -> dict:

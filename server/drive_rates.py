@@ -8,19 +8,41 @@
      ולעולם לא מעל 90%/60% ממחשב השיכפול האיטי בגל — `nic_speed`, הנחת 1G כשלא ידוע)
 
     קצב = המינימום על **מחשבי השיכפול** בגל (#1471, הכרעת נדב 16/10) — לכל
-          מכונה (MAC), מהגל האחרון שהיא הייתה בו:
-          ‏+STEP_UP      — שידורים חוזרים = 0 **וגם** כל כונן שלו עמד בקצב
+          מכונה (MAC), מ-GOODPUT_WINDOW הגלים האחרונים שלה עם אותו מספר מגירות (`_pick`),
+          לפי **goodput** (‏#1758): הבייטים שהמגירות שלה כתבו בפועל, לכל מגירה,
+          חלקי משך הזרם (הבייט הראשון → `send_done`). חיפוש שיא (`_climb`):
+          ‏climb — הקצב שבו הגל היה הכי מהיר רץ בקצב שלו (‏≥ KEEP_UP) ואין מעליו
+                  קצב שנוסה — ‏+STEP_UP; יש מעליו קצב שלא היה מהיר יותר — באמצע
+                  (כל עוד הפער ≥ 2×REFINE_STEP)
+          ‏peak  — השיא נמצא — נשארים בו
+          ‏back  — גם הגל המהיר ביותר לא רץ בקצב שלו, ואין מתחתיו קצב שנוסה — ×DOWN_FACTOR
+          ‏held  — בשיא היו שידורים חוזרים מעל LOSS_CLIMB_MAX, או שאבדה בו מגירה,
+                  או ש-udp-sender כתב בו `Timeout notAnswered` מעל TIMEOUTS_PER_GB_HELD
+                  לכל GB שנשלח (‏#1761)
+          אבדן אינו מטרה — הוא כבר בתוך הזמן. הוא **הגנה** בשני מקומות בלבד:
+          מגירה שאבדה בגל עם שידורים חוזרים מעל LOSS_DOWN_RATIO, ושולח שנכשל
+          עם שידורים חוזרים כאלה (goodput 0) — מעליהם לא מחפשים.
+          ‏#1761 — האות הישיר: גל שבו udp-sender כתב `Dropping client` (‏goodput 0)
+          — הקצב לא בטוח. קצב לא בטוח נרשם ב-`unsafe_rates` ואינו נשכח כשיוצא
+          מהחלון. יומן שולח שלא נקרא — אין טיפוס (‏`unmeasured`).
+          בלי אף גל עם goodput (גלים מלפני #1758) — הכלל הקודם, על הגל האחרון:
+          ‏+STEP_UP      — שידורים חוזרים ≤ LOSS_DOWN_RATIO **וגם** סכום
+                          RcvbufErrors של המקלטים ≤ LOSS_DOWN_RATIO מהבלוקים,
+                          וכל מקלט דיווח (הכרעת נדב 17/10)
+                          **וגם** כל כונן שלו עמד בקצב
                           **וגם** הזרם עצמו רץ ב-KEEP_UP מהקצב לפחות
           ‏× DOWN_FACTOR — שידורים חוזרים מעל LOSS_DOWN_RATIO מהבלוקים
           כמות שהוא    — כל השאר, כולל "לא נמדד" (עיקרון 5)
+          "הגל האחרון" — עם אותו מספר מגירות במכונה, ובלעדיו הקרוב (`_pick`)
           מכונה בלי גל כזה (חדשה / הוחלפה) — **כל הגל** בפתיחה (`_from_previous`)
     קצב = min(קצב, הכונן האיטי המוכר × MARGIN)        (#447, למטה)
     קצב = בין FLOOR_RATIO × פתיחה לבין הגג
 
 עלייה רק על **ראיה חיובית** לגל נקי: המונה של udp-sender עצמו נקרא בסוף
-הגל (‏`record_stream`) ושווה אפס, ולכל כונן של הגל יש דגימה שעמד בה בקצב.
-מונה שלא נקרא, גל שנעצר לפני הסוף, כונן שנכשל או בלי דגימה — אין ראיה,
-והקצב נשאר. הזרם עצמו אינו משתנה; רק המספר שעובר ל-`--max-bitrate`.
+הגל (‏`record_stream`) ואינו עובר את הסף, כל מקלט דיווח כמה datagrams הקרנל
+שלו זרק (‏`RcvbufErrors`, ‏`record_wave`) והסכום אינו עובר אותו סף, ולכל כונן של הגל יש דגימה
+שעמד בה בקצב. מונה שלא נקרא — של השולח או של מקלט אחד — גל שנעצר לפני
+הסוף, כונן שנכשל או בלי דגימה — אין ראיה, והקצב נשאר. הזרם עצמו אינו משתנה; רק המספר שעובר ל-`--max-bitrate`.
 
 **הזיכרון של הכוננים (#447).** כאן נשמר מה שכל כונן (דגם + סידורי) באמת
 כתב בגלים שהסתיימו, וכונן שידוע שהוא איטי מוריד את הגל אליו:
@@ -61,6 +83,7 @@ import json
 import logging
 import re
 import sqlite3
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -114,6 +137,38 @@ LOSS_DOWN_RATIO = 0.001
 UDPCAST_BLOCK = 1456
 #: כמה גלים אחרונים סורקים כדי למצוא את הגל האחרון של כל מכונה (#1471).
 MEMORY_SCAN = 50
+
+#: ‏#1758 — goodput. קצב גבוה יותר "מהיר יותר" רק כשה-goodput שלו עולה על
+#: זה של הנמוך ביותר מ-3%; אחרת הנמוך עדיף (אותו זמן, פחות עומס). המקור:
+#: ברזל 18/10, משכפל 2, ‏19.5GB — היעילות (goodput / קצב) של שלושה גלים
+#: בקצבים דומים: ‏92.7% ‏(270m) · ‏90.9% ‏(361m) · ‏90.0% ‏(370m), פיזור של
+#: ‏2.7 נקודות. הבדל קטן מזה אינו מבדיל בין קצבים.
+GOODPUT_NOISE = 0.03
+#: ‏#1758 — הצעד הקטן ביותר בחיפוש השיא, בין קצב טוב לקצב שמעליו שלא היה
+#: מהיר יותר. ‏25m הם 5% מ-482m: ברזל 18/10 הראה שמתחת לשיא הזמן נע עם
+#: הקצב (‏482m→375ש', ‏361m→476ש'), ולכן 5% הם כ-19 שניות בגל של 375 —
+#: מעל הרעש של GOODPUT_NOISE. צעד קטן מזה אינו נמדד.
+REFINE_STEP = 25_000_000
+#: ‏#1758 — מעל איזה חלק שידורים חוזרים לא עולים מהשיא, גם כשהזרם רץ בקצב
+#: שלו. זה **גבול השטח שנמדד**, לא ניחוש: הגלים עם הכי הרבה שידורים
+#: חוזרים שהסתיימו — ‏1.70% (‏600m, ‏i5-650, ‏17/10, ‏228044 על ~13.4M
+#: בלוקים) ו-1.47% (‏482m, ‏18/10, ‏375ש', המהיר בסדרה). מעל 2% אין לנו גל
+#: אחד שהסתיים, ושם `--retries-until-drop` עלול להפיל מקלט (נפילת ה-90%, 11/09).
+LOSS_CLIMB_MAX = 0.02
+#: ‏#1761 — מעל כמה שורות `Timeout notAnswered` לכל GB שנשלח (‏10⁹ בייט של
+#: ‏`sent_bytes`) לא עולים מהשיא. המקור: ברזל 19/10, משכפל 2, 1-2 מגירות,
+#: ‏19.5GB — פקיעות הן חלק רגיל מזרם שהצליח: מגירה אחת ב-900m ‏55; שתי
+#: מגירות 277m→1, ‏377m→7, ‏477m→16, ‏577m→53/47/42/67 — אפס ניתוקים, 14/14
+#: מגירות הצליחו. המקסימום בלי ניתוק: ‏67/19.5GB = ‏3.4/GB. "פקיעה אחת עוצרת"
+#: היה נועל שתי מגירות ב-277m. ניתוק (`Dropping client`) הוא האות הקשה.
+TIMEOUTS_PER_GB_HELD = 5.0
+#: ‏#1758 — כמה גלים אחרונים של מכונה (באותו מספר מגירות) נחשבים בחיפוש
+#: השיא. קצב שלא היה מהיר יותר נשכח אחרי החלון, ואז נבדק שוב — בעקומה עם
+#: שיא זה עד שלושה גלים איטיים (‏+100m, ואז באמצע פעמיים, כל אחד 2%–9% איטי
+#: יותר בטסט `_peaked`). על פני 10 גלים — כ-1.5% בממוצע; חלון של 5 (כמו
+#: לכוננים) היה מכפיל את המחיר. ומספיק קצר כדי שמגירות ואימג'ים שהתחלפו
+#: ייבדקו שוב באותו יום עבודה.
+GOODPUT_WINDOW = 10
 
 #: ‏הכרעת נדב 15/10: "הכי מהר שאפשר, והשרת מגביל לפי כרטיס הרשת שלו".
 #: כשמהירות הקישור של כרטיס ההפצה נקראה (‏`read_link`), במקום 600m/900m:
@@ -228,31 +283,78 @@ def _fmt(bits: int) -> str:
     return f"{max(1, bits // 10 ** 6)}m"
 
 
-def _all_kept_up(conn: sqlite3.Connection, session_id: str, roster: list) -> bool:
+def _all_kept_up(conn: sqlite3.Connection, session_id: str, roster: list,
+                 drops: dict | None = None) -> bool:
     """ראיה חיובית שכל כונן של הגל עמד בקצב: לכל אחד דגימה מהגל הזה, והיא
-    לפחות `KEEP_UP` מתקרת הגל. כונן בלי דגימה (נכשל, גל קצר) — אין ראיה."""
-    serials = {d.get("serial") for d in roster if isinstance(d, dict)}
-    if not serials or None in serials:
+    לפחות `KEEP_UP` מתקרת הגל. כונן בלי דגימה (גל קצר, דיווח שלא הגיע) —
+    אין ראיה.
+
+    ‏**מגירה שהסוכן דיווח שנכשלה** (‏`failed_drawers` של המכונה ב-`drops`,
+    ‏`record_wave`) — אינה חוסמת: ‏rc2, ‏ses_54a923dd — מגירה נפלה בדקה
+    הראשונה על ‏`device offline`, והזרם, השידורים החוזרים והמגירה השנייה
+    הוכיחו את הקצב. לכל מכונה עדיין נדרשות דגימות לכל מגירה שלא נכשלה,
+    ולפחות אחת; ודגימה אחת שלא עמדה בקצב חוסמת כמו קודם."""
+    mine: dict[str, set] = {}
+    for d in roster:
+        if not isinstance(d, dict) or d.get("serial") is None:
+            return False
+        mine.setdefault(d.get("mac"), set()).add(d["serial"])
+    if not mine:
         return False
-    kept = {r["serial"] for r in conn.execute(
-        "SELECT serial, rate_bps, cap_bps FROM drive_rates WHERE session_id = ?",
-        (session_id,)) if r["rate_bps"] >= KEEP_UP * r["cap_bps"]}
-    return serials <= kept
+    kept, short = set(), set()
+    for r in conn.execute(
+            "SELECT serial, rate_bps, cap_bps FROM drive_rates WHERE session_id = ?",
+            (session_id,)):
+        (kept if r["rate_bps"] >= KEEP_UP * r["cap_bps"] else short).add(r["serial"])
+    for mac, serials in mine.items():
+        seen = (drops or {}).get(mac)
+        failed = seen.get("failed_drawers") if isinstance(seen, dict) else 0
+        failed = failed if isinstance(failed, int) and failed > 0 else 0
+        if serials & short or len(serials & kept) < max(1, len(serials) - failed):
+            return False
+    return True
+
+
+def _rcvbuf(drops: dict | None, roster: list) -> int | None:
+    """סכום `RcvbufErrors` של מחשבי השיכפול בגל (‏`record_wave`), או ‏None:
+    מכונה אחת שלא דיווחה, או דיווחה "לא נקרא", היא "לא נקרא" לכל הגל —
+    סכום חלקי היה נקרא כ"אפס זריקות" (עיקרון 5)."""
+    macs = {d.get("mac") for d in roster if isinstance(d, dict)}
+    if not macs or not isinstance(drops, dict):
+        return None
+    total = 0
+    for mac in macs:
+        seen = drops.get(mac)
+        got = seen.get("rcvbuf") if isinstance(seen, dict) else None
+        if not isinstance(got, int) or isinstance(got, bool) or got < 0:
+            return None
+        total += got
+    return total
 
 
 def _next_from(conn: sqlite3.Connection, session_id: str, past: dict, stream: dict,
-               rate: int, roster: list) -> tuple[int, str, dict]:
+               rate: int, roster: list, drops: dict | None = None) -> tuple[int, str, dict]:
     """(הקצב שהגל הבא יורש מהגל הזה, ‏basis, ‏previous) — לפי מה שהגל הזה
-    עצמו הוכיח: ‏`up`/‏`down`/‏`held`/‏`unmeasured` (ראו `choose`)."""
+    עצמו הוכיח: ‏`up`/‏`down`/‏`held`/‏`unmeasured` (ראו `choose`).
+
+    ‏הכרעת נדב 17/10: עד כאן עלייה דרשה `loss == 0` **בדיוק**, ומחשב שיכפול
+    שזורק מעט בכל קצב (i5-650: ‏600→450→337→252) לא עלה לעולם. מעכשיו —
+    שידורים חוזרים עד הסף **וגם** `RcvbufErrors` של כל המקלטים יחד עד אותו
+    סף (‏`drops`, ‏`record_wave`); מקלט שלא נקרא — לא עולים."""
     loss, sent = stream.get("loss_blocks"), stream.get("sent_bytes")
     bps, secs = stream.get("stream_bps"), stream.get("stream_s")
-    previous = {"session_id": session_id, "max_bitrate": past["max_bitrate"],
-                "loss_blocks": loss, "sent_bytes": sent, "stream_bps": bps}
+    previous = _summary(session_id, past, stream, roster, drops)
+    rcvbuf = previous["rcvbuf"]
     if not isinstance(loss, int) or not isinstance(sent, int) or sent <= 0:
         return rate, "unmeasured", previous         # עיקרון 5: לא נמדד ≠ נקי
-    if loss > LOSS_DOWN_RATIO * -(-sent // UDPCAST_BLOCK):
+    budget = LOSS_DOWN_RATIO * -(-sent // UDPCAST_BLOCK)
+    if loss > budget:
         return int(rate * DOWN_FACTOR), "down", previous
-    if loss != 0 or not _all_kept_up(conn, session_id, roster):
+    if rcvbuf is None:
+        return rate, "unmeasured", previous         # מקלט שלא נקרא אינו מקלט נקי
+    # אותו תקציב כמו השידורים החוזרים (ses_54a923dd, 17/10: ‏rcvbuf=189 על ~13M
+    # בלוקים — "אפס בדיוק" היה מחזיר את הספירלה). datagram של udpcast = בלוק.
+    if rcvbuf > budget or not _all_kept_up(conn, session_id, roster, drops):
         return rate, "held", previous
     # התנאי השני לעלייה: הזרם עצמו רץ בקצב הגל. ‏`bytes_written` של כונן
     # נספר אחרי פריסת הדחיסה — כונן שהאט את הזרם עלול להיראות "עמד".
@@ -262,6 +364,132 @@ def _next_from(conn: sqlite3.Connection, session_id: str, past: dict, stream: di
     if bps < KEEP_UP * rate / 8:
         return rate, "held", previous
     return rate + STEP_UP, "up", previous
+
+
+def _summary(session_id: str, past: dict, stream: dict, roster: list,
+             drops: dict | None) -> dict:
+    """‏`previous` — מה שהגל ההוא ספר (למסך וליומן)."""
+    return {"session_id": session_id, "max_bitrate": past["max_bitrate"],
+            "loss_blocks": stream.get("loss_blocks"), "sent_bytes": stream.get("sent_bytes"),
+            "stream_bps": stream.get("stream_bps"), "rcvbuf": _rcvbuf(drops, roster)}
+
+
+def _count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _point(session_id: str, past: dict, rate: int, stream: dict,
+           delivered: dict | None, mac: str) -> dict | None:
+    """נקודת goodput אחת של המכונה `mac` בגל אחד (‏#1758), או ‏None — לא נמדד.
+
+    ‏goodput = הבייטים שהמגירות של המכונה כתבו בפועל (‏`delivered`, מגירות
+    `done` בלבד), חלקי מספר המגירות שלה בגל, חלקי `wall_s` — משך הזרם
+    בשעון. מגירה שלא סיימה תורמת אפס: הבייטים שלה לא הגיעו. ‏`eff` = ה-goodput
+    חלקי הקצב שהגל רץ בו (‏`max_bitrate / 8`) — האם **הקצב** הוא שהגביל.
+
+    שולח **שנכשל** עם שידורים חוזרים מעל LOSS_DOWN_RATIO הוא נקודה של goodput
+    אפס ו-`lost` — ההגנה; שולח שנכשל או נעצר בלעדיהם אינו ראיה על הקצב.
+    ‏**‏#1761:** גל שבו udp-sender ניתק מקלט (`dropped_clients` > 0) — נקודה של
+    goodput אפס ו-`lost`, בכל סיום. ‏`dropped` / ‏`timeouts` בנקודה — ‏None כשיומן
+    השולח לא נקרא ("לא נבדק").
+    מונה שלא נקרא, זרם קצר מ-MIN_SAMPLE_S, פחות מ-MIN_SAMPLE_BYTES, מכונה
+    שלא דיווחה — ‏None (עיקרון 5: לא נמדד ≠ איטי)."""
+    sent, loss = stream.get("sent_bytes"), stream.get("loss_blocks")
+    if not _count(sent) or sent <= 0 or not _count(loss):
+        return None
+    dropped, timeouts = stream.get("dropped_clients"), stream.get("timeouts")
+    base = {"session_id": session_id, "max_bitrate": past.get("max_bitrate"),
+            "rate": rate, "loss": loss / -(-sent // UDPCAST_BLOCK), "sent": sent,
+            "dropped": dropped if _count(dropped) else None,
+            "timeouts": timeouts if _count(timeouts) else None}
+    if base["dropped"]:                 # ‏#1761: udp-sender ניתק מקלט בקצב הזה
+        return {**base, "goodput_bps": 0, "eff": 0.0, "lost": True}
+    if stream.get("ended") == "send_failed":
+        return ({**base, "goodput_bps": 0, "eff": 0.0, "lost": True}
+                if base["loss"] > LOSS_DOWN_RATIO else None)
+    wall, got = stream.get("wall_s"), (delivered or {}).get(mac)
+    if (not isinstance(wall, (int, float)) or isinstance(wall, bool) or wall < MIN_SAMPLE_S
+            or sent < MIN_SAMPLE_BYTES or not isinstance(got, dict)):
+        return None
+    drawers, done, written = got.get("drawers"), got.get("done"), got.get("written_bytes")
+    if not (_count(drawers) and drawers > 0 and _count(done) and done <= drawers
+            and _count(written)):
+        return None
+    goodput = int(written / drawers / wall)
+    return {**base, "goodput_bps": goodput, "eff": goodput * 8 / rate,
+            "lost": done < drawers}
+
+
+def _unsafe(point: dict) -> bool:
+    """ההגנה (‏#1758): מגירה אבדה בגל — או השולח נכשל — עם שידורים חוזרים
+    מעל LOSS_DOWN_RATIO. זה הנזק היחיד של אבדן שאינו כבר בתוך הזמן: מגירה
+    שצריך לכתוב מחדש היא גל שלם נוסף. ‏#1761: או ש-udp-sender ניתק מקלט —
+    האות הישיר (‏senddata.c: ניתוק רק כש-rxmitId עובר את retries-until-drop)."""
+    return bool(point.get("dropped")) or (point["lost"] and point["loss"] > LOSS_DOWN_RATIO)
+
+
+def _climb(points: list[dict], unsafe: list[int] = ()) -> tuple[int, str, dict]:
+    """(הקצב הבא, ‏basis, השיא) — חיפוש שיא על goodput (‏#1758).
+
+    ‏`points` — הגלים האחרונים של המכונה, מהחדש לישן; לכל קצב נחשבת המדידה
+    החדשה שלו. **השיא** — עוברים מהקצב הנמוך לגבוה, וקצב גבוה יותר מחליף רק
+    כשה-goodput שלו עולה ביותר מ-GOODPUT_NOISE: אותו זמן בקצב גבוה יותר אינו
+    סיבה לעומס נוסף. ואז:
+
+        השיא לא רץ בקצב שלו (‏eff < KEEP_UP):
+            אין מתחתיו קצב שנוסה → ‏×DOWN_FACTOR (‏`back`); יש → נשארים (‏`peak`)
+        בשיא אבדה מגירה עם אבדן, או שידורים חוזרים מעל LOSS_CLIMB_MAX, או
+        ש-udp-sender כתב בו `Timeout notAnswered` מעל TIMEOUTS_PER_GB_HELD לכל
+        GB שנשלח (‏#1761), או שקצב לא-בטוח
+        שנזכר (`unsafe`) אינו מעליו → ‏`held`
+        הקצב הקרוב מעליו — בחלון או בזיכרון — לא בטוח → נשארים (‏`peak`)
+        אין מעליו קצב שנוסה → ‏+STEP_UP (‏`climb`)
+        מעליו קצב שלא היה מהיר יותר, בטוח, בפער ≥ 2×REFINE_STEP → באמצע (‏`climb`)
+        אחרת → נשארים (‏`peak`)
+        ‏`climb` כשיומן השולח של השיא לא נקרא → נשארים (‏`unmeasured`, עיקרון 5)
+
+    נקודה יוצאת מהחלון אחרי GOODPUT_WINDOW גלים — ולכן קצב שלא היה מהיר יותר נבדק
+    שוב מדי כמה גלים: המגירות, האימג' והעומס משתנים. **קצב לא-בטוח אינו
+    נשכח** (‏#1761): ‏`unsafe` — הקצבים מ-`unsafe_rates` (`_remember_unsafe`)."""
+    newest: dict[int, dict] = {}
+    for point in points:
+        newest.setdefault(point["rate"], point)
+    tried = sorted(newest.values(), key=lambda p: p["rate"])
+    best = tried[0]
+    for point in tried[1:]:
+        if point["goodput_bps"] > best["goodput_bps"] * (1 + GOODPUT_NOISE):
+            best = point
+    rate = best["rate"]
+    above = [p for p in tried if p["rate"] > rate]
+    if best["eff"] < KEEP_UP:
+        if any(p["rate"] < rate for p in tried):
+            return rate, "peak", best
+        return int(rate * DOWN_FACTOR), "back", best
+    timeouts = best.get("timeouts")
+    if (_unsafe(best) or best["loss"] > LOSS_CLIMB_MAX
+            or (timeouts is not None and timeouts * 10 ** 9 / best["sent"] > TIMEOUTS_PER_GB_HELD)
+            or any(r <= rate for r in unsafe)):
+        return rate, "held", best
+    wall = min((r for r in unsafe if r > rate), default=None)
+    if wall is not None and (not above or wall <= above[0]["rate"]):
+        return rate, "peak", best                  # הקצב הקרוב מעליו לא בטוח
+    if not above:
+        bits = rate + STEP_UP
+    elif not _unsafe(above[0]) and above[0]["rate"] - rate >= 2 * REFINE_STEP:
+        bits = (rate + above[0]["rate"]) // 2
+    else:
+        return rate, "peak", best
+    if best.get("timeouts") is None or best.get("dropped") is None:
+        return rate, "unmeasured", best            # יומן השולח לא נקרא ≠ נקי
+    return bits, "climb", best
+
+
+def _pick(counts: dict[int, tuple], want: int) -> tuple[int, tuple]:
+    """(מספר המגירות, הגל) שממנו מכונה עם `want` מגירות יורשת (הכרעת נדב
+    17/10): אותו מספר; ובלעדיו — הקרוב, ובתיקו **היותר** מגירות. קצב שנלמד
+    תחת יותר עומס בטוח לפחות עומס; ההפך נחסם ב-`_from_previous`."""
+    drawers = min(counts, key=lambda c: (abs(c - want), -c))
+    return drawers, counts[drawers]
 
 
 def _from_previous(conn: sqlite3.Connection, drives: list[dict], start: int,
@@ -278,37 +506,76 @@ def _from_previous(conn: sqlite3.Connection, drives: list[dict], start: int,
         קצב = המינימום על המכונות; ‏`previous` = הגל של המכונה שקבעה, ו-`mac` שלה
         מכונה אחת בלי גל כזה (או כונן בלי MAC) → **כל הגל** בפתיחה
 
+    ‏**ולפי מספר המגירות שלה בגל** (הכרעת נדב 17/10): המעבד של המקלט עובד
+    לכל מגירה (‏zstd ו-partclone לכל אחת), וקצב שנלמד עם שלוש מגירות אינו
+    מעניש גל של אחת. "הגל האחרון" הוא האחרון עם אותו מספר מגירות למכונה;
+    בלעדיו — הקרוב (`_pick`), ומגל עם **פחות** מגירות אין עלייה: לכל היותר
+    הקצב שהגל ההוא רץ בו (‏`held`). ‏`previous.drawers` — כמה מגירות היו
+    למכונה שקבעה בגל ההוא.
+
+    ‏**ולפי goodput** (‏#1758): מאותו מספר מגירות נלקחים עד GOODPUT_WINDOW הגלים
+    האחרונים, ומהם נקודות goodput (`_point`) — וחיפוש השיא (`_climb`) קובע.
+    ‏`previous` הוא עדיין הגל האחרון של המכונה, ועליו גם `rule: "goodput"`,
+    ‏`wall_s`, ‏`goodput_bps` (שלו) ו-`best` (השיא). בלי אף נקודה — כל הגלים
+    מלפני #1758 — הכלל הקודם על הגל האחרון (`_next_from`). מגל עם פחות
+    מגירות — לכל היותר הקצב שהוכח (השיא, או הגל ההוא בכלל הקודם).
+
     הגל יוצא, נמדד, ובפעם הבאה המכונה החדשה כבר מוכרת. ההגנות לכל כונן
     אינן משתנות: הכונן האיטי המוכר (`_limit_of`) מוריד אחרי זה, בדיקת
     הכתיבה בסוכן פוסלת מגירה איטית, ו"עלייה" עדיין דורשת שכל כונן של הגל
     הקודם עמד בקצב והזרם רץ בו (`_next_from`)."""
-    macs = {d.get("mac") for d in drives}
-    if not macs or None in macs:
+    want = Counter(d.get("mac") for d in drives)
+    if not want or None in want:
         return start, "start", None
-    found: dict[str, tuple[int, str, dict]] = {}
+    # mac → {מגירות: עד GOODPUT_WINDOW הגלים האחרונים, מהחדש לישן}
+    seen: dict[str, dict[int, list[tuple]]] = {}
     for row in conn.execute(
-            "SELECT session_id, decision, stream FROM wave_rates"
+            "SELECT session_id, decision, stream, drops, delivered FROM wave_rates"
             " WHERE session_id IS NOT ? ORDER BY rowid DESC LIMIT ?",
             (exclude, MEMORY_SCAN)):
         try:
             past = json.loads(row["decision"])
             stream = json.loads(row["stream"]) if row["stream"] else {}
+            drops = json.loads(row["drops"]) if row["drops"] else None
+            delivered = json.loads(row["delivered"]) if row["delivered"] else None
         except (TypeError, ValueError):
             continue
         roster = past.get("roster") or []
         rate = parse_bitrate(past.get("max_bitrate"))
         if past.get("direct") or rate is None:
             continue
-        hits = (macs - found.keys()) & {d.get("mac") for d in roster if isinstance(d, dict)}
-        if not hits:
-            continue
-        outcome = _next_from(conn, row["session_id"], past, stream, rate, roster)
-        for mac in hits:
-            found[mac] = outcome
-        if found.keys() >= macs:
-            break
-    if found.keys() < macs:
+        had = Counter(d.get("mac") for d in roster if isinstance(d, dict))
+        for mac in want.keys() & had.keys():
+            waves = seen.setdefault(mac, {}).setdefault(had[mac], [])
+            if len(waves) < GOODPUT_WINDOW:
+                waves.append((row["session_id"], past, stream, rate, roster, drops,
+                              delivered if isinstance(delivered, dict) else None))
+    if seen.keys() < want.keys():
         return start, "start", None                 # מכונה שלא נראתה — פתיחה
+    found: dict[str, tuple[int, str, dict]] = {}
+    for mac, counts in seen.items():
+        drawers, waves = _pick(counts, want[mac])
+        session_id, past, stream, rate, roster, drops, _ = waves[0]
+        points = [p for w in waves if (p := _point(w[0], w[1], w[3], w[2], w[6], mac))]
+        if points:                                   # ‏#1758: goodput
+            bits, basis, best = _climb(points, [r["rate_bps"] for r in conn.execute(
+                "SELECT rate_bps FROM unsafe_rates WHERE mac = ? AND drawers <= ?",
+                (mac, max(drawers, want[mac])))])
+            mine = next((p for p in points if p["session_id"] == session_id), None)
+            previous = {**_summary(session_id, past, stream, roster, drops),
+                        "rule": "goodput", "wall_s": stream.get("wall_s"),
+                        "goodput_bps": mine["goodput_bps"] if mine else None,
+                        "best": {key: best[key] for key in
+                                 ("session_id", "max_bitrate", "goodput_bps")}
+                                | {"eff": round(best["eff"], 3)}}
+            proven = best["rate"]
+        else:                                        # גלים מלפני #1758
+            bits, basis, previous = _next_from(conn, session_id, past, stream, rate,
+                                               roster, drops)
+            proven = rate
+        if drawers < want[mac] and bits > proven:
+            bits, basis = proven, "held"            # מפחות מגירות — לא עולים
+        found[mac] = bits, basis, {**previous, "drawers": drawers}
     mac, (bits, basis, previous) = min(found.items(), key=lambda kv: (kv[1][0], kv[0]))
     return bits, basis, {**previous, "mac": mac}
 
@@ -319,7 +586,8 @@ def choose(conn: sqlite3.Connection, drives: list[dict],
     """הקצב לגל של `drives` (‏`serial`, ‏`model`, ‏`mac`, ‏`port`) — קריאה בלבד.
 
     ‏`max_bitrate` הוא מה שעובר ל-udp-sender, ו-`basis` אומר למה: ‏`start`
-    (מכונה בגל שאין לה גל קודם — #1471) · ‏`up` (הגל הקודם של המכונה שקבעה
+    (מכונה בגל שאין לה גל קודם — #1471) · ‏`climb` / ‏`peak` / ‏`back` (‏#1758,
+    חיפוש השיא על goodput — `_climb`; ‏`previous.best` = השיא) · ‏`up` (הגל הקודם של המכונה שקבעה
     נקי — ב-`previous`, עם ה-`mac` שלה) ·
     ‏`down` (שידורים חוזרים בגל הקודם) · ‏`held` (הגל הקודם לא הוכיח שאפשר
     לעלות) · ‏`unmeasured` (המונה של הגל הקודם לא נקרא — נשאר) · ‏`learned`
@@ -442,10 +710,12 @@ def decide(conn: sqlite3.Connection, session_id: str,
         by, previous, nic = chosen["by"], chosen["previous"], chosen.get("link")
         journal(conn, "wave_rate",
                 f"{session_id} {chosen['max_bitrate']}"
-                f" basis={chosen['basis']}"
+                f" basis={_basis_note(chosen['basis'], previous)}"
                 + (f" by={by['model'] or '?'} {by['serial']}" if by else "")
                 + (f" from={previous['session_id']} {previous['max_bitrate']}"
                    f" rexmits={previous['loss_blocks']} mac={previous.get('mac')}"
+                   f" drawers={previous.get('drawers')}"
+                   f"/{sum(d.get('mac') == previous.get('mac') for d in wave)}"
                    if previous else "")
                 + (f" link={nic['interface']}"
                    f" {str(nic['speed_mbps']) + 'Mb/s' if nic['applied'] else nic['why'] or 'unused'}"
@@ -456,6 +726,27 @@ def decide(conn: sqlite3.Connection, session_id: str,
         log.exception("wave rate for %s failed; using the start rate", session_id)
         _failed(conn, f"{session_id} decide — {exc}")
         return _fallback(ceiling_raw)
+
+
+def _basis_note(basis: str, previous: dict | None) -> str:
+    """ליומן (הכרעת נדב 17/10): הבסיס, ואם נגזר מהגל הקודם — על מה:
+    ‏`up(loss=0.04%,rcvbuf=0)`. ‏`?` = המונה של השולח לא נקרא, ‏`rcvbuf=None`
+    = מקלט שלא דיווח. ‏#1758 — כשהבסיס הוא goodput, גם השיא ומה שהגל הקודם
+    עצמו עשה: ‏`climb(best=482m:52.1MB/s,eff=86%,goodput=52.1MB/s,loss=1.47%,rcvbuf=198228)`."""
+    if not previous or basis not in ("up", "held", "down", "unmeasured",
+                                     "climb", "peak", "back"):
+        return basis
+    loss, sent = previous.get("loss_blocks"), previous.get("sent_bytes")
+    pct = (f"{100 * loss / -(-sent // UDPCAST_BLOCK):.2f}%"
+           if isinstance(loss, int) and isinstance(sent, int) and sent > 0 else "?")
+    tail = f"loss={pct},rcvbuf={previous.get('rcvbuf')}"
+    best = previous.get("best") if previous.get("rule") == "goodput" else None
+    if not best:
+        return f"{basis}({tail})"
+    mine = previous.get("goodput_bps")
+    return (f"{basis}(best={best['max_bitrate']}:{best['goodput_bps'] / 1e6:.1f}MB/s"
+            f",eff={100 * best['eff']:.0f}%"
+            f",goodput={'?' if mine is None else f'{mine / 1e6:.1f}MB/s'},{tail})")
 
 
 def _cloner_note(cloner: dict | None, cap_by: str | None) -> str:
@@ -489,20 +780,51 @@ def _fallback(ceiling_raw: str | None) -> str:
 
 def record_stream(conn: sqlite3.Connection, session_id: str, outcome: dict) -> None:
     """נקרא כשהשולח סיים את הגל (הצליח, נכשל או נעצר): מה ש-udp-sender
-    עצמו ספר — ‏`sent_bytes` ו-`loss_blocks` (‏`SenderEngine.wave_outcome`).
+    עצמו ספר — ‏`sent_bytes` ו-`loss_blocks` (‏`SenderEngine.wave_outcome`),
+    ‏`wall_s` — משך הזרם בשעון (‏#1758), ‏`ended` — האירוע שסגר אותו
+    (‏`send_done` / ‏`send_failed` / ‏`send_stopped`, ‏`app.on_sender_event`),
+    ו-`dropped_clients` / ‏`timeouts` — שורות היומן של udp-sender (‏#1761,
+    ‏`sender.wave_events`). באותה כתיבה — `_remember_unsafe`.
 
     ‏`None` נשמר כמות שהוא — "לא נמדד", שאינו "אפס שידורים חוזרים". גל שלא
     נבחר לו קצב (אין שורה ב-`wave_rates`) — אין מה לעדכן. לעולם אינו זורק.
     """
     try:
         stream = {key: outcome.get(key) for key in
-                  ("sent_bytes", "loss_blocks", "stream_bps", "stream_s")}
+                  ("sent_bytes", "loss_blocks", "stream_bps", "stream_s",
+                   "wall_s", "ended", "dropped_clients", "timeouts")}
         with _write_lock, writing(conn):
             conn.execute("UPDATE wave_rates SET stream = ? WHERE session_id = ?",
                          (json.dumps(stream), session_id))
+            _remember_unsafe(conn, session_id)
     except Exception as exc:      # noqa: BLE001 — הזיכרון אינו מפיל את השולח
         log.exception("recording the stream of %s failed", session_id)
         _failed(conn, f"{session_id} stream — {exc}")
+
+
+def _remember_unsafe(conn: sqlite3.Connection, session_id: str) -> None:
+    """‏#1761: קצב שהיה לא בטוח (`_unsafe`) למכונה בגל `session_id` נרשם
+    ב-`unsafe_rates` — ולא נשכח כשהגל יוצא מחלון ה-goodput. נקרא מתוך
+    הכתיבה של `record_stream` ושל `record_wave`: מי שמגיע שני רואה את שני
+    החצאים (ניתוק נראה כבר מהשולח לבד). חוזר על עצמו בבטחה."""
+    row = conn.execute("SELECT decision, stream, delivered FROM wave_rates"
+                       " WHERE session_id = ?", (session_id,)).fetchone()
+    if row is None or not row["stream"]:
+        return
+    past = json.loads(row["decision"])
+    rate = parse_bitrate(past.get("max_bitrate"))
+    if past.get("direct") or rate is None:
+        return
+    stream = json.loads(row["stream"])
+    delivered = json.loads(row["delivered"]) if row["delivered"] else None
+    had = Counter(d.get("mac") for d in past.get("roster") or [] if isinstance(d, dict))
+    for mac, drawers in had.items():
+        point = _point(session_id, past, rate, stream,
+                       delivered if isinstance(delivered, dict) else None, mac)
+        if mac and point and _unsafe(point):
+            conn.execute("INSERT OR REPLACE INTO unsafe_rates (mac, drawers, rate_bps,"
+                         " session_id, at) VALUES (?,?,?,?,?)",
+                         (mac, drawers, rate, session_id, now_iso()))
 
 
 def _seconds(since: object, until: object) -> float | None:
@@ -518,7 +840,11 @@ def record_wave(conn: sqlite3.Connection, session_id: str, members) -> int:
     הקצב = ‏`bytes_written` חלקי הזמן בין התנועה הראשונה לאחרונה של המונה
     (‏`first_moved_at` → ‏`moved_at`, ‏`reports.stamp_movement`) — בלי ההמתנה
     למקבלים לפני הבייט הראשון. חוזר על עצמו בבטחה (שורה לכל גל+סידורי),
-    ולעולם אינו זורק: כשל כאן נרשם ביומן ואינו עוצר את סיום הגל.
+    ולעולם אינו זורק: כשל כאן נרשם ביומן ואינו עוצר את סיום הגל. באותה
+    כתיבה — ‏`wave_rates.drops`: ‏`udp_drops` של כל מכונה ברשימת הגל, שממנו
+    הגל הבא יודע אם המקלטים נקיים (`_next_from`); ו-`wave_rates.delivered`
+    (‏#1758): לכל מכונה ברשימת הגל — כמה מגירות היו לה, כמה `done`, וסכום
+    ה-`bytes_written` שלהן; מכונה שלא דיווחה — ‏None. המונה של goodput (`_point`).
     """
     try:
         decided = decision(conn, session_id) or {}
@@ -527,14 +853,32 @@ def record_wave(conn: sqlite3.Connection, session_id: str, members) -> int:
             return 0                  # אין תקרה ידועה, או מקור שאולי הוא האיטי
         roster = {(d.get("mac"), d.get("serial")): d.get("model")
                   for d in decided.get("roster") or [] if isinstance(d, dict)}
+        # הכרעת נדב 17/10: מה שכל מקלט דיווח שהקרנל שלו זרק (‏`udp_drops` בדיווח,
+        # ‏`reports.ingest`) — לכל מכונה ברשימת הגל; חסר = ‏None, "לא נקרא".
+        reported = {member["mac"]: _udp_drops(member) for member in members}
+        failed = {member["mac"]: sum(isinstance(t, dict) and t.get("state") == "failed"
+                                     for t in json.loads(member["targets_json"] or "[]"))
+                  for member in members}
+        # ‏rc2: כמה מגירות של המכונה הסוכן דיווח שנכשלו — `_all_kept_up`.
+        drops = {mac: ({**reported[mac], "failed_drawers": failed.get(mac, 0)}
+                       if reported.get(mac) else None) for mac, _ in roster}
+        # ‏#1758: מה שכל מכונה ברשימת הגל כתבה בפועל — המונה של goodput. מכונה
+        # שלא דיווחה = ‏None ("לא נמדד"); מגירה שלא `done` — אפס בייטים.
+        delivered = {mac: ({"drawers": sum(m == mac for m, _ in roster), "done": 0,
+                            "written_bytes": 0}
+                           if mac in reported else None) for mac, _ in roster}
         rows = []
         for member in members:
             for t in json.loads(member["targets_json"] or "[]"):
                 serial = t.get("serial")
                 if (member["mac"], serial) not in roster:
                     continue          # לא היה בגל כשיצא — לא לומדים ממנו
-                seconds = _seconds(t.get("first_moved_at"), t.get("moved_at"))
                 written = t.get("bytes_written")
+                got = delivered.get(member["mac"])
+                if t.get("state") == "done" and _count(written) and got is not None:
+                    got["done"] += 1
+                    got["written_bytes"] += written
+                seconds = _seconds(t.get("first_moved_at"), t.get("moved_at"))
                 if (t.get("state") != "done" or not serial or seconds is None
                         or seconds < MIN_SAMPLE_S or not isinstance(written, int)
                         or written < MIN_SAMPLE_BYTES):
@@ -543,6 +887,9 @@ def record_wave(conn: sqlite3.Connection, session_id: str, members) -> int:
                              int(written / seconds), cap // 8, written,
                              int(seconds), now_iso()))
         with _write_lock, writing(conn):
+            conn.execute("UPDATE wave_rates SET drops = ?, delivered = ? WHERE session_id = ?",
+                         (json.dumps(drops), json.dumps(delivered), session_id))
+            _remember_unsafe(conn, session_id)
             return sum(conn.execute(
                 "INSERT OR IGNORE INTO drive_rates (serial, model, session_id,"
                 " rate_bps, cap_bps, bytes, seconds, at) VALUES (?,?,?,?,?,?,?,?)",
@@ -551,6 +898,19 @@ def record_wave(conn: sqlite3.Connection, session_id: str, members) -> int:
         log.exception("recording drive rates of %s failed", session_id)
         _failed(conn, f"{session_id} record — {exc}")
         return 0
+
+
+def _udp_drops(member) -> dict | None:
+    """‏`session_members.udp_drops_json` של חבר, או ‏None — לא דווח."""
+    try:
+        raw = member["udp_drops_json"]
+    except (KeyError, IndexError):
+        return None
+    try:
+        got = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+    return got if isinstance(got, dict) else None
 
 
 def _failed(conn: sqlite3.Connection, detail: str) -> None:

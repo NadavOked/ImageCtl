@@ -1,22 +1,15 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include "canceldlg.h"
+#include "lcui.h"
 #include "screens_rounds.h"
 
 /* #1090 / mockup 10/10 ("מסך מחשב השיכפול"): one card per disk this cloner
  * FOUND -- a drawer of the round or a disk of the idle inventory -- not a
  * fixed three: cloner 1 has two SATA ports. Order is the physical SATA port,
  * never kernel device order. A card is as tall as what it has to say. */
-
-static const char *drawer_state_he(const char *s) {
-    if (!strcmp(s, "writing")) return "כותב";
-    if (!strcmp(s, "verifying")) return "מאמת";
-    if (!strcmp(s, "done")) return "הסתיים";
-    if (!strcmp(s, "failed")) return "נכשל";
-    if (!strcmp(s, "skipped")) return "מדלג";
-    if (!strcmp(s, "replacing")) return "ממתין להחלפה";
-    return "ממתין";
-}
 
 typedef struct {
     int port, synthetic;
@@ -51,7 +44,7 @@ static int cloner_entries(const State *s, ClonerEntry *out) {
         int found = 0;
         for (int i = 0; i < n; i++) if (out[i].port == s->smart_port) found = 1;
         if (!found && n < MAX_DRAWERS + 1)
-            out[n++] = (ClonerEntry){ s->smart_port, 1, NULL, NULL };
+            out[n++] = (ClonerEntry){ s->smart_port, 1, NULL, idle_for_port(s, s->smart_port) };   /* 17/10: its model and size too */
     }
     for (int i = 1; i < n; i++) {
         ClonerEntry v = out[i]; int j = i;
@@ -73,175 +66,117 @@ static void entry_label(const State *s, const ClonerEntry *e, char *out, size_t 
     }
 }
 
-static void cloner_title(cairo_t *cr, const Theme *t, const State *s, int ndisks,
-                         double W, double *y) {
-    Text h = rtl_block_make(cr, N_TITLE, 600, "שיכפול במקביל", W - 2 * N_PAD);
-    /* #410: the snapshot's age next to the image name -- a kiosk that
-     * stopped writing the state shows a growing number, not a live look. */
-    char sub[400], age[64], count[48], image[112]; pace_age(s->updated, age, sizeof age);
-    if (ndisks == 1) snprintf(count, sizeof count, "דיסק אחד");
-    else if (ndisks) snprintf(count, sizeof count, "%d דיסקים", ndisks);
-    else             snprintf(count, sizeof count, "לא נמצאו דיסקים");
-    /* the name is an isolated run and the line opens with an RLM: a Latin-first
-     * name ("Office 2024 — סטנדרט") made auto-dir turn the whole line LTR */
-    bidi_isolate(s->cloner_image[0] ? s->cloner_image : "ממתין לשידור מהשרת", image, sizeof image);
-    snprintf(sub, sizeof sub, RLM "%s · %s%s%s", image, count, age[0] ? " · " : "", age);
-    Text p = rtl_block_make(cr, 13, 400, sub, W - 2 * N_PAD);
-    text_draw_r(cr, &h, W - N_PAD, *y, t->ink); *y += h.h + 4;
-    text_draw_r(cr, &p, W - N_PAD, *y, t->muted); *y += p.h + 12;
-    cairo_rectangle(cr, N_PAD, *y, W - 2 * N_PAD, 1);
-    draw_set(cr, t->hair); cairo_fill(cr); *y += 14;
-    text_free(&h); text_free(&p);
+/* Nadav 17/10 ("גרסה ב׳"): the screen is the local clone's progress screen
+ * (screens_lcrun.c) -- a hero with the big percent, three metric boxes, and
+ * a cage of rows, one per disk, drawn by lcbay.c. A drawer's row says its
+ * state in words: writing, waiting for a SMART decision, skipped, failed,
+ * done -- the first metal day showed "ממתינה לשידור" while the machine was
+ * waiting for an answer, and a failed round said nothing but "אין פעולה". */
+static int entry_kind(const App *a, const ClonerEntry *e) {
+    const Drawer *d = e->drawer;
+    if (a->st.smart_pending && a->st.smart_port == e->port) return BAY_SMART;
+    if (!d) return BAY_WAITING;
+    if (!strcmp(d->state, "cancelled")) return BAY_CANCELED;                    /* #1386 */
+    if (!strcmp(d->state, "writing") && d->cancel[0]) return BAY_CANCELING;
+    if (!strcmp(d->state, "writing") || !strcmp(d->state, "verifying")) return BAY_WRITING;
+    if (!strcmp(d->state, "done")) return BAY_DONE;
+    if (!strcmp(d->state, "failed")) return BAY_FAILED;
+    if (!strcmp(d->state, "skipped")) return BAY_SKIPPED;
+    return BAY_WAITING;
 }
 
-static Rgb drawer_accent(const Theme *t, const Drawer *d, int pending) {
-    if (pending) return t->warn; /* writing is paused, awaiting an operator */
-    if (d && (!strcmp(d->state, "failed") || !strcmp(d->state, "skipped")))
-        return t->danger;
-    if (d && !strcmp(d->state, "done")) return t->led_ok;
-    if (d && (!strcmp(d->state, "writing") || !strcmp(d->state, "verifying")))
-        return t->indigo;
-    return t->led_idle;
+static int entry_pct(const ClonerEntry *e) {
+    const Drawer *d = e->drawer;
+    if (d && !strcmp(d->state, "done")) return 100;
+    if (!d || !d->total) return -1;
+    int pct = (int)floor(100.0 * d->bytes / d->total);
+    return pct > 100 ? 100 : pct;
 }
 
-static int smart_pill_kind(const char *smart) {
-    int lvl = smart_level(smart);
-    if (!smart[0] || !strcmp(smart, "unchecked")) return PILL_OFF;
-    return lvl == 2 ? PILL_BAD : lvl == 1 ? PILL_WARN : PILL_OK;
+static void entry_bay(const App *a, const ClonerEntry *e, LcBay *y) {
+    const Theme *t = a->theme; const Drawer *d = e->drawer; const IdleDisk *idle = e->idle;
+    memset(y, 0, sizeof *y);
+    y->kind = entry_kind(a, e);
+    y->drawer = entry_drawer(e);
+    entry_label(&a->st, e, y->name, sizeof y->name);
+    if (idle && idle->model[0]) {
+        char sz[32], mi[96]; disk_size(idle->size, sz, sizeof sz); bidi_isolate(idle->model, mi, sizeof mi);
+        snprintf(y->sub, sizeof y->sub, "%s · %s", sz, mi);
+    } else snprintf(y->sub, sizeof y->sub, "%s", d && d->dev[0] ? d->dev : "לא זוהה דיסק בפורט הזה");
+    /* the SMART the disk reported (#652), in words and in the one colour mapping:
+     * green ok/unchecked, orange F1, red failed_last */
+    if (idle) { if (!strcmp(idle->cause, "readonly")) snprintf(y->note_buf, sizeof y->note_buf, "%s", smart_he_why(idle->smart, idle->cause));   /* #1742 */
+                else snprintf(y->note_buf, sizeof y->note_buf, "SMART %s", smart_he(idle->smart));
+                y->toned = 1; y->tone = smart_color(t, idle->smart); y->note = y->note_buf; }
+    int pct = entry_pct(e);
+    if (pct >= 0 && y->kind != BAY_SKIPPED && y->kind < BAY_CANCELED) { snprintf(y->pct, sizeof y->pct, "%d%%", pct); y->share = pct / 100.0; }
+    else { snprintf(y->pct, sizeof y->pct, "%s", "—"); y->share = -1; }
+    switch (y->kind) {
+    case BAY_SMART:
+        y->pill = "ממתין להכרעת SMART";
+        snprintf(y->line, sizeof y->line, "%s · מה לעשות עם הדיסק?",
+                 a->st.smart_reason[0] ? smart_reason_text(a->st.smart_reason) : smart_he(a->st.smart_verdict));
+        break;
+    case BAY_WRITING:
+        if (!strcmp(d->state, "verifying")) snprintf(y->line, sizeof y->line, "בודק את מה שנכתב…");
+        else if (d->rate_bps > 0) { char r[48], ri[64]; snprintf(r, sizeof r, "%.0f MB/s", d->rate_bps / 1e6);
+            bidi_isolate(r, ri, sizeof ri); snprintf(y->line, sizeof y->line, "כותב · %s", ri); }
+        else snprintf(y->line, sizeof y->line, "כותב · הקצב טרם נמדד");
+        break;
+    case BAY_CANCELED: {
+        /* #1386: grey like skipped, the bar empty -- the disk is empty now, not "16%" */
+        char at[16] = ""; time_t w = (time_t)d->cancel_at; struct tm tm;
+        if (w > 0 && localtime_r(&w, &tm)) strftime(at, sizeof at, " · %H:%M", &tm);
+        y->pill = "בוטל"; y->toned = 0;
+        snprintf(y->line, sizeof y->line, "בוטל %s%s · %s", d->cancel[0] ? d->cancel : "", at,
+                 d->error[0] ? d->error : "טבלת המחיצות נמחקה, הדיסק יוצג ריק");
+        y->line_warn = d->error[0] != 0;
+        break; }
+    case BAY_CANCELING:
+        y->pill = "מבטל…"; y->toned = 0; y->share = -1;
+        snprintf(y->line, sizeof y->line, "עוצר את הכתיבה ומוחק את טבלת המחיצות…");
+        break;
+    case BAY_DONE:
+        /* #943: done with an error is a warning in the line, not a failed disk */
+        y->pill = "הושלם";
+        if (d->error[0]) { snprintf(y->line, sizeof y->line, "הושלם — %s", d->error); y->line_warn = 1; }
+        else snprintf(y->line, sizeof y->line, "הושלם · נבדק");
+        break;
+    case BAY_FAILED:
+        y->pill = "נכשל";
+        snprintf(y->line, sizeof y->line, "נכשל: %s", d->error[0] ? d->error : "סיבה לא ידועה");
+        break;
+    case BAY_SKIPPED:
+        y->pill = "דולג";
+        snprintf(y->line, sizeof y->line, "דולג — %s", d->error[0] ? d->error : "הדיסק לא נכתב");
+        break;
+    default:
+        snprintf(y->line, sizeof y->line, "%s", d && !strcmp(d->state, "replacing") ? "ממתין להחלפה" : "ממתין לשידור");
+    }
+    /* #1331 (mockup v2): the drawer's drivers, under its bar */
+    if (d && d->drv_state[0]) lc_bay_drivers(y, d->drv_state, d->drv_detail, d->drv_boot, d->drv_bsvc, d->drv_berr);
+    if (d && d->drv_lstate[0]) lc_bay_linux(y, d->drv_lstate, d->drv_lmod, d->drv_ldet);   /* #1331 T8 */
 }
 
-/* One disk card. With draw 0 it only measures: the cards of a row share the
- * row's height, so every card is measured before any is drawn. Returns the
- * card's content height. */
-static double disk_card(App *a, cairo_t *cr, Rect card, const ClonerEntry *entry, int draw) {
-    const Theme *t = a->theme;
-    int port = entry->port;
-    const Drawer *d = entry->drawer;
-    const IdleDisk *idle = entry->idle;
-    int pending = a->st.smart_pending && a->st.smart_port == port;
-    Rgb accent = drawer_accent(t, d, pending);
-    if (!d && idle) accent = smart_color(t, idle->smart);
-    double w = card.w - 40, right = card.x + card.w - 20, y = card.y + 18;
-    if (draw) {
-        draw_fill_rrect(cr, card, t->radius, t->surface);
-        if (pending) draw_border_rrect(cr, card, t->radius, t->warn, 2);
-        else {
-            draw_border_rrect(cr, card, t->radius, t->hair, 1);
-            /* the state's colour as a 3px top edge (the 5px side bar sat
-             * under the rounded corner) */
-            cairo_save(cr); draw_rrect_path(cr, card, t->radius); cairo_clip(cr);
-            cairo_rectangle(cr, card.x, card.y, card.w, 3); draw_set(cr, accent); cairo_fill(cr);
-            cairo_restore(cr);
-        }
+/* #1386: the drawers "בטל דיסק זה" can name -- writing now, not verifying, not
+ * already asked -- in the screen's row order. A row's button is
+ * HIT_BAY_CANCEL_BASE + its index here; its key is the drawer's number. */
+int cloner_cancel_picks(const App *a, CancelPick *out, int max) {
+    ClonerEntry entries[MAX_DRAWERS + 1]; int n = cloner_entries(&a->st, entries), k = 0;
+    for (int i = 0; i < n && k < max; i++) {
+        const ClonerEntry *e = &entries[i];
+        if (entry_kind(a, e) != BAY_WRITING || strcmp(e->drawer->state, "writing")) continue;
+        CancelPick *p = &out[k++]; memset(p, 0, sizeof *p);
+        snprintf(p->dev, sizeof p->dev, "%s", e->drawer->dev);
+        entry_label(&a->st, e, p->label, sizeof p->label);
+        p->drawer = entry_drawer(e);
+        if (p->drawer > 0) snprintf(p->where, sizeof p->where, "מגירה %d%s%s", p->drawer,
+                                    a->st.machine_name[0] ? " · " : "", a->st.machine_name);
+        else snprintf(p->where, sizeof p->where, "%s", a->st.machine_name[0] ? a->st.machine_name : "מחשב השיכפול הזה");
+        if (e->idle) { snprintf(p->model, sizeof p->model, "%s", e->idle->model); disk_size(e->idle->size, p->size, sizeof p->size); }
+        p->pct = entry_pct(e);
     }
-
-    /* the head: "דיסק N" -- or the operator's name of the slot (#704) -- at
-     * the start, the state pill at the end */
-    char disk_name[SLOT_NAME_MAX + 16];
-    entry_label(&a->st, entry, disk_name, sizeof disk_name);
-    Text name = rtl_block_make(cr, 16, 600, disk_name, w);
-    if (draw) {
-        const char *word = pending ? "נדרשת החלטה" : drawer_state_he(d ? d->state : "waiting");
-        int kind = pending ? PILL_WARN : d && (!strcmp(d->state, "failed") ||
-                   !strcmp(d->state, "skipped")) ? PILL_BAD :
-                   d && !strcmp(d->state, "done") ? PILL_OK : d ? PILL_INFO : PILL_OFF;
-        text_draw_r(cr, &name, right, y + (24 - name.h) / 2, t->ink);
-        draw_pill(cr, t, card.x + 20 + pill_width(cr, word, 1), y, word, kind, 1);
-    }
-    text_free(&name);
-    y += 24;
-
-    /* the SMART chip says what the disk reported, in words */
-    const char *smart = pending ? a->st.smart_verdict : idle ? idle->smart : "";
-    char smart_label[64];
-    snprintf(smart_label, sizeof smart_label, "SMART %s",
-             pending ? smart_he(a->st.smart_verdict) : idle ? smart_he(idle->smart) : "לא דווח");
-    const char *model = idle && idle->model[0] ? idle->model : d && d->dev[0] ? d->dev : "";
-
-    int active = d && (d->total || d->bytes || strcmp(d->state, "waiting"));
-    if (pending) {
-        /* the decision is the card: what failed, and that nothing was written */
-        Text why = rtl_block_make(cr, 15, 600, a->st.smart_reason[0] ? smart_reason_text(a->st.smart_reason)
-                                                                      : smart_he(a->st.smart_verdict), w);
-        Text held = rtl_block_make(cr, 12, 400, "הכתיבה מושהית עד שתחליטו. הדיסק לא נכתב.", w);
-        y += 14;
-        if (draw) text_draw_r(cr, &why, right, y, t->ink);
-        y += why.h + 6;
-        if (draw) text_draw_r(cr, &held, right, y, t->muted);
-        y += held.h;
-        text_free(&why); text_free(&held);
-    } else if (active) {
-        int pct = -1;
-        if (d->total) {
-            pct = (int)floor(100.0 * d->bytes / d->total + .5);
-            if (pct > 100) pct = 100;
-        }
-        char pct_text[24] = "";
-        if (pct >= 0) snprintf(pct_text, sizeof pct_text, "%d%%", pct);
-        y += 10;
-        if (pct_text[0]) {
-            Text big = text_make(cr, FONT_MONO, 44, 400, pct_text, 0, DIR_LTR);
-            if (draw) text_draw_r(cr, &big, right, y, t->ink);
-            y += big.h + 6;
-            text_free(&big);
-        }
-        if (draw) draw_thin_bar(cr, t, (Rect){card.x + 20, y, w, N_BAR_SM}, pct < 0 ? 0 : pct, accent);
-        y += N_BAR_SM + 12;
-        char written[40] = "—", total[40] = "—", line[96];
-        fmt_bytes(written, sizeof written, (double)d->bytes);
-        if (d->total) fmt_bytes(total, sizeof total, (double)d->total);
-        snprintf(line, sizeof line, "%s / %s", written, total);
-        /* #410: rate and ETA the kiosk measured on this drawer (drawer=
-         * fields 7-8); -1 / absent = not measured -- never drawn as 0. */
-        char pace[96] = "";
-        if (d->rate_bps > 0) {
-            char r[40]; fmt_bytes(r, sizeof r, (double)d->rate_bps);
-            if (d->eta_s >= 0) snprintf(pace, sizeof pace, "%s/s · %d:%02d:%02d", r, d->eta_s / 3600, d->eta_s / 60 % 60, d->eta_s % 60);
-            else snprintf(pace, sizeof pace, "%s/s", r);
-        }
-        Text wl = text_make(cr, FONT_MONO, 12, 400, line, 0, DIR_LTR);
-        Text pl = text_make(cr, pace[0] ? FONT_MONO : FONT_SANS, 12, 500, pace[0] ? pace : "קצב טרם נמדד", 0, pace[0] ? DIR_LTR : DIR_RTL);
-        if (draw) { text_draw_r(cr, &wl, right, y, t->muted); text_draw(cr, &pl, card.x + 20, y, pace[0] ? t->ink : t->muted); }
-        y += dmax(wl.h, pl.h);
-        text_free(&wl); text_free(&pl);
-    } else {
-        /* waiting: one line, not nine rows of "—" */
-        char what[160];
-        if (idle && idle->model[0]) {
-            char size[32]; fmt_bytes(size, sizeof size, (double)idle->size);
-            snprintf(what, sizeof what, "%s · %s · ממתין לשידור", idle->model, size);
-        } else snprintf(what, sizeof what, "%s", d ? "ממתין לשידור" : "לא זוהה דיסק בפורט הזה");
-        Text wt = rtl_block_make(cr, 13, 400, what, w);
-        y += 14;
-        if (draw) text_draw_r(cr, &wt, right, y, t->muted);
-        y += wt.h;
-        text_free(&wt);
-        model = "";                                     /* already said in the line */
-    }
-
-    /* chips: SMART, then the model -- right to left */
-    if (pending || active || idle) {
-        y += 12;
-        if (draw) { cairo_rectangle(cr, card.x + 20, y, w, 1); draw_set(cr, t->hair); cairo_fill(cr); }
-        y += 12;
-        if (draw) {
-            double cx = right;
-            cx -= draw_pill(cr, t, cx, y, smart_label, smart[0] ? smart_pill_kind(smart) : PILL_OFF, 0) + 6;
-            if (model[0]) draw_pill(cr, t, cx, y, model, PILL_OFF, 0);
-        }
-        y += 24;
-    }
-
-    if (d && d->error[0]) {
-        /* #943: a done disk that still carries an error is a warning
-         * (orange), not a failed disk (red) -- the restore completed. */
-        Text error = error_make(cr, d->error, w);
-        y += 10;
-        if (draw) text_draw_r(cr, &error, right, y, !strcmp(d->state, "done") ? t->warn : t->danger);
-        y += error.h;
-        text_free(&error);
-    }
-    return y + 18 - card.y;
+    return k;
 }
 
 /* A footer button with its key in a chip inside the label (mockup 10/10:
@@ -263,31 +198,156 @@ static double key_button(App *a, cairo_t *cr, double x, double y, const char *la
 }
 
 void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h) {
-    const Theme *t = a->theme;
-    ClonerEntry entries[MAX_DRAWERS + 1]; int n = cloner_entries(&a->st, entries);
-    double y = head_h + 18;
-    cloner_title(cr, t, &a->st, n, W, &y);
-
-    double gap = 14, bar_h = a->st.smart_pending ? 74 : 0;
-    int cols = n <= 3 ? (n ? n : 1) : (n + 1) / 2;
-    double card_w = (W - 2 * N_PAD - (cols - 1) * gap) / cols;
-    if (!n) {
-        Text none = rtl_block_make(cr, 15, 400, "המחשב הזה לא דיווח על דיסקים מחוברים. חברו דיסק והפעילו מחדש.", W - 2 * N_PAD);
-        text_draw_r(cr, &none, W - N_PAD, y, t->muted);
-        text_free(&none);
-    }
-    for (int k = 0; k < n; k += cols) {
-        double row_h = 0;
-        for (int j = k; j < k + cols && j < n; j++)
-            row_h = dmax(row_h, disk_card(a, cr, (Rect){ 0, 0, card_w, 0 }, &entries[j], 0));
-        for (int j = k; j < k + cols && j < n; j++) {
-            Rect card = { W - N_PAD - card_w - (j - k) * (card_w + gap), y, card_w, row_h };
-            disk_card(a, cr, card, &entries[j], 1);
+    const Theme *t = a->theme; const State *s = &a->st;
+    ClonerEntry entries[MAX_DRAWERS + 1]; int n = cloner_entries(s, entries);
+    double cw = fmin(980, W - 48), x0 = (W - cw) / 2, xr = x0 + cw, y = head_h + 22;
+    int nw = 0, nd = 0, nf = 0, ns = 0, nc = 0, ncg = 0, pend = 0, sum = 0, known = 0, eta = -1;   /* #1386: cancelled, cancelling */
+    long long rate = -1; unsigned long long most = 0, whole = 0;
+    char names[200] = "", failed_name[SLOT_NAME_MAX + 64] = "", skipped_name[SLOT_NAME_MAX + 64] = "";
+    /* #1331: the drivers -- placed, not placed, no model; who may not boot, who boots without them */
+    int dv_line = 0, dv_any = 0, dv_ok = 0, dv_no = 0, dv_nomodel = 0, dv_bad = 0, dv_warn = 0;
+    char bad_name[SLOT_NAME_MAX + 64] = "", warn_name[SLOT_NAME_MAX + 64] = "";
+    for (int i = 0; i < n; i++) {
+        const ClonerEntry *e = &entries[i]; int k = entry_kind(a, e), pct = entry_pct(e);
+        char nm[SLOT_NAME_MAX + 64]; entry_label(s, e, nm, sizeof nm);
+        LcBay dg; entry_bay(a, e, &dg);
+        if (dg.drv_tone) dv_line = 1;   /* #1331 T8: the Linux line needs the tall row, not the Windows summary */
+        if (dg.drv_tone && dg.drv_tone <= DRV_BAD) {
+            dv_any = 1; dv_ok += !strcmp(e->drawer->drv_state, "staged"); dv_no += dg.drv_tone == DRV_WARN;
+            dv_nomodel += !strcmp(e->drawer->drv_detail, "no_model") && !strcmp(e->drawer->drv_state, "skipped");
+            if (dg.drv_tone == DRV_BAD) { dv_bad++; snprintf(bad_name, sizeof bad_name, "%s", nm); }
+            if (dg.drv_tone == DRV_WARN) { dv_warn++; snprintf(warn_name, sizeof warn_name, "%s", nm); }
         }
-        y += row_h + gap;
+        if (k == BAY_WRITING) {
+            size_t used = strlen(names);
+            snprintf(names + used, sizeof names - used, "%s%s", nw ? " ול" : "ל", nm); nw++;
+            if (e->drawer->rate_bps > 0 && rate < 0) rate = e->drawer->rate_bps;
+            if (e->drawer->eta_s > eta) eta = e->drawer->eta_s;
+        }
+        if (k == BAY_DONE) nd++;
+        if (k == BAY_FAILED) { nf++; snprintf(failed_name, sizeof failed_name, "%s", nm); }
+        if (k == BAY_SKIPPED) { ns++; snprintf(skipped_name, sizeof skipped_name, "%s", nm); }
+        if (k == BAY_SMART) pend = 1;
+        if (k == BAY_CANCELED) nc++;
+        if (k == BAY_CANCELING) ncg++;
+        if (pct >= 0 && (k == BAY_WRITING || k == BAY_DONE)) { sum += pct; known++; }
+        if (e->drawer && e->drawer->bytes > most) { most = e->drawer->bytes; whole = e->drawer->total; }
+    }
+    int ended = s->ndrawers > 0 && !nw && !pend && !ncg && nd + nf + ns + nc == n;
+
+    /* the hero */
+    char label[400], title[300], s2[620], big[24], left[96], age[64], image[112], pdisk[SLOT_NAME_MAX + 16];
+    pace_age(s->updated, age, sizeof age);
+    /* the name is an isolated run and the line opens with an RLM: a Latin-first
+     * name ("Office 2024 — סטנדרט") made auto-dir turn the whole line LTR */
+    bidi_isolate(s->cloner_image[0] ? s->cloner_image : "ממתין לשידור מהשרת", image, sizeof image);
+    snprintf(label, sizeof label, RLM "שיכפול במקביל · %s%s%s%s", image, dv_any ? " · חבילת דרייברים לפי דגם המגירה" : "",
+             age[0] ? " · " : "", age);
+    snprintf(big, sizeof big, "%s", "—"); left[0] = 0;
+    if (pend) {
+        cloner_port_label(s, s->smart_port, pdisk, sizeof pdisk);
+        snprintf(title, sizeof title, "ממתין להחלטה על %s", pdisk);
+        snprintf(s2, sizeof s2, "הכתיבה לדיסק הזה מושהית עד שתחליטו, והוא לא נכתב.");
+        snprintf(left, sizeof left, "ממתין לתשובה");
+    } else if (!n) {
+        snprintf(title, sizeof title, "לא נמצאו דיסקים");
+        snprintf(s2, sizeof s2, "המחשב הזה לא דיווח על דיסקים מחוברים. חברו דיסק והפעילו מחדש.");
+    } else if (!s->ndrawers) {
+        snprintf(title, sizeof title, "ממתין לשידור מהשרת");
+        snprintf(s2, sizeof s2, "הדיסקים שלמטה ייכתבו כשהגל יצא.");
+    } else if (ended && nf) {
+        if (nf == 1) snprintf(title, sizeof title, "השיכפול הסתיים — %s נכשל", failed_name);
+        else snprintf(title, sizeof title, "השיכפול הסתיים — %d דיסקים נכשלו", nf);
+        snprintf(s2, sizeof s2, "%s", nd ? "הדיסקים שנכשלו אינם שמישים — כותבים אותם שוב בגל הבא." : "אף דיסק לא נכתב.");
+        snprintf(big, sizeof big, "%d/%d", nd, n); snprintf(left, sizeof left, "דיסקים תקינים");
+    } else if (ended) {
+        snprintf(title, sizeof title, "%s", nd ? "השיכפול הסתיים — הדיסקים נכתבו" : "השיכפול הסתיים");
+        snprintf(s2, sizeof s2, "%s", ns ? "דיסק שדולג נשאר כפי שהיה." : "כל היעדים נכתבו ונבדקו.");
+        if (dv_bad || dv_warn) {   /* #1331: the disk that may not boot first, then the one without drivers */
+            char b1[300] = "", b2[300] = "";
+            if (dv_bad == 1) snprintf(b1, sizeof b1, "%s: דרייבר האחסון לא הוגדר לעלייה — הדיסק עלול לא לעלות.", bad_name);
+            else if (dv_bad) snprintf(b1, sizeof b1, "%d דיסקים: דרייבר האחסון לא הוגדר לעלייה — הם עלולים לא לעלות.", dv_bad);
+            if (dv_warn == 1) snprintf(b2, sizeof b2, "%s יעלה בלי דרייברים.", warn_name);
+            else if (dv_warn) snprintf(b2, sizeof b2, "%d דיסקים יעלו בלי דרייברים.", dv_warn);
+            snprintf(s2, sizeof s2, "%s%s%s", b1, b1[0] && b2[0] ? " " : "", b2);
+        }
+        if (nd) { snprintf(big, sizeof big, "100%%"); snprintf(left, sizeof left, "הסתיים"); }
+    } else {
+        if (nw) snprintf(title, sizeof title, "מעתיק %s%s", names, nw > 1 ? " במקביל" : "");
+        else snprintf(title, sizeof title, "ממתין לתחילת הזרם");
+        if (nc || ncg) snprintf(s2, sizeof s2, "%s", nc ? "דיסק שבוטל — ריק עכשיו, וייכתב רגיל בסבב הבא. השאר ממשיכים."
+                                                           : "מבטל דיסק אחד — השאר ממשיכים בלי עצירה.");   /* #1386 */
+        else if (ns == 1) snprintf(s2, sizeof s2, "%s דולג. השאר ממשיכים.", skipped_name);
+        else if (ns) snprintf(s2, sizeof s2, "%d דיסקים דולגו. השאר ממשיכים.", ns);
+        else snprintf(s2, sizeof s2, "הזרם מהשרת נכתב לכל היעדים יחד.");
+        if (known) snprintf(big, sizeof big, "%d%%", sum / known);
+        if (eta >= 0) {
+            if (eta < 60) snprintf(left, sizeof left, "פחות מדקה נותרה");
+            else snprintf(left, sizeof left, "כ-%d דק' נותרו", (eta + 30) / 60);
+        } else if (nw) snprintf(left, sizeof left, "הזמן שנותר טרם נמדד");
+    }
+    y += lc_hero(a, cr, x0, xr, y, label, title, s2, big, left, ended && nf) + 16;
+
+    /* .mets: speed, what was received, the disks */
+    double mw = (cw - 24) / 3, mh = 80;
+    char v1[48], v2[64], v3[32], c3[160];
+    if (rate > 0) snprintf(v1, sizeof v1, "%.0f MB/s", rate / 1e6); else snprintf(v1, sizeof v1, "%s", nw ? "עוד לא נמדדה" : "—");
+    if (whole) snprintf(v2, sizeof v2, "%.1f / %.1f GB", most / 1e9, whole / 1e9);
+    else snprintf(v2, sizeof v2, "%s", most ? "" : "—");
+    if (!whole && most) snprintf(v2, sizeof v2, "%.1f GB", most / 1e9);
+    snprintf(v3, sizeof v3, RLM "%d מתוך %d", nd, n);   /* Hebrew: digits alone drew "2 / 0" */
+    snprintf(c3, sizeof c3, "%s", nf ? "נכתבו · יש דיסק שנכשל" : "נכתבו");
+    if (!nf && dv_any) {   /* #1331 */
+        char p1[32] = "", p2[32] = "", p3[32] = "";
+        if (dv_ok) snprintf(p1, sizeof p1, "%d הונחו", dv_ok);
+        if (dv_no) snprintf(p2, sizeof p2, "%s%d לא", p1[0] ? ", " : "", dv_no);
+        if (dv_nomodel) snprintf(p3, sizeof p3, "%s%d בלי דגם", p1[0] || p2[0] ? ", " : "", dv_nomodel);
+        snprintf(c3, sizeof c3, "נכתבו · דרייברים: %s%s%s", p1, p2, p3);
+    }
+    lc_met(a, cr, (Rect){ xr - mw, y, mw, mh }, "מהירות", v1, rate > 0 ? "הקצב שנמדד בדיסק הזה" : "", t->muted);
+    lc_met(a, cr, (Rect){ xr - 2 * mw - 12, y, mw, mh }, "התקבלו", v2, whole ? "בזרם הדחוס" : "", t->muted);
+    lc_met(a, cr, (Rect){ x0, y, mw, mh }, "דיסקים", v3, c3, nf ? t->danger_fg : t->muted);
+    y += mh + 12;
+
+    /* the cage */
+    double bar_h = s->smart_pending ? 74 : 0, foot_h = 40;
+    double room = H - N_STATUS_H - bar_h - foot_h - 16 - y - (10 + 16 + 8 + 10) - (n > 1 ? (n - 1) * 10 : 0);
+    double bh = dv_line ? LC_BAY_DRV_H : LC_BAY_H;   /* #1331: the row with its drivers line */
+    if (n && n * bh > room) bh = fmax(56, floor(room / n));
+    if (n) {
+        Rect cage = { x0, y, cw, 10 + 16 + 8 + n * bh + (n > 1 ? (n - 1) * 10 : 0) + 10 };
+        char cnt[96]; snprintf(cnt, sizeof cnt, ended ? "%d מתוך %d נכתבו" : "%d מתוך %d כותבים", ended ? nd : nw, n);   /* #1331 mockup v2 */
+        if (nc || ncg) { size_t u = strlen(cnt);    /* #1386: "1 מתוך 2 כותבים · 1 בוטל" */
+            if (nc) u += snprintf(cnt + u, sizeof cnt - u, " · %d בוטל", nc);
+            if (ncg && u < sizeof cnt) snprintf(cnt + u, sizeof cnt - u, " · %d מבטל", ncg); }
+        double by = lc_cage(a, cr, cage, "יעדים", cnt);
+        int ci = 0;                                   /* #1386: the row's index among the cancel picks */
+        for (int i = 0; i < n; i++) {
+            LcBay g; entry_bay(a, &entries[i], &g);
+            if (g.kind == BAY_WRITING && !strcmp(entries[i].drawer->state, "writing")) {
+                g.act = "בטל…"; g.act_hit = HIT_BAY_CANCEL_BASE + ci++;
+                if (g.drawer > 0 && g.drawer < 10) { snprintf(g.act_key_buf, sizeof g.act_key_buf, "%d", g.drawer); g.act_key = g.act_key_buf; }
+            }
+            lc_bay_draw(a, cr, (Rect){ x0 + 10, by, cw - 20, bh }, &g); by += bh + 10;
+        }
+        y = cage.y + cage.h + 12;
     }
 
-    if (a->st.smart_pending) {
+    if (!s->smart_pending) {
+        /* the line under the cage. The count to power-off and "כבה עכשיו" at the
+         * end of a task are drawn over every screen (fix/end-of-task-power, #1560);
+         * here only the words. */
+        char note[160];
+        if (s->idle_poweroff_at > 0) {
+            long long l = s->idle_poweroff_at - (long long)time(NULL); if (l < 0) l = 0;
+            snprintf(note, sizeof note, "המחשב יכבה בעוד %lld שניות — כל מקש מבטל.", l);
+        } else snprintf(note, sizeof note, "%s", ended ? "הסבב הסתיים במחשב הזה."
+                        : cloner_cancel_picks(a, (CancelPick[MAX_DRAWERS + 1]){ 0 }, MAX_DRAWERS + 1)
+                        ? "כשל ביעד אחד לא עוצר את האחרים. לבטל דיסק — המקש של המגירה." : "כשל ביעד אחד לא עוצר את האחרים.");
+        Text fm = text_make(cr, FONT_SANS, 13, 400, note, (int)cw, DIR_RTL);
+        text_draw_r(cr, &fm, xr, y + 8, ended && nf ? t->danger_fg : t->muted); text_free(&fm);
+        return;
+    }
         /* the question owns the bottom of the screen: a full-width bar, the
          * disk and its trouble at the start, the answers ordered by risk --
          * replace (safe), skip, and "write anyway" as a warning outline, not
@@ -295,7 +355,9 @@ void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h) {
         Rect bar = { 0, H - N_STATUS_H - bar_h, W, bar_h };
         draw_fill_rrect(cr, bar, 0, t->surface);
         cairo_rectangle(cr, 0, bar.y, W, 2); draw_set(cr, t->warn); cairo_fill(cr);
-        int red = !strcmp(a->st.smart_verdict, "failed_last");
+        /* #1580 (Nadav 17/10, "like Clonezilla"): red (SMART fail) gets the button
+         * too -- it opens the window, whose red button is the confirmation */
+        const char *go = !strcmp(a->st.smart_verdict, "failed_last") ? "נסה שוב…" : "כתוב בכל זאת…";
         char head[SLOT_NAME_MAX + 16 + 160], disk[SLOT_NAME_MAX + 16];
         const char *why = a->st.smart_reason[0] ? smart_reason_text(a->st.smart_reason) : smart_he(a->st.smart_verdict);
         cloner_port_label(&a->st, a->st.smart_port, disk, sizeof disk);   /* #1495 */
@@ -309,14 +371,11 @@ void screen_cloner(App *a, cairo_t *cr, double W, double H, double head_h) {
         double by = bar.y + (bar.h - N_BUTTON_H) / 2, bw[3], total = 0;
         /* measured first (id 0: nothing is registered), drawn from the inline end */
         bw[0] = key_button(a, cr, 0, by, "החלף דיסק", "R", BTN_PLAIN, 0, 0);
-        bw[1] = key_button(a, cr, 0, by, red ? "המשך בלי הדיסק" : "דלג על הדיסק", red ? "Enter" : "S", BTN_PLAIN, 0, 0);
-        bw[2] = red ? 0 : key_button(a, cr, 0, by, "כתוב בכל זאת…", "Enter", BTN_WARN, 0, 0);   /* 16/10: it opens the SMART window */
+        bw[1] = key_button(a, cr, 0, by, "דלג על הדיסק", "S", BTN_PLAIN, 0, 0);
+        bw[2] = key_button(a, cr, 0, by, go, "Enter", BTN_WARN, 0, 0);   /* 16/10: it opens the SMART window */
         for (int i = 0; i < 3; i++) total += bw[i] + (bw[i] > 0 && i ? 10 : 0);
         double x = N_PAD + total;                      /* the group ends at the inline end */
         x -= bw[0]; key_button(a, cr, x, by, "החלף דיסק", "R", BTN_PLAIN, HIT_SMART_REPLACE, 1);
-        x -= 10 + bw[1]; key_button(a, cr, x, by, red ? "המשך בלי הדיסק" : "דלג על הדיסק", red ? "Enter" : "S", BTN_PLAIN, HIT_SMART_SKIP, 1);
-        if (!red) {
-            x -= 10 + bw[2]; key_button(a, cr, x, by, "כתוב בכל זאת…", "Enter", BTN_WARN, HIT_SMART_RESCUE, 1);
-        }
-    }
+        x -= 10 + bw[1]; key_button(a, cr, x, by, "דלג על הדיסק", "S", BTN_PLAIN, HIT_SMART_SKIP, 1);
+        x -= 10 + bw[2]; key_button(a, cr, x, by, go, "Enter", BTN_WARN, HIT_SMART_RESCUE, 1);
 }

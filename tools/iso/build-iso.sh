@@ -57,7 +57,7 @@ CDIMAGE_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd"
 
 usage() {
     cat <<'EOF'
-ImageCtl — בניית ISO ההתקנה.
+ImageSrv — בניית ISO ההתקנה.
 
   sudo tools/iso/build-iso.sh --out DIR [אפשרויות]
 
@@ -245,6 +245,14 @@ if ((${#leaked[@]} > 0)); then
 fi
 say "imagectl-src: אין נתיבים פרטיים ($(find "$ISO_TREE/imagectl-src" -type f | wc -l) קבצים)"
 
+# The notices are documentation for the distributed ISO itself, not only for
+# the source tree embedded in it. Keep a copy at the ISO root where a recipient
+# can find it without installing or unpacking anything (#1707).
+[[ -f "$ISO_TREE/imagectl-src/THIRD_PARTY_NOTICES.md" ]] \
+    || die "THIRD_PARTY_NOTICES.md חסר ממקור הקוד"
+install -m 0644 "$ISO_TREE/imagectl-src/THIRD_PARTY_NOTICES.md" \
+    "$ISO_TREE/THIRD_PARTY_NOTICES.md"
+
 # --- המטען החי: קרנל + initramfs + הקבצים ש-firstboot והמנוע קוראים ----------------
 HASH=$(openssl passwd -6 "$ROOT_PASSWORD")
 install -d "$ISO_TREE/imagectl" "$ISO_TREE/live"
@@ -320,7 +328,7 @@ fi
 
 # --- המניפסט (R61) --------------------------------------------------------------
 say "כותב imagectl-iso.json"
-KVER="$KVER" LAB_OVERLAY="$lab_overlay" SOURCE_GIT="$([[ -z "$SOURCE" ]] && echo true || echo false)" python3 - "$ISO_TREE" "$OUT/imagectl-iso.json" "$TAG" "$COMMIT" "$EPOCH" "$(basename "$NETINST")" "$NETINST_SHA" "${PKGS[*]}" <<'PY'
+POOL_DATE="$(cat "$POOL/pool-date" 2>/dev/null || true)" KVER="$KVER" LAB_OVERLAY="$lab_overlay" SOURCE_GIT="$([[ -z "$SOURCE" ]] && echo true || echo false)" python3 - "$ISO_TREE" "$OUT/imagectl-iso.json" "$TAG" "$COMMIT" "$EPOCH" "$(basename "$NETINST")" "$NETINST_SHA" "${PKGS[*]}" <<'PY'
 import hashlib, json, os, subprocess, sys
 tree, out, tag, commit, epoch, netinst, netinst_sha, pkgs = sys.argv[1:9]
 debs = []
@@ -342,6 +350,8 @@ manifest = {
     "xorriso": subprocess.run(["xorriso", "-version"], capture_output=True, text=True).stdout.splitlines()[0],
     "requested_packages": pkgs.split(),
     "live_kernel": os.environ.get("KVER", ""),
+    # #1411: the day make-pool.sh took the versions (empty = an older pool without the file)
+    "pool_date": os.environ.get("POOL_DATE", "").strip(),
     "lab_overlay": os.environ.get("LAB_OVERLAY", "false") == "true",
     # false only for a --source (lab) build: the engine then tolerates the missing .git
     "source_git": os.environ.get("SOURCE_GIT", "true") == "true",

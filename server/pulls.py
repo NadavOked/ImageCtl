@@ -12,17 +12,34 @@
 שורת יומן, ותצוגה במבט-העל.
 
 המשיכה נפתחת כבר במצב `running` — אין למי לחכות, התחנה מושכת בעצמה.
-היא נסגרת כשהיא מסתיימת בהצלחה, או ביד של מפעיל מהקונסולה. משיכה
-שנכשלה **נשארת על המסך**: "נכשל" ו"הסתיים" הם שני מצבים שונים.
+היא נסגרת כשהיא מסתיימת בהצלחה (`closed`), ביד של מפעיל מהקונסולה, או
+כ-`failed` עם סיבה — כשהמכונה דיווחה כישלון, או כששתקה מעבר לתקרה
+(‏#1573). "נכשל", "הסתיים" ו"רץ" הם שלושה מצבים שונים: עד #1573 משיכה
+שנכשלה נשארה `running` — הקונסולה הציגה אותה "מושכת", ושרת סירב לכל
+משיכה חדשה של אותה תחנה ב"כבר מושכת".
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+from datetime import datetime, timezone
 
 from .db import journal, now_iso
+from .reports import FINAL
 from .sessions import PULL_PREFIX, TAKEN, UNICAST, SessionError, SessionStore
+
+log = logging.getLogger(__name__)
+
+#: מעל כמה שניות בלי **שום דיווח** מהמכונה משיכה נסגרת כ-`failed` (#1573).
+#: הסוכן מדווח כל ~2ש' לכל אורך המשיכה (‏`progress_loop`, גם בהנחת
+#: הדרייברים), ודיווח בודד יכול להימשך ~40ש' (‏`curl --max-time 10
+#: --retry 3`). החדר מפקיע אחרי 180ש' (‏`room.LOST_SECONDS`, אותו קצב);
+#: כאן השוליים רחבים יותר בכוונה, כי משיכות אינן נסגרות בעליית שרת
+#: (‏`reconcile` נוגע בשידור בלבד) — עדכון או אתחול של השרת בן כמה דקות
+#: עוצר את הדיווחים של משיכה בריאה, ואסור שיפיל אותה. נגזר, לא נמדד.
+SILENT_SECONDS = 600
 
 
 def _roster_macs(row: sqlite3.Row) -> list[str]:
@@ -59,9 +76,9 @@ def _is_the_same_request(store: SessionStore, row: sqlite3.Row,
     = זו אותה משיכה, ולכן מחזירים לה את אותו `id` במקום לפתוח שנייה או
     לחסום אותה מפני עצמה.
 
-    משיכה שכבר דיווחה משהו — התקדמות, סיום או כישלון — אינה "אותה
-    בקשה" אלא עבודה קיימת, והחסימה עליה נשארת. גם כישלון: משיכה
-    שנכשלה נשארת נראית עד שמפעיל סוגר אותה (עיקרון 5).
+    משיכה שכבר דיווחה התקדמות אינה "אותה בקשה" אלא עבודה קיימת, והחסימה
+    עליה נשארת. משיכה שהסתיימה או נכשלה כבר אינה כאן: ‏`open_pull` מריץ
+    את `sweep` לפני הבדיקה, וזה סוגר אותה (‏#1573).
 
     ‏`all` על רשימה ריקה הוא בכוונה: אין חבר = התהליכון שפתח עדיין לא
     הספיק לכתוב אותו, ואין דיווח שאפשר לאבד.
@@ -93,7 +110,11 @@ def open_pull(conn: sqlite3.Connection, store: SessionStore, mac: str,
     שני מסלולים מגיעים למשיכה קיימת: הבדיקה המקדימה, ו-`store.open`
     שנדחה על האינדקס הייחודי מפני שתהליכון אחר כתב בין השניים (#104).
     שניהם נגמרים באותו מקום — אותו `id` אם זו אותה בקשה, ואחרת סירוב.
+
+    ‏`sweep` קודם (#1573): משיכה קודמת שהסתיימה, נכשלה או שתקה אינה
+    "כבר מושכת". בלעדיו היא נסגרה רק כשמישהו פתח את הקונסולה.
     """
+    sweep(store)
     existing = active_for(store, mac)
     if existing is not None:
         return _resume_or_refuse(conn, store, existing, mac, image_id)
@@ -116,17 +137,75 @@ def open_pull(conn: sqlite3.Connection, store: SessionStore, mac: str,
     return session_id
 
 
-def sweep(store: SessionStore) -> None:
-    """סוגרת משיכות שהסתיימו בהצלחה — ורק אותן.
+def _parse(stamp: str | None) -> datetime | None:
+    """חותמת ISO **עם אזור זמן**, או `None`. חותמת בלי אזור (שורה ישנה או
+    ידנית) אינה נקראת: ‏naive מול aware זורק `TypeError`, והוא היה מפיל את
+    `/overview` ואת `open_pull` עצמם (‏`now_iso` כותב תמיד עם אזור)."""
+    try:
+        parsed = datetime.fromisoformat(stamp) if stamp else None
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed is not None and parsed.tzinfo is not None else None
 
-    ראיה חיובית: המכונה דיווחה `done` (ממשק 4). משיכה שנכשלה נשארת
-    פעילה ונראית, עד שמפעיל סוגר אותה — עיקרון 5: "לא הצלחנו" אינו
-    "הצלחנו", ובוודאי לא נעלם מהמסך לבד.
+
+def _failure(row: sqlite3.Row, members: list[sqlite3.Row],
+             now: datetime) -> str | None:
+    """למה המשיכה הזו נכשלה — או `None` אם אין ראיה שנכשלה.
+
+    שני מקורות בלבד: המכונה **אמרה** שנכשלה (כל החברים במצב סופי ולא
+    כולם `done`), או שהמכונה **שתקה** מעל `SILENT_SECONDS` מאז הדיווח
+    האחרון שלה (‏`updated_at` זז על כל דיווח שאינו סופי — כאן הוא בדיוק
+    הראיה, בניגוד לקיפאון בייטים, ‏`reports.stamp_movement`). חבר שעוד
+    לא נכתב: נמדד מפתיחת המשיכה. חותמת שאינה נקראת אינה "שתיקה" — לא
+    נמדד, ולא מכריזים (אותה הכרעה כמו `room._mark_lost`).
     """
+    if members and all(m["state"] in FINAL for m in members):
+        errors = "; ".join(m["error"] for m in members if m["error"])
+        return errors or "המכונה דיווחה " + ", ".join(m["state"] for m in members)
+    stamps = [_parse(m["updated_at"]) for m in members] or [_parse(row["created_at"])]
+    if None in stamps:
+        return None
+    last = max(stamps)
+    if (now - last).total_seconds() <= SILENT_SECONDS:
+        return None
+    return f"אין דיווח מהמכונה מאז {last.astimezone().strftime('%H:%M')}"
+
+
+def sweep(store: SessionStore) -> None:
+    """סוגרת משיכות שהסתיימו — בהצלחה (`closed`) או בכישלון (`failed`).
+
+    הצלחה רק על ראיה חיובית: כל החברים `done` (ממשק 4). כישלון אינו
+    נעלם: הסבב עובר ל-`failed` עם הסיבה ב-`failed_reason`, ושורת
+    `pull_failed` ביומן נושאת אותה (עיקרון 4/5) — לצד `client_failed`
+    שהדיווח עצמו כבר רשם. ‏`store.fail` מותנה במצב, ולכן שני תהליכונים
+    (הקונסולה, השעון, ‏`open_pull`) רושמים שורה אחת בלבד.
+    """
+    now = datetime.now(timezone.utc)
     for row in store.active_pulls():
         members = store.members(row["id"])
         if members and all(m["done"] for m in members):
             store.close(row["id"], "", event="pull_done")
+            continue
+        reason = _failure(row, members, now)
+        if reason is not None and store.fail(row["id"], reason):
+            journal(store.conn, "pull_failed", f"{row['id']} — {reason}")
+
+
+def background_sweep(store: SessionStore) -> bool:
+    """‏`sweep` משעון-הרקע (`app._room_clock`) — משיכה שאיש אינו צופה בה
+    חוסמת אחרת גם את האתחול הלילי ואת עדכון השרת. כמו `room.sweep`:
+    לעולם אינה זורקת, אבל כשל נרשם ביומן ולא נבלע."""
+    try:
+        sweep(store)
+        return True
+    except Exception as exc:      # noqa: BLE001 — לא מפיל את לולאת הרקע
+        log.exception("pull background sweep failed")
+        try:
+            journal(store.conn, "pull_sweep_failed",
+                    " ".join(f"{type(exc).__name__}: {exc}".split())[:200])
+        except Exception:         # noqa: BLE001 — גם היומן לא מפיל את הלולאה
+            log.exception("pull sweep failure was not journaled")
+        return False
 
 
 def journal_refusal(conn: sqlite3.Connection, mac: str, reason: str) -> None:

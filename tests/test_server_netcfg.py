@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -225,9 +226,12 @@ def test_an_unmanaged_card_gets_no_configuration_at_all():
     assert "not managed" in text
 
 
-def test_a_dhcp_client_card_is_two_lines():
+def test_a_dhcp_client_keeps_retrying_after_the_initial_timeout():
     text = netcfg.render(cfg(mode=MODE_DHCP))
-    assert "iface eth1 inet dhcp" in text
+    assert "iface eth1 inet manual" in text
+    assert "up /usr/sbin/dhcpcd -4 -b eth1" in text
+    assert "down /usr/sbin/dhcpcd -4 -k eth1" in text
+    assert "iface eth1 inet dhcp" not in text
     assert "address" not in text
 
 
@@ -370,6 +374,7 @@ def net_server(tmp_path: Path, images_root: Path, clock):
         "dnsmasq": [],              # מה נכתב ל-dnsmasq (לשונית ה-DHCP)
         "proxy": [],                # ומה לאינסטנס ה-proxy
         "management": "",           # ‏#1263: כרטיס הניהול שהמתקין רשם ("" = לא ידוע)
+        "foreign": None,            # ‏#1558: מנהל רשת שאינו ifupdown (None = ifupdown)
         "probe": dhcp.ProbeResult(True, ()),   # מי כבר עונה ל-DHCP (‏#53)
     }
 
@@ -403,6 +408,7 @@ def net_server(tmp_path: Path, images_root: Path, clock):
         "netcfg_boot_id": lambda *a: "boot-A",
         "netcfg_local_address": lambda request: fake["local"],
         "netcfg_management": lambda: fake["management"],
+        "netcfg_foreign_manager": lambda: fake["foreign"],   # #1558
     }
     # שתי הלשוניות הן שני ראוטרים, ולכן **שתי** הזרקות: הבדיקה שמוודאת
     # שהצדדים מסכימים חוצה אל `/api/console/net/interfaces` — הראוטר של
@@ -509,6 +515,60 @@ def test_a_bad_setting_is_refused_before_anything_is_written(net_server):
     assert "כתובת הכרטיס אינה תקינה" in response.json()["detail"]
     assert net_server["fake"]["confs"] == {}
     assert net_server["fake"]["applied"] == []
+
+
+NETPLAN = "הרשת בשרת הזה מנוהלת ב-netplan (/etc/netplan/50-cloud-init.yaml)"
+
+
+@pytest.mark.parametrize("send", ["put", "put_deploy"])
+def test_a_server_whose_network_is_not_ifupdown_is_refused_before_anything_is_touched(
+        net_server, send):
+    """‏#1558: שרת חיפה (netplan + networkd + resolved). עד #1558 הקונסולה זיינה
+    החזרה, כתבה ל-interfaces.d ול-resolv.conf והריצה ifup — ודיווחה תסמינים
+    ("Read-only file system", ‏"unknown interface") במקום הסיבה."""
+    fake = net_server["fake"]
+    fake["foreign"] = NETPLAN
+    response = globals()[send](net_server)   # put_deploy מוגדר למטה בקובץ
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert "netplan" in detail and "ifupdown" in detail and "לא נכתב ולא הוחל דבר" in detail
+    assert fake["writes"] == [] and fake["confs"] == {} and fake["applied"] == []
+    assert fake["resolv"] == "nameserver 10.44.0.5\n"
+    assert not (net_server["state_dir"] / "pending.json").exists(), "rollback armed for a change that never ran"
+    assert fake["dnsmasq"] == [], "the deploy DHCP must not move without its address"
+
+
+def test_foreign_manager_names_netplan_networkd_and_resolved(tmp_path):
+    netplan, networkd = tmp_path / "netplan", tmp_path / "network"
+    resolv = tmp_path / "resolv.conf"
+    resolv.write_text("nameserver 10.0.0.1\n", encoding="utf-8")
+    assert netcfg_host.foreign_manager(netplan, networkd, resolv) is None   # שרת ISO: אין אף אחד
+    netplan.mkdir(); networkd.mkdir()
+    assert netcfg_host.foreign_manager(netplan, networkd, resolv) is None   # תיקיות ריקות
+    (networkd / "10-eth0.link").write_text("", encoding="utf-8")          # ‏.link אינו ניהול כתובת
+    assert netcfg_host.foreign_manager(netplan, networkd, resolv) is None
+    (networkd / "20-eth0.network").write_text("", encoding="utf-8")
+    assert "systemd-networkd" in netcfg_host.foreign_manager(netplan, networkd, resolv)
+    (netplan / "50-cloud-init.yaml").write_text("", encoding="utf-8")
+    assert "netplan" in netcfg_host.foreign_manager(netplan, networkd, resolv)
+
+
+def test_foreign_manager_that_could_not_look_is_not_ifupdown(tmp_path):
+    """עיקרון 5: תיקייה שלא נקראה (כאן — קובץ במקום תיקייה) אינה "אין netplan"."""
+    not_a_dir = tmp_path / "netplan"
+    not_a_dir.write_text("", encoding="utf-8")
+    found = netcfg_host.foreign_manager(not_a_dir, tmp_path / "none", tmp_path / "none.conf")
+    assert found and "לא ניתן לבדוק" in found
+
+
+def test_foreign_manager_names_a_resolved_stub_symlink(tmp_path):
+    resolv = tmp_path / "resolv.conf"
+    try:
+        os.symlink("../run/systemd/resolve/stub-resolv.conf", resolv)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks need privileges on this Windows host")
+    found = netcfg_host.foreign_manager(tmp_path / "a", tmp_path / "b", resolv)
+    assert found and "systemd-resolved" in found
 
 
 def test_a_card_that_is_not_in_the_machine_is_refused(net_server):
@@ -786,10 +846,12 @@ def test_the_dhcp_safety_gates_run_before_the_address_moves(net_server):
     assert fake["confs"] == {} and fake["applied"] == [] and fake["dnsmasq"] == []
 
 
-def test_dhcp_client_mode_writes_inet_dhcp(net_server):
+def test_dhcp_client_mode_writes_a_persistent_dhcpcd_command(net_server):
     result = put(net_server, mode=MODE_DHCP, address="", gateway="", dns=[])
     assert result.status_code == 200, result.text
-    assert "iface eth1 inet dhcp" in net_server["fake"]["confs"]["eth1"]
+    written = net_server["fake"]["confs"]["eth1"]
+    assert "iface eth1 inet manual" in written
+    assert "up /usr/sbin/dhcpcd -4 -b" in written
 
 
 def test_static_mode_takes_a_primary_and_a_secondary_dns(net_server):
@@ -812,6 +874,17 @@ def test_the_read_names_the_management_card_and_never_guesses_it(net_server):
     from server.db import set_setting
     set_setting(net_server["ctx"].conn, "dcui:management_interface", "eth1")
     assert net_server["admin"].get(CONF).json()["management_interface"] == "eth1"
+
+
+def test_the_read_names_the_card_the_console_came_through(net_server):
+    """‏#1556: בשרת חיפה כרטיס הניהול לא היה ידוע, ו"הגדר כרשת הפצה" בחר את
+    ‏eth0 — הכרטיס שהקונסולה מחוברת דרכו. השרת יודע מאיזו כתובת שלו הבקשה
+    הגיעה; זה הכרטיס שאסור להציע כברירת מחדל. לא נקבע = ‏null, לא ניחוש."""
+    assert net_server["admin"].get(CONF).json().get("console_interface", "absent") == "eth0"
+    net_server["fake"]["local"] = "10.44.9.10"
+    assert net_server["admin"].get(CONF).json().get("console_interface", "absent") == "eth1"
+    net_server["fake"]["local"] = "127.0.0.1"          # מנהרה / loopback — אין כרטיס כזה
+    assert net_server["admin"].get(CONF).json().get("console_interface", "absent") is None
 
 
 def test_installed_management_reads_servers_if_from_the_firstboot_status(tmp_path):
@@ -926,3 +999,59 @@ def test_sheet_supports_a_radio_field_type():
     ל-API שלא קיים, וזה נכשל בשקט בזמן ריצה, לא בבדיקה."""
     js = (REPO / "server" / "static" / "console.js").read_text(encoding="utf-8")
     assert 'f.type === "radio"' in js
+
+
+# --- #1628: שם כרטיס לא תקין נעצר לפני כל כתיבה ------------------------------
+
+# newline (הזרקת `post-up` לקובץ), רווח, ‏`../`, תו פתיחה פסול ושם ארוך מ-15.
+# ‏`%0A` ו-`%20` מקודדים כי כך הם מגיעים בנתיב ה-URL. ‏`%2F` מפוענח ל-`/`
+# עוד לפני הניתוב, ולכן `../` מגיע לשרת כנתיב אחר ונדחה ב-404 — עדיין בלי
+# כתיבה; ‏`..%5C` (לוכסן הפוך) הוא הצורה של `../` שכן מגיעה ל-handler.
+BAD_NAMES = {
+    "newline": ("eth1%0Apost-up%20id", 400),
+    "trailing-newline": ("eth1%0A", 400),
+    "space": ("eth%201", 400),
+    "dotdot-slash": ("..%2F..%2Ftmp%2Fx", 404),
+    "dotdot-backslash": ("..%5C..%5Cx", 400),
+    "leading-dash": ("-eth1", 400),
+    "too-long": ("a" * 16, 400),
+}
+
+
+def _no_write_happened(server):
+    fake = server["fake"]
+    assert fake["confs"] == {} and fake["writes"] == []
+    assert fake["applied"] == []
+    assert fake["resolv"] == "nameserver 10.44.0.5\n"          # לא נגעו ב-DNS
+    assert fake["dnsmasq"] == []
+
+
+@pytest.mark.parametrize("kind", sorted(BAD_NAMES))
+def test_a_bad_card_name_is_refused_before_any_write(net_server, kind):
+    """‏#1628: ‏`allow_missing` עוקף את "הכרטיס קיים במכונה", והשם נכנס
+    לנתיב הקובץ ול-`iface`. רשימת היתר חייבת לרוץ לפני הכל — ובכל endpoint
+    שמקבל `/{name}`."""
+    name, expected = BAD_NAMES[kind]
+    admin = net_server["admin"]
+    body = {**STATIC, "confirm": name, "allow_missing": True}
+    responses = {
+        "put": admin.put(f"{CONF}/{name}", json=body),
+        "preview": admin.post(f"{CONF}/{name}/preview", json=body),
+        "deploy": admin.put(f"{CONF}/{name}/deploy", json=body),
+        "second": admin.put(f"{CONF}/{name}/second", json={"second": "eth2"}),
+    }
+    for route, response in responses.items():
+        assert response.status_code == expected, (route, response.status_code,
+                                                  response.text)
+    _no_write_happened(net_server)
+
+
+def test_a_good_card_name_still_passes_the_guard(net_server):
+    """הצד השני: השם התקין (כולל VLAN ‏`eth1.700` ו-`:`) לא נחסם."""
+    assert put(net_server, address="10.44.9.11").status_code == 200
+    assert "iface eth1 inet static" in net_server["fake"]["confs"]["eth1"]
+    for i, name in enumerate(("eth1.700", "ens35", "br0:1", "a" * 15)):
+        res = put(net_server, name=name, allow_missing=True,
+                  address=f"10.50.{i}.10")              # רשת משלו: בלי חפיפה
+        assert res.status_code == 200, (name, res.text)
+        assert f"iface {name} inet static" in net_server["fake"]["confs"][name]

@@ -251,21 +251,19 @@ test('audit: the topbar search filters table.dg rows too, never counts a group h
   assert.equal(rows.filter((r) => r.style.display === 'none').length, 0, 'a term in every data row keeps both groups');
 });
 
-test('audit: the status bar dots and the tree footer follow /health — green only on "ok", grey when nothing was measured', () => {
+test('audit: the status bar dots follow /health — green only on "ok", grey when nothing was measured', () => {
   const {run, document} = setup();
   const html = read('index.html');
   for (const n of ['API', 'PXE', 'Multicast']) assert.match(html, new RegExp(`class="statusbar-item svc-unk" data-svc="${n}"`), n + ' starts grey, not green');
   assert.doesNotMatch(html, /כל השירותים פעילים/, 'the static green claim is gone from the markup');
-  const dot = (n) => document.querySelector(`[data-svc="${n}"]`), foot = document.getElementById('treeFootStatus');
+  // נדב 18/10: הקופסה בתחתית העץ יצאה — מצב השרת הוא הנקודה ליד שמו (tree_server_dot.test.cjs)
+  const dot = (n) => document.querySelector(`[data-svc="${n}"]`);
   run('HEALTH=null; healthError=""; paintServiceStatus()');
-  assert.ok(dot('Multicast').classList.contains('svc-unk') && foot.innerHTML.includes('לא נבדק'), 'no data: grey + "not checked"');
+  assert.ok(dot('Multicast').classList.contains('svc-unk'), 'no data: grey');
   run('HEALTH=[{id:"udp_sender",state:"bad",detail:"לא נמצא"},{id:"tftp_port",state:"ok"},{id:"boot_files",state:"warn"},{id:"server",state:"ok"}]; paintServiceStatus()');
   assert.ok(dot('Multicast').classList.contains('svc-err'), 'a failing udp_sender makes Multicast red');
   assert.ok(dot('PXE').classList.contains('warn') === false && dot('PXE').classList.contains('svc-warn'), 'PXE = the worst of tftp_port + boot_files; the class is prefixed so the global .ok/.err message rules do not apply');
   assert.ok(dot('API').classList.contains('svc-ok'));
-  assert.match(foot.className, /err/); assert.ok(foot.innerHTML.includes('1 שירותים בתקלה'));
-  run('HEALTH=[{id:"udp_sender",state:"ok"},{id:"tftp_port",state:"ok"},{id:"boot_files",state:"ok"},{id:"server",state:"ok"}]; paintServiceStatus()');
-  assert.match(foot.className, /ok/); assert.ok(foot.innerHTML.includes('כל השירותים פעילים'));
 });
 
 // ---- S3: שורת הסטטוס אינה מכוסה ע"י ה-dock הקבוע --------------------------
@@ -607,8 +605,7 @@ function buildRailTree() {
       leaf({'data-page': 'tools'}, 'tools', 'ארגז כלים', {class: 'inventory-node hidden'})]),
     group('admin', 'ניהול'), box('adminTA', [leaf({'data-page': 'permissions'}, 'key', 'משתמשים והרשאות'), leaf({'data-page': 'settings'}, 'sliders', 'הגדרות')]),
   ]);
-  const foot = el('span', {id: 'treeFootStatus', class: 'status ok'}); foot.textContent = 'כל השירותים פעילים';
-  const navFull = el('div', {class: 'nav-full', id: 'navFull'}, [el('div', {class: 'tree'}, [srv]), el('div', {class: 'tree-foot'}, [foot])]);
+  const navFull = el('div', {class: 'nav-full', id: 'navFull'}, [el('div', {class: 'tree'}, [srv])]);
   const side = el('aside', {class: 'sidebar', id: 'sidebar'}, [navFull, el('div', {class: 'rail', id: 'rail'})]);
   const toggle = el('button', {class: 'icon-btn nav-toggle', 'aria-expanded': 'true'});
   return el('div', {id: 'app', 'data-nav': 'full'}, [el('header', {class: 'topbar'}, [toggle]), side, el('div', {class: 'sidebar-backdrop', id: 'sidebarBackdrop'}),
@@ -619,7 +616,7 @@ const railButtons = (html) => [...html.matchAll(/<button type="button" class="ri
 
 test('#1300 rail: flat like ESXi — the groups without a page become separators, every page is an icon (same icon as its tree node), hidden nodes stay out', () => {
   const {run, tree} = setup(buildRailTree);
-  run('markTreeSelection(null,"home")');
+  run('SERVER_HEALTH[""]={checks:[{id:"server",state:"ok"}],at:Date.now()}; markTreeSelection(null,"home")');   // נדב 18/10: הנורית = הנקודה של TA
   const html = tree.querySelector('#rail').innerHTML;
   const groups = [...html.matchAll(/<div class="rgrp" role="group" aria-label="([^"]*)">/g)].map((m) => m[1]);
   assert.deepEqual(groups, ['ראשי', 'מלאי', 'תשתית', 'ניהול']);
@@ -631,7 +628,7 @@ test('#1300 rail: flat like ESXi — the groups without a page become separators
   for (const x of b.filter((y) => /\bkids\b/.test(y.cls))) assert.match(x.rest, /aria-haspopup="menu" aria-expanded="false" aria-controls="navFly"/);
   assert.equal(b[0].cls, 'cur'); assert.match(b[0].rest, /aria-current="page"/);
   assert.deepEqual(b.map((x) => x.tab), [0, -1, -1, -1, -1, -1, -1, -1], 'one Tab stop — the current icon');
-  assert.match(html, /<div class="rfoot"><span class="rled" role="img" aria-label="כל השירותים פעילים" data-tipx="כל השירותים פעילים"><span class="led ok"><\/span><\/span><\/div>/, 'the services light moves to the bottom');
+  assert.match(html, /<div class="rfoot"><span class="rled" role="img" aria-label="מחובר · כל השירותים פעילים" data-tipx="מחובר · כל השירותים פעילים"><span class="led ok"><\/span><\/span><\/div>/, 'the services light moves to the bottom');
 });
 
 test('#1300 rail: on a sub-page the visible parent carries the mark — "רשת, נבחר: פורטים" with aria-current=location; a build-machines leaf marks מחשבים', () => {

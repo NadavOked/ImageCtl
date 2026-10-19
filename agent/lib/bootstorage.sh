@@ -5,9 +5,13 @@
 # Why: a storage miniport that is not boot-start (Services\<svc>\Start=0)
 # is not loaded before the kernel looks for the system disk, and the result
 # is 0x7B INACCESSIBLE_BOOT_DEVICE -- long before the DevicePath staging
-# (postdeploy.sh) is ever read. An image captured on a SATA machine keeps
-# stornvme at Start=3; one installed in RAID mode keeps storahci at 3 with
-# StartOverride\0=3, which wins over Start. Both drivers ship in Windows,
+# (postdeploy.sh) is ever read. Our Win11 25H2 images captured on SATA
+# (img_8da804, img_b37bd6) do NOT have stornvme at Start=3: they have
+# Start=0 with StartOverride\0=3, and on a VM that boots on NVMe as is.
+# Start=3 alone does give 0x7B (#1331 T4, 18/10: E1 vs E1b). So Start is
+# measured to decide; StartOverride\0 is zeroed too because R24 says a
+# RAID-mode install keeps storahci at 3 with it (not measured here) and
+# zeroing it was harmless in the same test (E2). Both drivers ship in Windows,
 # so the fix is two DWORDs in the SYSTEM hive -- what Safe Mode does by
 # hand (docs/research/R24-offline-boot-drivers.md has the sources).
 #

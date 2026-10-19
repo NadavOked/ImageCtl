@@ -37,11 +37,11 @@ from test_json_escape import pytestmark               # noqa: F401
 PV_ERROR = "pv: write failed: Broken pipe"
 
 
-def _run(tmp_path: Path, counter_lines: list[str], base: str = "1000") -> str:
+def _run(tmp_path: Path, counter_lines: list[str], finished: str = "1000") -> str:
     run = tmp_path / "run"
     (run / "targets" / "sda").mkdir(parents=True)
-    (run / "targets" / "sda" / "base").write_text(base + "\n", encoding="utf-8")
-    (run / "targets" / "sda" / "bytes.raw").write_text(
+    (run / "targets" / "sda" / "bytes.0").write_text(finished + "\n", encoding="utf-8")
+    (run / "targets" / "sda" / "bytes.1").write_text(
         "".join(line + "\n" for line in counter_lines), encoding="utf-8")
     body = (
         f'export RUN_DIR="{run.as_posix()}"\n'

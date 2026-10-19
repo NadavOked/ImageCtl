@@ -275,7 +275,7 @@ def run_once(state_dir: str | Path, hooks: dict | None = None,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="ImageCtl: restore an unconfirmed network change (#56)")
+        description="ImageSrv: restore an unconfirmed network change (#56)")
     parser.add_argument("--state-dir", default=netcfg_host.STATE_DIR)
     args = parser.parse_args(argv)
     reason = run_once(args.state_dir)

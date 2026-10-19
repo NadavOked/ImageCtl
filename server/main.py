@@ -105,11 +105,25 @@ def _address_for_interface(name: str) -> str | None:
     raise InterfaceDetectionError(f"לא נמצא כרטיס בשם {name}")
 
 
+def agent_uvicorn_config(app, host: str, port: int):
+    """התצורה של מאזין הסוכן (8080) — ‏‎/boot של GRUB ו-API הסוכן.
+
+    ‏#1423: ‏`http=ResetBootOnPeerClose` עונה ב-RST כש-GRUB סוגר חיבור
+    ‎/boot. בלעדיו השרת נשאר ב-LAST-ACK על החיבור האחרון, ו-GRUB, שיוצא
+    מאותם פורטי מקור בכל אתחול, נתקע עליו באתחול הבא.
+    """
+    import uvicorn
+
+    from .grub_close import ResetBootOnPeerClose
+    return uvicorn.Config(app, host=host, port=port, log_level="info",
+                          http=ResetBootOnPeerClose)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """הדגלים של השרת, בנפרד מההרצה — כדי שאפשר יהיה לפרוס שורת פקודה
     בבדיקה בלי להרים uvicorn (‏#201: ה-e2e מרכיב argv, וצריך ראיה שהוא
     מתפרס כאן ולא נבלע)."""
-    parser = argparse.ArgumentParser(description="ImageCtl server + console")
+    parser = argparse.ArgumentParser(description="ImageSrv server + console")
     # ‏#1088: אינו חובה עוד. ריק = הכתובת נקראת ממה שנרשם מהקונסולה
     # (`deploy:url`, בהדלקת DHCP על כרטיס), ואם גם זה חסר — "רשת ההפצה לא
     # הוגדרה": הסוכן על loopback בלבד, והקונסולה אומרת מה לעשות.
@@ -197,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
     # נקרא ממילא fail-closed; כותבים רק כשהדגל ניתן במפורש.
     parser.add_argument("--storage-role", choices=("standalone", "secondary"),
                         default=None,
-                        help="תפקיד השרת: standalone (רשאי להחזיק משניים) או "
+                        help="תפקיד השרת: standalone (רשאי להחזיק שרתי משנה) או "
                              "secondary. ללא הדגל — התפקיד השמור נשאר כפי שהוא")
     parser.add_argument("--primary-url", default=None,
                         help="כתובת השרת הראשי — חובה ל-secondary, מתעלמים "
@@ -213,7 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interserver-port", type=int, default=8443,
                         help="פורט מאזין ה-enrollment הבין-שרתי (mTLS 1.3)")
     parser.add_argument("--interserver-url", default=None,
-                        help="הכתובת הבין-שרתית המפורשת שהמשני מציג "
+                        help="הכתובת הבין-שרתית המפורשת ששרת המשנה מציג "
                              "(https://host:port/…, פורט מפורש חובה)")
     return parser
 
@@ -544,7 +558,9 @@ def main() -> None:
                              # ‏#1372: המארח של עדכון ה-VM — שואל, ומכין אם חסר.
                              vm_host=True,
                              # ‏#1494: used_bytes לאימג'ים ישנים מכותרת partclone.
-                             backfill_used_bytes=True)
+                             backfill_used_bytes=True,
+                             # ‏#1447: אזור הזמן של המערכת = ההגדרה (timedatectl).
+                             apply_timezone=True)
     # ‏#1372: עדכון מהכפתור רץ בסקריפט של התג **הישן**, ולכן ההכנה של הגרסה
     # הזו אינה תלויה בו: מארח שאינו מוכן — install/vmupdate-host.sh שלנו, ברקע.
     # ‏getattr: בדיקות של main מחליפות את create_runtime ברשומה משלהן.
@@ -562,15 +578,13 @@ def main() -> None:
 
     # ‏#996: ה-`Config` נבנה פעם אחת; ה-`Server` נבנה מחדש בכל פתיחה
     # (‏uvicorn.Server אינו רב-פעמי), ולכן המנהל מקבל **יצרנים**.
-    agent_config = uvicorn.Config(
-        agent_app, host=args.host, port=args.port, log_level="info")
+    agent_config = agent_uvicorn_config(agent_app, args.host, args.port)
     configs: dict[tuple[str, str], object] = {("agent", args.host): agent_config}
 
     def agent_factory(h: str):
         """‏#705: יצרן לכל כתובת — הסוכן נקשר לכל כרטיס שבו "אתחול מהרשת" דלוק."""
         if ("agent", h) not in configs:
-            configs[("agent", h)] = uvicorn.Config(agent_app, host=h, port=args.port,
-                                                   log_level="info")
+            configs[("agent", h)] = agent_uvicorn_config(agent_app, h, args.port)
         cfg = configs[("agent", h)]
         return lambda: uvicorn.Server(cfg)
     # ‏#770: הקונסולה על כרטיס הניהול (`--console-host`) בלבד — לא `--host`.
@@ -798,7 +812,7 @@ def main() -> None:
         if "interserver" not in listeners.ids():
             if hosts["interserver"]:
                 errors.append("בין-שרתים: אין מאזין 8443 בתהליך הזה — בראשי: אתחול "
-                              "השרת יעלה אותו לפי השירותים; במשני: נדרש "
+                              "השרת יעלה אותו לפי השירותים; בשרת המשנה: נדרש "
                               "‎--interserver-host ביחידה")
         elif alive_servers is not None:
             run("בין-שרתים", lambda: listeners.request_retarget(

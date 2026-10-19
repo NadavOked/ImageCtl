@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
-from server import users
+from server import login_guard, users
 from server.console_tls import ensure_console_cert
 from server.interserver_auth import generate_self_signed
 
@@ -150,7 +150,7 @@ def validate_config(config: WizardConfig, interface_names: set[str], *, rerun: b
         errors["role"] = "יש לבחור תפקיד שרת."
     if config.role == "secondary":
         if not config.primary_url:
-            errors["primary_url"] = "חובה להזין את כתובת השרת הראשי עבור שרת משני."
+            errors["primary_url"] = "חובה להזין את כתובת השרת הראשי עבור שרת משנה."
         else:
             parts = urlsplit(config.primary_url)
             try:
@@ -267,6 +267,7 @@ class WizardState:
     _thread: threading.Thread | None = field(default=None, init=False)
     _attempts: int = field(default=0, init=False)
     _job: str | None = field(default=None, init=False)
+    _client_ip: str = field(default="", init=False)
 
     def interfaces(self) -> list[dict]:
         return self.interfaces_provider()
@@ -300,12 +301,13 @@ class WizardState:
                 return self._job
             return None
 
-    def start_apply(self, config: WizardConfig) -> str:
+    def start_apply(self, config: WizardConfig, client_ip: str = "") -> str:
         with self._lock:
             if self._thread and self._thread.is_alive():
                 assert self._job is not None
                 return self._job
             self._attempts += 1
+            self._client_ip = client_ip
             self._job = uuid.uuid4().hex
             self._phase, self._output, self._result = "validating", [], {}
             self._thread = threading.Thread(target=self._apply, args=(config,), name="wizard-apply", daemon=False)
@@ -326,14 +328,29 @@ class WizardState:
             self._phase = phase
             self._result.update(result)
 
-    def _verify_current_admin(self, password: str) -> bool:
+    def _verify_current_admin(self, password: str) -> str | None:
+        """None = הסיסמה אומתה; אחרת ההודעה למפעיל.
+
+        ‏#1631: דרך ``login_guard``, עם אותו מפתח (משתמש+IP) של כניסת הקונסולה
+        — ההרצה החוזרת אינה ערוץ ניחוש סיסמה בלי השהיה ונעילה, וכשלונות
+        בשני הערוצים נספרים יחד."""
+        wrong = "סיסמת admin הקיימת שגויה."
         db = self.paths.data_dir / "imagectl.db"
         if not db.is_file():
-            return False
+            return wrong
+        ip = self._client_ip or "?"
         conn = sqlite3.connect(db)
         conn.row_factory = sqlite3.Row
         try:
-            return users.verify(conn, "admin", password) == "admin"
+            try:
+                login_guard.check(conn, "admin", ip)
+            except login_guard.LoginBlocked as exc:
+                return exc.message
+            if users.verify(conn, "admin", password) == "admin":
+                login_guard.clear(conn, "admin", ip)
+                return None
+            login_guard.record_failure(conn, "admin", ip)
+            return wrong
         finally:
             conn.close()
 
@@ -416,8 +433,9 @@ class WizardState:
 
     def _apply(self, config: WizardConfig) -> None:
         try:
-            if self.rerun and not self._verify_current_admin(config.current_password):
-                self._fail("validation-failed", "סיסמת admin הקיימת שגויה.", config)
+            refused = self._verify_current_admin(config.current_password) if self.rerun else None
+            if refused:
+                self._fail("validation-failed", refused, config)
                 return
             self._set("hostname")
             if not self.dev:

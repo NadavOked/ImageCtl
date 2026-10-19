@@ -50,6 +50,7 @@ typedef struct {
     int inv_done; char phase[16];                /* idle|shrinking|copying|verifying|restoring|done|stopped */
     LcDisk disks[LC_MAX_DISKS]; int ndisks;
     char src[16]; char src_measure[12];          /* the source the verdicts are about */
+    long long src_copy; char src_copy_why[200];  /* #1443: the bytes the copy moves; -1 = not measured (why), -2 = not yet */
     LcFit fits[LC_MAX_DISKS]; int nfits;
     int has_run; char run_src[16]; long long total, copied; int elapsed, shrunk, cur_part;
     char report[12], src_restore[400];
@@ -69,7 +70,13 @@ typedef struct {
     int focus;                                   /* LCF_* below */
     int confirm, stop;                           /* the two dialogs */
     double start_sent;                           /* monotonic s of lc-start; the progress view until the agent answers */
-    char last_phase[16];                         /* done -> idle ("שכפול נוסף"): the roles start over */
+    char last_phase[16];                         /* a run -> idle: the roles start over (#1722) */
+    /* #1722: the person's own last lc-start, exactly (dev + serial) -- the only
+     * choice drawn again after a stop. ran = a run was seen: no default source
+     * after it; keep = it went back to idle without "done" (stopped). */
+    char last_src[16], last_src_serial[64];
+    char last_tgt[LC_MAX_DISKS][16], last_tgt_serial[LC_MAX_DISKS][64]; int nlast;
+    int ran, keep;
     /* #1437: (elapsed, copied) as the agent wrote them, one per reload, from the first byte */
     int rate_e[LC_RATE_MAX]; long long rate_c[LC_RATE_MAX]; int rate_n;
 } LcUi;

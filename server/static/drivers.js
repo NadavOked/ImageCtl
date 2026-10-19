@@ -23,15 +23,6 @@ async function loadDrivers() {
   if (current === "drivers") renderCurrent();
 }
 
-function driverRuleLabel(rule) {
-  if (rule.pci) return `PCI ${rule.pci.join(" + ")}`;
-  if (rule.pci_any) {
-    // חבילת דגם (#959): מאות מזהים — מציגים כמה, ואת המספר המלא.
-    const shown = rule.pci_any.slice(0, 3).join(" | ");
-    return `PCI אחד מ-${rule.pci_any.length}: ${shown}${rule.pci_any.length > 3 ? " …" : ""}`;
-  }
-  return `${rule.vendor} · ${rule.model}`;
-}
 /* הכלל כ-HTML: הטקסט העברי בחוץ, המזהים ב-LTR מבודד — אחרת "אחד מ-4:" מתהפך בתוך .mono. */
 function driverRuleHtml(rule) {
   const ids = (list) => `<span class="mono">${esc(list.join(" | "))}</span>`;

@@ -76,12 +76,50 @@ smart_field() {
     awk -v i="$2" '{print $i}' "$RUN_DIR/smart/$1.v" 2>/dev/null
 }
 
+smart_ro_check() {
+    # $1 = disk. ‏#1742 (נדב 18/10): דיסק לקריאה בלבד הוא **אדום** -- `fail`
+    # עם הסיבה `readonly`, אותו אדום של SMART שנכשל (#1732: לעולם לא יעד, מותר
+    # כמקור). שתי ראיות: ‏`/sys/block/<d>/ro` = 1, או זיכרון השרת שהכתיבה
+    # הקודמת על הדיסק הזה נדחתה כ-EPERM/EROFS (‏cause=readonly, ‏ata_cause.py;
+    # ‏disk_failure_readonly ב-failmark.sh). נקרא **בכל קריאה**, מחוץ למטמון:
+    # ‏`blockdev --setro` יכול לבוא אחרי ה-probe של ההמתנה.
+    # מחזיר 0 = אדום (הרשומה נכתבה), 1 = ‏ro=0, 2 = לא נקרא -- "לא נבדק", לעולם
+    # לא "תקין" (עיקרון 5): רשומת `ok` הופכת ל-`unchecked ro_unread`.
+    _sr_v=$(cat "$SYSROOT/sys/block/$1/ro" 2>/dev/null)
+    if [ "$_sr_v" = 1 ] || { command -v disk_failure_readonly >/dev/null 2>&1 &&
+            disk_failure_readonly "$1"; }; then
+        _smart_store "$1" fail readonly; return 0
+    fi
+    case "$(smart_field "$1" 2)" in   # כבר לא לקריאה בלבד / ‏ro נקרא שוב: probe מחדש
+        readonly) rm -f "$RUN_DIR/smart/$1.v" ;;
+        ro_unread) [ "$_sr_v" = 0 ] && rm -f "$RUN_DIR/smart/$1.v" ;;
+    esac
+    [ "$_sr_v" = 0 ] && return 1
+    [ "$(smart_field "$1" 1)" = ok ] && _smart_store "$1" unchecked ro_unread \
+        "$(smart_field "$1" 3)" "$(smart_field "$1" 4)" "$(smart_field "$1" 5)" "$(smart_field "$1" 6)"
+    return 2
+}
+
+smart_ro_stale() {
+    # $1 = disk, $2 = שורה שמורה שנושאת `<verdict>|<reason>|` (‏guistate.sh: dsmart).
+    # אמת כשמצב הקריאה-בלבד השתנה מאז שנכתבה (#1742) -- קריאת sysfs אחת, בלי smartctl.
+    smart_ro_check "$1"; _rs_rc=$?
+    case "$(cat "$2" 2>/dev/null)" in
+        *"|fail|readonly|"*) [ "$_rs_rc" != 0 ] ;;
+        *"|ok|"*) [ "$_rs_rc" != 1 ] ;;   # ‏ro שלא נקרא אינו "תקין" (עיקרון 5)
+        *) [ "$_rs_rc" = 0 ] ;;
+    esac
+}
+
 smart_probe() {
     # $1 = disk name. מריץ smartctl פעם אחת, מסווג, ושומר רשומה. מדפיס
     # את ה-verdict. לעולם אינו חוסם: כל כשל בקריאת SMART הוא `unchecked`,
     # שנכתב. תוצאה נשמרת במטמון — קריאה שנייה על אותו דיסק לא מריצה שוב.
+    # ‏#1742: לפני הכול smart_ro_check -- דיסק לקריאה בלבד אדום בלי smartctl.
     _sp_d="$1"; _sp_dev="$DEVROOT/$1"
     mkdir -p "$RUN_DIR/smart"
+    smart_ro_check "$1"; _sp_ro=$?
+    [ "$_sp_ro" = 0 ] && { echo fail; return; }
     if [ -f "$RUN_DIR/smart/$1.v" ]; then smart_field "$1" 1; return; fi
     if ! command -v "$SMARTCTL" >/dev/null 2>&1; then
         _smart_store "$1" unchecked no_smartctl; echo unchecked; return
@@ -124,8 +162,26 @@ smart_probe() {
     _sp_unv=$_sp_un; grep -q 'Media and Data Integrity Errors' "$_sp_out" 2>/dev/null && _sp_unv=0
     # shellcheck disable=SC2046 # פיצול המילים מכוון — ל-$1/$2
     set -- $(smart_classify "$_sp_h" "$_sp_re" "$_sp_pe" "$_sp_unv" "$_sp_cr")
+    [ "$_sp_ro" = 2 ] && [ "$1" = ok ] && set -- unchecked ro_unread   # #1742: ro לא נקרא
     _smart_store "$_sp_d" "$1" "$2" "$_sp_re" "$_sp_pe" "$_sp_un" "$_sp_cr"
     echo "$1"
+}
+
+#: ‏#1732: מה שהמפעיל קורא על דיסק אדום, בכל מסלול שמסרב לכתוב עליו. כאן ולא
+#: ב-smartgate.sh: כל מי שטוען את smart_probe מקבל גם את הסירוב.
+SMART_RED_HE="SMART נכשל — לא כותבים על הדיסק הזה; אפשר להעתיק ממנו או לחלץ לשרת"
+#: ‏#1742: אותו אדום, אבל הסיבה אחרת -- דיסק לקריאה בלבד אינו "SMART נכשל".
+SMART_RO_HE="הדיסק במצב קריאה בלבד"
+
+smart_red_he() {
+    # $1 = disk. המשפט של הסירוב על דיסק אדום, לפי הסיבה שבמטמון (smart_probe).
+    if [ "$(smart_field "$1" 2)" = readonly ]; then printf '%s' "$SMART_RO_HE"; else printf '%s' "$SMART_RED_HE"; fi
+}
+
+smart_red() {
+    # $1 = disk. אמת כשהדיסק אדום (SMART fail, smart_probe) -- לעולם לא יעד
+    # (#1732). ‏unchecked אינו אדום: "לא נבדק" אינו "תקול" (עיקרון 5).
+    [ "$(smart_probe "$1")" = fail ]
 }
 
 smart_hello_field() {
@@ -133,6 +189,9 @@ smart_hello_field() {
     # של תחנת כיתה שעולה לדיסק מקומי היה משלם שנייה על smartctl מיותר).
     # מלא ע"י smart_preflight בצד השחזור וע"י smart_probe_idle במחשב
     # השיכפול הממתין — ומשם הקונסולה מציגה בריאות פר-דיסק *לפני* start.
+    # ‏#1742: קריאה בלבד נבדקת גם כאן (קובץ sysfs, לא smartctl) -- ה-probe של
+    # ההמתנה רץ פעם אחת, ו-`blockdev --setro` אחריו חייב להגיע למסך לפני המשיכה.
+    smart_ro_check "$1"
     case "$(smart_field "$1" 1)" in
         ok|warn|fail) smart_field "$1" 1 ;;
         *)            printf 'unchecked' ;;

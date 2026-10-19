@@ -9,6 +9,7 @@ trap 'rm -rf "$RUN_DIR"' EXIT
 GUI_DIR=$RUN_DIR/gui
 mkdir "$GUI_DIR"
 . "$ROOT/agent/lib/common.sh"
+. "$ROOT/agent/lib/jsonq.sh"       # #1560: room_open reads the round id; gui_libs loads it too
 . "$ROOT/agent/lib/buildmenuitems.sh"
 . "$ROOT/agent/lib/buildmenu.sh"
 . "$ROOT/agent/lib/roomflow.sh"    # room_open / room_slots_json, as gui_libs loads them
@@ -35,11 +36,15 @@ for scenario in no_cookie empty_cookie refused transport; do
     [ ! -e "$CONSOLE_JAR" ]
 done
 echo 'PASS HTTP/cookie rejection, including transport failure with HTTP 200'
-# Auth must return just a role, and must reject role lookup failure.
+# Auth must return the role, then the saved theme (#1499) -- nothing else --
+# and must reject role lookup failure. The mocked login answer carries no
+# theme, so the second line is "auto" (with or without jq).
 gui_role() { [ "$role_ok" = yes ] || return 1; GUI_ROLE='admin'; }
 scenario='good' role_ok='yes'
 printf 'operator\nsecret\n' | gui_auth > "$RUN_DIR/auth"
-[ "$(cat "$RUN_DIR/auth")" = admin ]
+[ "$(sed -n 1p "$RUN_DIR/auth")" = admin ] || { echo 'FAIL auth line 1 is not the role'; cat "$RUN_DIR/auth"; exit 1; }
+[ "$(sed -n 2p "$RUN_DIR/auth")" = auto ] || { echo 'FAIL auth line 2 is not the theme'; cat "$RUN_DIR/auth"; exit 1; }
+[ "$(wc -l < "$RUN_DIR/auth" | tr -d ' ')" = 2 ] || { echo 'FAIL auth printed more than role and theme'; cat "$RUN_DIR/auth"; exit 1; }
 role_ok=no
 if printf 'operator\nsecret\n' | gui_auth > "$RUN_DIR/auth"; then exit 1; fi
 [ ! -s "$RUN_DIR/auth" ] && [ ! -e "$CONSOLE_JAR" ]

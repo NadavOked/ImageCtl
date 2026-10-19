@@ -126,6 +126,7 @@ write_answers() {
             emit servers_addr ''; emit servers_mask ''; emit servers_gw ''; emit servers_dns ''
         fi
         emit hostname "$(field hostname)"
+        emit timezone "$(field timezone)"
         emit admin_user "$_wa_user"
         # Before the admin screen the password is legitimately empty; the engine's
         # own check ("admin_pass must not be empty") belongs to step 4+, not to
@@ -167,7 +168,7 @@ do_inventory() {
     for _d in "$SYSROOT"/sys/class/net/*; do _n=${_d##*/}; [ "$_n" = lo ] && continue
         [ -r "$DHCP_DIR/$_n" ] && grep -q '^state=lease$' "$DHCP_DIR/$_n" && { _di_if=$_n; break; }; done
     emit role "$_di_role"; emit primary_url ''; emit interface "$_di_if"; emit mode dhcp
-    emit hostname imagectl-server; emit admin_user admin; emit rerun 0
+    emit hostname imagesrv-server; emit timezone Asia/Jerusalem; emit admin_user admin; emit rerun 0
 }
 
 do_validate() {

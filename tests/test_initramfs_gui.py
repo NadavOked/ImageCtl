@@ -328,8 +328,14 @@ def run_native_pack(tmp_path: Path, fault: str = ""):
     block = block.replace("/usr/share/fonts/truetype/ibm-plex", bash_path(fonts))
     ldd_output = ("libmissing.so => not found" if fault == "library" else
                   f"libnative.so.1 => {bash_path(lib)} (0x123)\n\t{bash_path(loader)} (0x456)")
+    # 17/10: the builder renders the last-resort screen with the binary
+    # (--splash-raw PATH --size 640x240); the fake writes that many bytes,
+    # or too few on the "splash" fault.
+    splash_bytes = 10 if fault == "splash" else 640 * 240 * 4
     make_body = ("return 9" if fault == "make" else "return 0" if fault == "binary" else
-                 'printf "#!/bin/sh\\nexit 0\\n" > "$GUI_DIR/imagectl-station-gui"; '
+                 "printf '%s\\n' '#!/bin/sh' "
+                 f"'[ \"$1\" = --splash-raw ] && head -c {splash_bytes} /dev/zero > \"$2\"' 'exit 0' "
+                 '> "$GUI_DIR/imagectl-station-gui"; '
                  'chmod +x "$GUI_DIR/imagectl-station-gui"')
     script = f"""set -euo pipefail
 WITH_GUI=1
@@ -369,12 +375,15 @@ def test_native_pack_includes_binary_closure_fonts_and_placeholder(tmp_path):
     assert 'gui_main "$@"' in wrapper
     assert "exec /usr/bin/imagectl-station-gui\n" not in wrapper
     assert "--demo" not in wrapper
+    # 17/10: the last-resort screen, rendered by the binary at build time.
+    assert (root / "usr/share/imagectl/splash-640x240.raw").stat().st_size == 640 * 240 * 4
 
 
 @pytest.mark.parametrize("fault, message", [
     ("make", ""), ("binary", "native GUI binary missing"),
     ("library", "unresolved native GUI libraries"), ("font", "font face missing"),
     ("nice", "no nice binary packed"),
+    ("splash", "splash-640x240.raw is not 640x240 XRGB8888"),
 ])
 def test_native_pack_stops_on_build_or_missing_runtime_files(tmp_path, fault, message):
     done, root, *_ = run_native_pack(tmp_path, fault)

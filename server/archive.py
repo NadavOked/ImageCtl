@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .images import (
-    ImageLibrary, guarded_image_path, inside, streamed_partitions, valid_image_id,
+    ImageLibrary, guarded_image_path, inside, streamed_partitions,
 )
 
 log = logging.getLogger("imagectl.archive")
@@ -288,10 +288,9 @@ def _admit(staging: Path, names: list[str], images_root: Path,
         raise ArchiveError(f"מניפסט לא תקין: {_shown(problem)}")
     # המזהה שבמניפסט הוא שם התיקייה שהאימג' ייכנס אליה, והמניפסט הזה
     # הגיע מקובץ שמישהו העלה: `../evil` בשדה הזה הוא כתיבה אל מחוץ
-    # לספרייה (‏#110). מזהה שאינו בצורת המזהים הוא מניפסט לא תקין,
-    # והוא נדחה בשמו — לא מנוקה בשקט לצורה שכן תעבור.
-    if not valid_image_id(manifest["id"]):
-        raise ArchiveError(f"מזהה אימג' לא תקין במניפסט: {_shown(manifest['id'])}")
+    # לספרייה (‏#110). ‏`_validate` למעלה דוחה אותו בשמו — מזהה שאינו בצורת
+    # המזהים הוא מניפסט לא תקין, לא מנוקה בשקט לצורה שכן תעבור. בדיקה
+    # נוספת כאן לא יכלה לרוץ לעולם (‏#1620).
     _refuse_taken(manifest["id"], existing_ids)
 
     # קריאה טרייה, אחרי האימות: אימג' מאומת בעל אותו מזהה אינו נדחק

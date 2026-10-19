@@ -196,7 +196,10 @@ def test_the_capture_path_no_longer_bets_on_the_clock():
     # עליה — כלומר **נכשל על קוד תקין**. הוא `@native_tools`, ולכן
     # מדולג בווינדוס ולא רץ מעולם; נתפס בהרצה על מכונת הלינוקס
     # (#573/#588), בדיוק כמו התאום שלו ב-`test_final_report.py` (#587).
-    assert body.index("report_final") < body.index("finish_and_stop")
+    # ‏#1560: סוף הקליטה עבר ל-build_end_ask (task.sh) — השאלה ואחריה finish_and_stop.
+    assert body.index("report_final") < body.index("build_end_ask")
+    ask = cut_function("build_end_ask")
+    assert ask is not None and "finish_and_stop" in code_only(ask)
 
 
 @native_tools

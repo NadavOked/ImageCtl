@@ -110,6 +110,7 @@ class Snapshot:
     rollback_interface: str = ""
     rollback_seconds: int = 0
     pre_install: bool = False
+    system_updates: str = ""      # #1411: YYYY-MM-DD of the Debian packages; "" = not known
 
 
 def _command_text(result: CommandResult) -> str:
@@ -301,6 +302,23 @@ def _version(runner: Runner, repo_dir: Path,
     return str(manifest.get("imagectl_tag") or "unknown"), False
 
 
+def system_updates_date(data_dir: Path = DATA_DIR,
+                        manifest_file: Path = ISO_MANIFEST) -> str:
+    """#1411: the day of this server's Debian packages -- the security pool the
+    update button last installed (install/security-upgrade.sh), else the pool the
+    ISO carried.  "" = not known: a state file that exists and cannot be read is
+    not silently replaced by the older ISO date (principle 5)."""
+    for path, key in ((data_dir / "security-pool.json", "date"), (manifest_file, "pool_date")):
+        if not path.exists():
+            continue
+        try:
+            value = json.loads(path.read_text(encoding="utf-8")).get(key)
+        except (OSError, ValueError, AttributeError):
+            return ""
+        return value if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) else ""
+    return ""
+
+
 def is_pre_install(data_dir: Path = DATA_DIR,
                    status_file: Path = STATUS_FILE) -> bool:
     """The wizard status alone is insufficient once the real DB exists."""
@@ -401,16 +419,17 @@ def collect_snapshot(data_dir: Path = DATA_DIR, *, runner: Runner = run_argv,
         deploy_round=_round(conn), refreshed=current.strftime("%H:%M:%S"),
         rollback_interface=marker.interface if marker else "",
         rollback_seconds=seconds,
+        system_updates=system_updates_date(data_dir, manifest_file),
     )
 
 
 def demo_snapshot() -> Snapshot:
     return Snapshot(
-        hostname="imagectl-ta", version="v0.48.0",
+        hostname="imagesrv-ta", version="v0.48.0",
         console_url="https://10.44.9.12:8081", no_address=False,
         fingerprint=("3F:0A:9C:71:E2:5B:88:D4:16:AF:C3:09:7E:B2:44:D1:"
                      "6A:0F:93:C8:25:E7:1B:6C:D9:42:8F:A0:35:7D:1E:96"),
-        certificate_sans=("10.44.9.12", "imagectl-ta"),
+        certificate_sans=("10.44.9.12", "imagesrv-ta"),
         certificate_not_after="Sep 19 12:00:00 2036 GMT",
         management=NicInfo("ens18", "10.44.9.12/24", "dhcp", "up", "1000",
                            "52:54:00:aa:10:01", "Intel I219-LM"),

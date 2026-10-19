@@ -1,7 +1,7 @@
 # ImageCtl — אשף ההתקנה הראשונית (#910). יחידה זמנית: firstboot מפעיל אותה
 # בלי enable; בסיום מוצלח האשף משחרר את 8081 והקונסולה עולה במקומו.
 [Unit]
-Description=ImageCtl first-boot web wizard
+Description=ImageSrv first-boot web wizard
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=!/var/lib/imagectl/.firstboot-done

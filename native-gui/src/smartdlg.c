@@ -1,11 +1,14 @@
-/* 16/10 (Nadav): the SMART warning window. Writing to a disk with a SMART
- * warning is allowed, and so is reading from one (a failing disk is worth
+/* 16/10 (Nadav): the SMART warning window. Writing to an ORANGE disk is
+ * allowed, and so is reading from any warned one (a failing disk is worth
  * rescuing data from) -- but only after this window has shown the warning:
- * the disk by its number, its colour (orange: the BIOS stops on F1, CRC;
- * red: it failed the previous clone), why, the model and the serial. Two
+ * the disk by its number, its colour, why, the model and the serial. Two
  * buttons, no typed word (#1270): "דלג" -- the default, it has the focus,
  * Esc -- and the red "כתוב בכל זאת". Only the red button carries the action
  * out; the caller does that with the copy sdlg_handle hands back.
+ *
+ * #1732 (Nadav 18/10): a RED disk (SMART fail) is never written. Opened for a
+ * write onto one, the window says so and has one button, "סגור": there is
+ * no answer that writes (sdlg_handle never hands back go=1 for it).
  *
  * The pieces are the local clone's dialog (screens_local.c: lc_dialog_box,
  * lc_btn with its focus ring), so the window looks like the other dialogs
@@ -24,7 +27,9 @@ static void cpy(char *d, size_t n, const char *s) { snprintf(d, n, "%s", s ? s :
 static void reason_words(const char *verdict, const char *reason, char *out, size_t n) {
     if (!strcmp(verdict, "failed_last")) {
         snprintf(out, n, "%s", !strcmp(reason, "cable") ? "נכשל בשיכפול הקודם — סיבה: כבל/חריץ"
-                             : !strcmp(reason, "disk") ? "נכשל בשיכפול הקודם — סיבה: הדיסק" : "נכשל בשיכפול הקודם");
+                             : !strcmp(reason, "disk") ? "נכשל בשיכפול הקודם — סיבה: הדיסק"
+                             : !strcmp(reason, "readonly") ? "נכשל בשיכפול הקודם — סיבה: הדיסק במצב קריאה בלבד"   /* #1742 */
+                             : "נכשל בשיכפול הקודם");
         return;
     }
     const char *r = smart_reason_text(reason);
@@ -39,9 +44,16 @@ void sdlg_open(App *a, int kind, int ref, const char *dev, const char *label, co
     d->kind = kind; d->ref = ref; d->go = 0;
     d->level = smart_level(verdict ? verdict : "");
     if (d->level < 1) d->level = 1;                 /* opened only on a warning; never drawn green */
+    d->retry = verdict && !strcmp(verdict, "failed_last");
+    d->readonly = reason && !strcmp(reason, "readonly");   /* #1742: the refusal says why */
     cpy(d->dev, sizeof d->dev, dev); cpy(d->disk, sizeof d->disk, label);
     cpy(d->model, sizeof d->model, model); cpy(d->serial, sizeof d->serial, serial);
     reason_words(verdict ? verdict : "", reason ? reason : "", d->reason, sizeof d->reason);
+}
+
+/* #1732: a write onto a red disk (SMART fail) -- refused, not asked. */
+static int red_write(const SmartDlg *d) {
+    return d->level == 2 && (d->kind == SDLG_CLONER || d->kind == SDLG_RESTORE || d->kind == SDLG_LC_TARGET);
 }
 
 int sdlg_handle(App *a, const Event *e, SmartDlg *done) {
@@ -53,15 +65,15 @@ int sdlg_handle(App *a, const Event *e, SmartDlg *done) {
     if (e->type == UIEV_KEY) {
         if (e->key == KEYSYM_ESC) answer = 0;
         else if (e->key == KEYSYM_ENTER) answer = d->go;
-        else if (e->key == KEYSYM_TAB || e->key == KEYSYM_BACKTAB ||
-                 e->key == KEYSYM_LEFT || e->key == KEYSYM_RIGHT) d->go = !d->go;
+        else if ((e->key == KEYSYM_TAB || e->key == KEYSYM_BACKTAB ||
+                  e->key == KEYSYM_LEFT || e->key == KEYSYM_RIGHT) && !red_write(d)) d->go = !d->go;
     } else if (e->type == UIEV_CLICK) {
         int id = app_hit(a, e->x, e->y);
         if (id == HIT_SDLG_SKIP) answer = 0;
         else if (id == HIT_SDLG_GO) answer = 1;
     }
     if (answer >= 0) {
-        *done = *d; done->go = answer;
+        *done = *d; done->go = red_write(d) ? 0 : answer;   /* #1732: nothing writes on red */
         d->kind = SDLG_NONE;
     }
     return 1;
@@ -69,22 +81,26 @@ int sdlg_handle(App *a, const Event *e, SmartDlg *done) {
 
 /* ---- drawing ------------------------------------------------------------------- */
 
-static const char *title_fmt(int kind) {
-    if (kind == SDLG_LC_SOURCE) return "להעתיק מ%s למרות אזהרת ה-SMART?";
-    if (kind == SDLG_CAPTURE) return "לקלוט מ%s למרות אזהרת ה-SMART?";
+static const char *title_fmt(const SmartDlg *d) {
+    if (d->kind == SDLG_LC_SOURCE) return "להעתיק מ%s למרות אזהרת ה-SMART?";
+    if (d->kind == SDLG_CAPTURE) return "לקלוט מ%s למרות אזהרת ה-SMART?";
+    if (red_write(d)) return "לא כותבים על %s";
+    if (d->retry) return "לנסות שוב לכתוב על %s?";
     return "לכתוב על %s למרות אזהרת ה-SMART?";
 }
 
-static const char *lead_of(int kind) {
-    if (kind == SDLG_LC_SOURCE || kind == SDLG_CAPTURE)
+static const char *lead_of(const SmartDlg *d) {
+    if (d->kind == SDLG_LC_SOURCE || d->kind == SDLG_CAPTURE)
         return "הדיסק רק ייקרא — לא ייכתב עליו דבר. כדאי להציל ממנו נתונים כל עוד הוא קורא, אבל הקריאה עלולה להיכשל באמצע.";
+    if (red_write(d)) return red_refusal_he(d->readonly ? "readonly" : "");   /* #1742: by the reason */
+    if (d->retry) return "הכתיבה הקודמת על הדיסק הזה נכשלה. אם תיכשל שוב — זה יוצג מיד וירשם.";
     return "הדיסק עלול להיכשל בזמן הכתיבה או אחריה. \"דלג\" משאיר אותו כמו שהוא.";
 }
 
-static const char *go_label(int kind) {
-    if (kind == SDLG_LC_SOURCE) return "העתק ממנו בכל זאת";
-    if (kind == SDLG_CAPTURE) return "קלוט ממנו בכל זאת";
-    return "כתוב בכל זאת";
+static const char *go_label(const SmartDlg *d) {
+    if (d->kind == SDLG_LC_SOURCE) return "העתק ממנו בכל זאת";
+    if (d->kind == SDLG_CAPTURE) return "קלוט ממנו בכל זאת";
+    return d->retry ? "נסה שוב" : "כתוב בכל זאת";
 }
 
 #define SD_ROWS 5
@@ -98,8 +114,9 @@ void sdlg_draw(App *a, cairo_t *cr, double W, double H) {
 
     char disk_i[sizeof d->disk + 8], title[sizeof disk_i + 120], state[120];
     bidi_isolate(d->disk[0] ? d->disk : "הדיסק", disk_i, sizeof disk_i);
-    snprintf(title, sizeof title, title_fmt(d->kind), disk_i);
-    snprintf(state, sizeof state, "%s", d->level == 2 ? "אדום — נכשל בשיכפול הקודם" : "כתום — אזהרת SMART");
+    snprintf(title, sizeof title, title_fmt(d), disk_i);
+    snprintf(state, sizeof state, "%s", d->level == 2 ? "אדום — SMART תקול"
+             : d->retry ? "כתום — נכשל בשיכפול הקודם" : "כתום — אזהרת SMART");
     char model_i[100], serial_i[100];
     bidi_isolate(d->model[0] ? d->model : "לא דווח", model_i, sizeof model_i);
     bidi_isolate(d->serial[0] ? d->serial : "לא דווח", serial_i, sizeof serial_i);
@@ -108,7 +125,7 @@ void sdlg_draw(App *a, cairo_t *cr, double W, double H) {
 
     /* measure: the head, the lead, the rows, the buttons */
     Text h = text_make(cr, FONT_SANS, 20, 600, title, (int)(inner - 42), DIR_RTL);
-    Text l = text_make(cr, FONT_SANS, 14, 400, lead_of(d->kind), (int)(inner - 42), DIR_RTL);
+    Text l = text_make(cr, FONT_SANS, 14, 400, lead_of(d), (int)(inner - 42), DIR_RTL);
     Text k[SD_ROWS], v[SD_ROWS]; double rows_h = 0, row_h[SD_ROWS];
     for (int i = 0; i < SD_ROWS; i++) {
         k[i] = rtl_block_make(cr, 13, 500, keys[i], key_w);
@@ -142,9 +159,10 @@ void sdlg_draw(App *a, cairo_t *cr, double W, double H) {
     }
     y = det.y + det.h + 20;
 
-    /* the buttons, from the inline end: "דלג" (the default, Esc) then the red one */
+    /* the buttons, from the inline end: "דלג" (the default, Esc) then the red one;
+     * #1732: on a write onto a red disk, "סגור" alone */
     double x = right;
-    x -= lc_btn(a, cr, x, y, bh, "דלג", "Esc", BTN_PLAIN, HIT_SDLG_SKIP, !d->go) + 10;
-    lc_btn(a, cr, x, y, bh, go_label(d->kind), NULL, BTN_DANGER, HIT_SDLG_GO, d->go);
+    x -= lc_btn(a, cr, x, y, bh, red_write(d) ? "סגור" : "דלג", "Esc", BTN_PLAIN, HIT_SDLG_SKIP, !d->go) + 10;
+    if (!red_write(d)) lc_btn(a, cr, x, y, bh, go_label(d), NULL, BTN_DANGER, HIT_SDLG_GO, d->go);
     text_free(&h); text_free(&l);
 }

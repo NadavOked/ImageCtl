@@ -15,6 +15,9 @@
 
 from __future__ import annotations
 
+import os
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -31,7 +34,7 @@ except ImportError:   # בקרה שלילית: בלי המודול הטסטים 
     RESTARTED_SESSION = RESTARTED_TASK = "השרת עלה מחדש"
 
 
-def _boot(tmp_path: Path, monkeypatch, *, seed: bool):
+def _boot(tmp_path: Path, monkeypatch, *, seed: bool, **runtime_options):
     """שרת על `tmp_path/data`. ‏`seed=True` בפעם הראשונה: משתמשים ומכונות."""
     from server import sender as sender_module, users
     from server.app import create_app
@@ -43,7 +46,7 @@ def _boot(tmp_path: Path, monkeypatch, *, seed: bool):
         write_image(images, MANIFEST_256)
     app = create_app(tmp_path / "data", images, "http://10.44.12.10:8080",
                      now_fn=Clock(), sender_runner=Recorder(block=True),
-                     wol_send=lambda frame: None)
+                     wol_send=lambda frame: None, **runtime_options)
     ctx = app.state.ctx
     if seed:
         users.create(ctx.conn, "noc", "admin-pass-123", "admin", by="test",
@@ -73,8 +76,7 @@ def _running_wave(first) -> str:
         "target_slots": [{"mac": CLONER1, "ports": [1, 2]},
                          {"mac": CLONER2, "ports": [1, 2]}]}).status_code == 200
     cloner_hello(anon, CLONER1, ["S1", "S2"])
-    cloner_hello(anon, CLONER2, ["S3", "S4"])
-    assert admin.post("/api/console/room/start").status_code == 200
+    cloner_hello(anon, CLONER2, ["S3", "S4"])   # #1703: covers the target -- the wave starts here
     wave = first["ctx"].conn.execute("SELECT wave_session_id FROM room_rounds").fetchone()[0]
     assert first["ctx"].conn.execute(
         "SELECT state FROM sessions WHERE id = ?", (wave,)).fetchone()["state"] == "running"
@@ -132,7 +134,9 @@ def test_the_room_round_survives_and_the_next_pulse_opens_a_fresh_wave(tmp_path,
     second = _boot(tmp_path, monkeypatch, seed=False)
     view = room(second["admin"])
     assert view["round"] is not None and view["round"]["wave_state"] == "closed"
-    cloner_hello(second["anon"], CLONER1, ["S1", "S2"])          # דופק
+    # דופק לא-מצטרף: ‏hello מצטרף של מכונה 1 גם היה מצרף אותה לגל החדש
+    # ומוציא אותו לדרך באותה תשובה (#1703) — כאן נבדק רק שהגל נפתח.
+    cloner_hello(second["anon"], CLONER1, ["S1", "S2"], joining=False)   # דופק
     view = room(second["admin"])
     assert view["round"]["written_drives"] == 2, "מה שמכונה 2 כתבה נספר, לא אבד"
     assert view["round"]["wave_state"] == "open"
@@ -140,6 +144,55 @@ def test_the_room_round_survives_and_the_next_pulse_opens_a_fresh_wave(tmp_path,
     assert second["ctx"].conn.execute(
         "SELECT wave_session_id FROM room_rounds").fetchone()[0] != wave
     second["ctx"].sender.stop()
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="TZ/tzset is POSIX-only")
+def test_startup_timezone_reconcile_and_next_wave_store_real_utc(tmp_path, monkeypatch):
+    """#1771: startup applies Asia/Jerusalem, orphans the old wave, then
+    opens its replacement; every persisted ISO value remains real UTC."""
+    first = _boot(tmp_path, monkeypatch, seed=True)
+    old_wave = _running_wave(first)
+    first["ctx"].sender.stop()
+    journal_cut = first["ctx"].conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM journal").fetchone()[0]
+
+    current_zone = "Etc/UTC"
+
+    def read_zone():
+        return current_zone
+
+    def set_zone(zone):
+        nonlocal current_zone
+        current_zone = zone
+        os.environ["TZ"] = zone
+        time.tzset()
+        return None
+
+    before = datetime.now(timezone.utc)
+    try:
+        second = _boot(
+            tmp_path, monkeypatch, seed=False, apply_timezone=True,
+            host_hooks={"timezone": read_zone, "set_timezone": set_zone},
+        )
+        cloner_hello(second["anon"], CLONER1, ["S1", "S2"], joining=False)
+        rows = second["ctx"].conn.execute(
+            "SELECT ts FROM journal WHERE event IN"
+            " ('timezone_applied', 'session_orphaned', 'room_wave_lost', 'session_open')"
+            " AND rowid > ?", (journal_cut,)).fetchall()
+        new_wave = second["ctx"].conn.execute(
+            "SELECT created_at FROM sessions WHERE id != ? ORDER BY rowid DESC LIMIT 1",
+            (old_wave,),
+        ).fetchone()
+        stamps = [datetime.fromisoformat(row["ts"]) for row in rows]
+        stamps.append(datetime.fromisoformat(new_wave["created_at"]))
+        after = datetime.now(timezone.utc)
+        assert stamps, "startup did not write the events under test"
+        assert all(stamp.utcoffset().total_seconds() == 0 for stamp in stamps)
+        assert all(before - timedelta(seconds=2) <= stamp <= after
+                   for stamp in stamps), stamps
+        second["ctx"].sender.stop()
+    finally:
+        monkeypatch.undo()
+        time.tzset()
 
 
 def test_an_open_session_waiting_for_joiners_is_not_touched(tmp_path, monkeypatch):

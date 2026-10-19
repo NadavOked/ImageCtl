@@ -7,11 +7,14 @@
 #
 # מה שהוא עושה, בסדר הזה, ולמה בסדר הזה (‏#1131 ס' 5–6):
 #   0. סבב פתוח/רץ = לא משדרגים (גם כשמופעל ידנית, לא רק מהקונסולה).
-#   1. התג הקודם — מה ש-update.py שמר (update_previous) — הוא יעד החזרה.
+#   1. יעד החזרה — הקומיט שהעץ עליו לפני הריצה (‏#1546); השם מ-update_previous
+#      רק כשהוא מצביע עליו.
 #   2. fetch, אימות חתימת התג (#1277), checkout — מחוץ לארגז החול של שרת ה-web.
 #   3. יחידות systemd — קודם, כדי ש-daemon-reload יראה כל שינוי בהן.
+#   3א. ‏#1411: עדכוני האבטחה של Debian מהמאגר שבגרסה החתומה בלבד
+#      (install/security-upgrade.sh) — שלב `packages`; כשל = חזרה לתג הקודם.
 #   4. initrd (#1230) — tools/boot-payload-build.sh לפי הדגלים השמורים, מול
-#      הקרנל שנגזר עכשיו. בלי דגלים ובלי ראיה שזה שרת ISO — חזרה, לא דילוג.
+#      הקרנל שנגזר עכשיו. בלי דגלים — ברירת המחדל המתועדת (‏#1546), לא דילוג.
 #   5. restart, ואז **ראיה חיובית** שהחדש רץ: is-active + `/health/live`
 #      שמדווח בדיוק את התג + verify-boot-payload.sh.
 #   5ב. ‏#1361: restart למסך השרת (imagectl-dcui) — אחרי האימות; כשל = אזהרה.
@@ -29,7 +32,7 @@
 # "אומת — אבל …". המנוע עצמו מסרב בשם (missing_tool/vm_user) עד שזה יתוקן.
 #
 # משתני סביבה (לבדיקות — בייצור ברירות המחדל): IMAGECTL_DATA_DIR,
-# IMAGECTL_UNIT_DIR, IMAGECTL_INITRD_FLAGS, IMAGECTL_ISO_MANIFEST,
+# IMAGECTL_UNIT_DIR, IMAGECTL_JOURNALD_DIR, IMAGECTL_INITRD_FLAGS, IMAGECTL_ISO_MANIFEST,
 # IMAGECTL_HTTP_ROOT, IMAGECTL_UPGRADE_LOG, IMAGECTL_CONSOLE_URL,
 # IMAGECTL_LIVE_WAIT.
 set -euo pipefail
@@ -42,6 +45,7 @@ REPO_DIR=$2
 DATA_DIR="${IMAGECTL_DATA_DIR:-/var/lib/imagectl}"
 DB="$DATA_DIR/imagectl.db"
 UNIT_DIR="${IMAGECTL_UNIT_DIR:-/etc/systemd/system}"
+JOURNALD_DIR="${IMAGECTL_JOURNALD_DIR:-/etc/systemd/journald.conf.d}"
 FLAGS_FILE="${IMAGECTL_INITRD_FLAGS:-/etc/imagectl/initrd.flags}"
 ISO_MANIFEST="${IMAGECTL_ISO_MANIFEST:-/etc/imagectl/iso-release.json}"
 HTTP_ROOT="${IMAGECTL_HTTP_ROOT:-/srv/imagectl/boot}"
@@ -144,7 +148,23 @@ from server import update
 print(get_setting(connect(db), update.PREVIOUS_KEY) or "")
 PYEOF
 )" || die "קריאת התג הקודם מה-DB נכשלה"
-[[ -n "$PREV" ]] || echo "אין תג קודם שמור (update_previous) — בכשל לא תהיה חזרה אוטומטית"
+# ‏#1546: יעד החזרה הוא מה שהעץ עליו **עכשיו** — לא רק מה שב-DB. בהרצה ידנית
+# ‏update_previous ריק (שרת חיפה, 17/10: כשל בלי checkout ובלי restart), ואחרי
+# עדכון קודם הוא נשאר על התג שלפני **אותו** עדכון. השם מה-DB נשמר רק כשהוא
+# מצביע על אותו קומיט. בלי HEAD קריא — לא משדרגים: אין לאן לחזור.
+if ! PRE_HEAD="$(git rev-parse HEAD 2>&1)" || [[ -z "$PRE_HEAD" ]]; then
+    why="git rev-parse HEAD נכשל לפני השדרוג (${PRE_HEAD:-בלי פלט}) — אין יעד חזרה, לא משדרגים"
+    set_status failed "$why" install "$why"
+    die "$why"
+fi
+if [[ -z "$PREV" ]]; then
+    echo "אין תג קודם שמור (update_previous) — יעד החזרה הוא הקומיט הנוכחי $PRE_HEAD"
+    PREV="$PRE_HEAD"
+# ‏`|| true`: תג שלא נפתר אינו ראיה שזה אותו קומיט — ולכן יעד החזרה הוא HEAD.
+elif [[ "$(git rev-parse --verify -q "$PREV^{commit}" || true)" != "$PRE_HEAD" ]]; then
+    echo "update_previous ($PREV) אינו מה שהעץ עליו — יעד החזרה הוא הקומיט הנוכחי $PRE_HEAD"
+    PREV="$PRE_HEAD"
+fi
 
 # 2. רק היחידה המנותקת רשאית לכתוב לעץ. כשל git נכתב לסטטוס כלשונו,
 # ולפני שנגענו ביחידות, ב-initrd או בשירות הרץ.
@@ -233,10 +253,6 @@ rollback() {   # rollback <סיבה> [<סוג>]
     local why="$1" cause="${2:-install}"
     trap - ERR
     echo "--- $(date -Is) upgrade to $TAG FAILED: $why ---"
-    if [[ -z "$PREV" ]]; then
-        set_status failed "$why · אין תג קודם שמור — לא הוחזר" "$cause" "$why"
-        die "$why (אין תג קודם — לא הוחזר)"
-    fi
     echo "מחזיר ל-$PREV"
     if git checkout --detach "$PREV"; then
         # המטען חוזר לפני ה-restart: השרת הישן עולה כבר מול ה-initrd שלו.
@@ -272,6 +288,26 @@ target=$(git rev-list -n 1 "$TAG" 2>&1) || rollback "git rev-list נכשל עב�
 install -m 0644 install/*.service "$UNIT_DIR/" || rollback "התקנת יחידות systemd ל-$UNIT_DIR נכשלה"
 systemctl daemon-reload || rollback "systemctl daemon-reload נכשל"
 
+# 3א. ‏#1411: עדכוני האבטחה של Debian — רק מהמאגר שהגרסה החתומה נושאת
+# (install/security-upgrade.sh; הגיבוב שלו בעץ התג, שאומת למעלה). לפני בניית
+# ה-initrd, כדי שקרנל חדש מהמאגר ייכנס כבר לקבצי האתחול של המחשבים. כשל = חזרה
+# לתג הקודם, כמו כל כשל התקנה. חבילות שכבר הותקנו אינן מוחזרות (apt אינו מוריד
+# גרסה בבטחה) — הסיבה בסטטוס אומרת מה קרה. גרסה בלי הסקריפט = גרסה בלי היכולת.
+SEC_UP="install/security-upgrade.sh"
+if [[ -f "$SEC_UP" ]]; then
+    stage packages
+    sec_out="$(bash "$SEC_UP" "$TAG" "$REPO_DIR" 2>&1)" \
+        || { echo "$sec_out"; rollback "$(printf '%s\n' "$sec_out" | tail -n 1)"; }
+    echo "$sec_out"
+    sec_warn="$(sed -n 's/^אזהרה: //p' <<<"$sec_out" | tail -n 1)"
+    if [[ -n "$sec_warn" ]]; then
+        UPGRADE_WARNING="${UPGRADE_WARNING:+$UPGRADE_WARNING · }$sec_warn"
+        set_status running
+    fi
+else
+    echo "$SEC_UP אינו בתג $TAG — גרסה בלי עדכוני מערכת"
+fi
+
 # 3ב. ‏#1334 — עדכון ב-VM. גרסה בלי הסקריפט = גרסה בלי היכולת (חזרה לתג ישן),
 # לא כשל. ה-`if` מנטרל את ה-trap של ERR: הכשל כאן נרשם, לא מחזיר אחורה.
 VMU_HOST="install/vmupdate-host.sh"
@@ -290,21 +326,42 @@ else
     echo "$VMU_HOST אינו בתג $TAG — גרסה בלי עדכון ב-VM"
 fi
 
+# 3ג. ‏#1737: תקרה ליומן המערכת — גם לשרת שהותקן לפניה. גרסה בלי הקובץ = בלי
+# היכולת. כשל אינו מחזיר את הקוד אחורה (השרת עובד גם בלעדיה), אבל נאמר בסטטוס.
+JOURNALD_CONF="install/journald-imagectl.conf"
+if [[ -f "$JOURNALD_CONF" ]]; then
+    if jd_out="$(install -D -m 0644 "$JOURNALD_CONF" "$JOURNALD_DIR/90-imagectl.conf" 2>&1 \
+            && systemctl restart systemd-journald 2>&1)"; then
+        echo "תקרת היומן: $JOURNALD_DIR/90-imagectl.conf"
+    else
+        jd_why="תקרת היומן (journald) לא הוחלה: $(printf '%s\n' "${jd_out:-אין פלט}" | tail -n 1)"
+        echo "server-upgrade: $jd_why"
+        UPGRADE_WARNING="${UPGRADE_WARNING:+$UPGRADE_WARNING · }$jd_why"
+        set_status running
+    fi
+else
+    echo "$JOURNALD_CONF אינו בתג $TAG — גרסה בלי תקרת יומן"
+fi
+
 # ‏#1230: "העדכון עבר והמכונות על initrd ישן" אסור — סוכן ישן מול שרת חדש.
 # הבנייה היא tools/boot-payload-build.sh, אותו קוד של firstboot: הקרנל וה-
 # epoch נגזרים עכשיו (לא מהקובץ), ו-vmlinuz של הקרנל הזה מועתק. שלושה מצבים:
 #   * ‏$FLAGS_FILE קיים — הבניות שנרשמו בהתקנה (תפקיד + --output בלבד).
 #   * חסר, בשרת שהותקן מה-ISO (יש $ISO_MANIFEST) — firstboot של לפני #1230
 #     בנה בדיוק את ברירת המחדל של ה-ISO ולא רשם אותה. בונים אותה ורושמים.
-#   * חסר, ואין ראיה איך השרת נבנה — לא מנחשים דגלים (עיקרון 5): חזרה
-#     לתג הקודם, בשם. מי שבנה ידנית כותב את הקובץ ומנסה שוב.
+#   * חסר, בשרת שהותקן ב-setup-boot-server.sh (‏#1546, שרת חיפה) — ברירת המחדל
+#     **המתועדת** (docs/server-install.md, ‏install/verify-boot-payload.sh):
+#     ‏initrd.img + initrd.img.gui ב-$HTTP_ROOT — אותן שורות. זה לא ניחוש
+#     דגלים: אלה הקבצים שהשרת מגיש. בנייה שנכשלת חוזרת לתג הקודם, בשם.
 if [[ -e "$FLAGS_FILE" ]]; then
     payload_args=(--flags-file "$FLAGS_FILE")
-elif [[ -e "$ISO_MANIFEST" ]]; then
-    echo "$FLAGS_FILE חסר בשרת מה-ISO — בונה את ברירת המחדל של ה-ISO ורושם אותה"
-    payload_args=(--iso-default --write-flags "$FLAGS_FILE")
 else
-    rollback "$FLAGS_FILE חסר ואין $ISO_MANIFEST — לא ידוע אילו initrd לבנות, והמכונות היו נשארות על initrd ישן"
+    if [[ -e "$ISO_MANIFEST" ]]; then
+        echo "$FLAGS_FILE חסר בשרת מה-ISO — בונה את ברירת המחדל של ה-ISO ורושם אותה"
+    else
+        echo "$FLAGS_FILE חסר ואין $ISO_MANIFEST — בונה את ברירת המחדל המתועדת (initrd.img + initrd.img.gui ב-$HTTP_ROOT) ורושם אותה"
+    fi
+    payload_args=(--iso-default --write-flags "$FLAGS_FILE")
 fi
 # ‏#1463: שלב משלו — הבנייה היא ~90% מהעדכון (498 ש' בשרת המעבדה, 16/10), ומסך העדכון
 # נותן לו תקרה משלו. בלי זה `install` היה 8:43 מול תקרה של 10 דקות בלי מעבר שלב.

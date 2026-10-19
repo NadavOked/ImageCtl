@@ -431,7 +431,14 @@ LC_LAYOUT = {
     "brd": "kernel/drivers/block",
 }
 
-LAYOUT = {**PLATFORM_LAYOUT, **FS_LAYOUT, **LC_LAYOUT}
+#: #1596: fanout's SHA-256 through AF_ALG, on the kernel's SSSE3/AVX code.
+SHA_LAYOUT = {
+    "af_alg": "kernel/crypto",
+    "algif_hash": "kernel/crypto",
+    "sha256-ssse3": "kernel/arch/x86/crypto",
+}
+
+LAYOUT = {**PLATFORM_LAYOUT, **FS_LAYOUT, **LC_LAYOUT, **SHA_LAYOUT}
 
 
 def declared(array: str) -> list[str]:
@@ -750,6 +757,9 @@ def run_init_block(tmp_path: Path, modules: list[str], required: list[str],
     (moddir / "modules.required").write_text(
         "\n".join(required) + "\n", encoding="utf-8", newline="\n")
     block = init_module_block().replace("/etc/imagectl", moddir.as_posix())
+    # #1702: the loop lives in lib/initmods.sh; no split files here, so it
+    # runs the whole list in order, as before.
+    block = block.replace("/usr/lib/imagectl", (INIT.parent / "lib").as_posix())
     block = block.replace(
         'cat /sys/class/dmi/id/sys_vendor /sys/class/dmi/id/product_name 2>/dev/null',
         f'printf %s {dmi!r}').replace(
@@ -762,7 +772,7 @@ def run_init_block(tmp_path: Path, modules: list[str], required: list[str],
     # בלעדיו, ריצה שבה רק מודול רשות נכשל הייתה יוצאת 1 על `[ -n "" ]`.
     run_dir = tmp_path / "run"; run_dir.mkdir()
     script = (f'FAIL="{" ".join(fail)}"\nRUN_DIR={run_dir.as_posix()!r}\n'
-              + stub + block + "\n:\n")
+              + 'fail() { echo "FAIL: $1"; exit 3; }\n' + stub + block + "\n:\n")
     done = subprocess.run(["sh", "-c", script], stdin=subprocess.DEVNULL,
                           capture_output=True, encoding="utf-8", errors="replace",
                           timeout=30)

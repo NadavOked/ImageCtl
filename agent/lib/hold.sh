@@ -50,9 +50,25 @@ hold_unheard() {
         "${3:-the work finished but the server never confirmed it}" hold_beat
 }
 
+hold_new_task() {
+    # #1575 (metal 17/10): a build machine whose capture or direct send failed
+    # held here for ever, and the task its own GUI ordered next ("קליטה
+    # נוספת", tsk_d58c) stayed pending -- the beat threw the answer away. Its
+    # source disk was only read: nothing is broken to guard. HOLD_YIELD_TASK =
+    # the failed task (set by those two callers only); a hello answer (the
+    # beat's, attended.resp) with ANOTHER task ends the hold, and the main
+    # loop's next hello takes it. 0 = yield. Same task, no task: hold.
+    [ -n "${HOLD_YIELD_TASK:-}" ] || return 1
+    _hy=$(json_get "$RUN_DIR/attended.resp" ".task.id" 2>/dev/null)
+    case "$_hy" in ""|null|"$HOLD_YIELD_TASK") return 1 ;; esac
+    log "hold ended: the server gave a new task ($_hy) after $HOLD_YIELD_TASK failed"
+    HOLD_YIELD_TASK=""; HOLD_PROMPT=""
+}
+
 hold_watch() {
     # $1 = the heartbeat command, or "" for a hold whose caller deliberately
-    # left its progress loop running instead. Never returns.
+    # left its progress loop running instead. Returns only through
+    # hold_new_task (#1575); every other hold never returns.
     #
     # Until #109 the beat ran as `"$2" > /dev/null 2>&1 || true` -- stdout,
     # stderr and the exit code thrown away in one line. That is the shape rule
@@ -86,6 +102,7 @@ hold_watch() {
         if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi
         if [ -n "${1:-}" ]; then
             if "$1" > "$_beat_out" 2>&1; then
+                hold_new_task && return 0   # #1575: the one way out
                 if [ "$_beat_fails" -gt 0 ]; then
                     log "the server is answering again" \
                         "(after $_beat_fails missed heartbeats)"

@@ -246,7 +246,8 @@ void screen_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
     Text note = sub_make(cr,"אל תכבו את המחשב. אפשר לעקוב גם מהקונסולה.",inner);
     pango_layout_set_alignment(note.layout, PANGO_ALIGN_RIGHT);       /* ui-audit: same edge as the title above it */
     double mh = metric_height(cr), mw = (inner - 2*N_METRIC_GAP) / 3;
-    double body_h = top_h + N_ACTION_TOP + N_BAR_H + unknown_h + N_METRIC_GAP + mh + N_ACTION_TOP + note.h;   /* card_frame adds the bottom N_PAD */
+    double body_h = top_h + N_ACTION_TOP + N_BAR_H + unknown_h + N_METRIC_GAP + mh + N_ACTION_TOP + note.h
+                  + (s->can_cancel ? N_ACTION_TOP + N_BUTTON_H : 0);   /* #1561: "ביטול השחזור" under the note */   /* card_frame adds the bottom N_PAD */
 
     Head hd = { {NULL,0,0}, {NULL,0,0}, N_PAD, 0 };     /* the head is the progress-top itself */
     Rect body,foot;
@@ -281,6 +282,12 @@ void screen_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
            draw_metric(cr,t,(Rect){x,y,mw,mh},"מחיצה",part); }
     y += mh+N_ACTION_TOP;
     text_draw(cr,&note,x,y,t->muted);
+    if (s->can_cancel) {   /* #1561: "שחזור לדיסק הזה" can still be stopped -- it asks first (#1270) */
+        Text cb = btn_label(cr, "ביטול השחזור");
+        double cw2 = btn_width(&cb);
+        draw_btn(a, cr, (Rect){ xr - cw2, y + note.h + N_ACTION_TOP, cw2, N_BUTTON_H }, &cb, BTN_PLAIN, HIT_RESTORE_CANCEL);
+        text_free(&cb);
+    }
     body_clip_end(a,cr);card_end(a,cr);
     text_free(&tp);text_free(&un);text_free(&cap);text_free(&lb);text_free(&ti);text_free(&su);text_free(&note);text_free(&unknown);
 }

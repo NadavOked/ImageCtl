@@ -1,9 +1,11 @@
 """הגשת קבצי האתחול של הסוכן — הפער שמעבדת ה-VM חשפה (issue #12).
 
 המתקין מניח vmlinuz ו-initrd.img ב-HTTP_ROOT והתפריט מפנה אליהם;
-השרת חייב (א) להגיש אותם תחת ‎/boot, ו-(ב) לסגור את החיבור אחרי כל
-תשובת ‎/boot — GRUB לא מזהה content-length באותיות קטנות של uvicorn,
-וקריאה-עד-EOF על חיבור פתוח נתקעת עד timeout.
+השרת חייב להגיש אותם תחת ‎/boot, עם Content-Length באותיות גדולות — GRUB
+לא מזהה content-length באותיות קטנות של uvicorn, וקריאה-עד-EOF על חיבור
+פתוח נתקעת עד timeout. ‏**השרת אינו סוגר את החיבור ראשון** (#1423): GRUB
+יודע איפה הקובץ נגמר לפי Content-Length וסוגר בעצמו, ו-TIME_WAIT בצד
+השרת היה מה שתקע אתחול חוזר מהיר.
 """
 
 import pytest
@@ -31,7 +33,8 @@ def test_boot_files_are_served(tmp_path):
     response = client.get("/boot/vmlinuz")
     assert response.status_code == 200
     assert response.content == b"fake-kernel"
-    assert response.headers["connection"] == "close"
+    assert response.headers["Content-Length"] == str(len(response.content))
+    assert "connection" not in response.headers
 
 
 def test_boot_menu_still_wins_over_the_mount(tmp_path):
@@ -39,7 +42,10 @@ def test_boot_menu_still_wins_over_the_mount(tmp_path):
     response = client.get("/boot/menu?mac=aa:bb:cc:dd:ee:ff")
     assert response.status_code == 200
     assert b"chain_local" in response.content
-    assert response.headers["connection"] == "close"
+    # ‏Content-Length, לא chunked: ‏GRUB של EFI עם TPM דוחה קובץ שגודלו לא
+    # ידוע ב-open (#1518, ‏tests/test_boot_size_known_at_open_1518.py).
+    assert response.headers["Content-Length"] == str(len(response.content))
+    assert "connection" not in response.headers
 
 
 def test_missing_boot_dir_is_not_fatal(tmp_path):

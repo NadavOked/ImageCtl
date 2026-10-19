@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import room, update
@@ -20,6 +20,11 @@ MARKER = "scheduled-reboot"
 CHECK_SECONDS = 60.0
 RETRY_MINUTES = 10
 GIVE_UP_MINUTES = 120
+#: ‏#1642: ``update_status`` שנשאר "רץ" בלי חותמת התקדמות חדשה כל כך הרבה זמן אינו
+#: עדכון שרץ. ‏``server-upgrade.sh`` מחתים כל מעבר שלב (fetch/verify/install/
+#: payload/restart), והמתנת ה-/health/live שלו היא 90 שניות. השעה **נבחרה, לא
+#: נמדדה**: רחוק מעל שלב בודד, וקצר מהניסיון הבא של "כל יום".
+STALE_UPDATE_MINUTES = 60
 
 
 def parse_time(value) -> tuple[int, int] | None:
@@ -68,7 +73,31 @@ def next_occurrence(mode: str, at: str, weekday: int, now: datetime) -> datetime
     return candidate if candidate > now else candidate + timedelta(days=7)
 
 
-def busy_reason(rt) -> str | None:
+def update_verdict(rt, now: datetime | None = None) -> tuple[bool, str | None]:
+    """‏(עסוק, הערה) לגבי ``update_status``. קורא בלבד (‏#1642).
+
+    ``running`` אינו בהכרח עדכון חי: הוא נשאר ב-DB גם כשהשרת כבר רץ על התג
+    שלו. עסוק רק כשיש ראיה שהעדכון אולי עדיין רץ — גרסה אחרת (או שלא נקראה)
+    ו**חותמת התקדמות טרייה**. ‏"הגרסה הרצה היא התג" נקבע ב-``update.running_verdict``,
+    אותה פונקציה שהקונסולה משתמשת בה. חותמת שאינה זמן תקין = לא ידוע = עסוק.
+    ההערה (אם יש) היא מה שהתעלמנו ממנו, והיא נרשמת ביומן כשההפעלה מחדש יוצאת."""
+    doc = update.get_status(rt.conn) or {}
+    if doc.get("state") != "running":
+        return False, None
+    repo_dir = getattr(rt, "repo_dir", None) or Path(__file__).resolve().parents[1]
+    hooks = {**update.default_hooks(), **(getattr(rt, "update_hooks", None) or {})}
+    current = update.current_version(hooks, repo_dir)
+    tag = doc.get("tag") or "ללא תג"
+    if update.running_verdict(doc, current):
+        return False, f"סטטוס עדכון {tag} נשאר 'רץ' אבל השרת כבר על הגרסה הזו"
+    seen = update.last_progress(doc)
+    if seen is not None and (now or datetime.now(timezone.utc)) - seen > timedelta(minutes=STALE_UPDATE_MINUTES):
+        return False, (f"סטטוס עדכון {tag} 'רץ' בלי התקדמות מאז {seen.isoformat(timespec='seconds')}"
+                       f" (מעל {STALE_UPDATE_MINUTES} דקות); הגרסה הרצה: {current or 'לא ידועה'}")
+    return True, None
+
+
+def busy_reason(rt, now: datetime | None = None) -> str | None:
     conn = rt.conn
     if conn.execute("SELECT 1 FROM sessions WHERE state IN ('open','running') LIMIT 1").fetchone():
         return "יש סבב הפצה פתוח או רץ"
@@ -76,7 +105,7 @@ def busy_reason(rt) -> str | None:
         return "יש סבב חדר פתוח או רץ"
     if conn.execute("SELECT 1 FROM tasks WHERE type = 'capture' AND state = 'running' LIMIT 1").fetchone():
         return "קליטת אימג' רצה"
-    if (update.get_status(conn) or {}).get("state") == "running":
+    if update_verdict(rt, now)[0]:
         return "עדכון שרת רץ"
     vm = getattr(rt, "vmupdate", None)
     if vm is not None:
@@ -137,6 +166,9 @@ class Scheduler:
             journal(self.rt.conn, "auto_reboot", f"נדחה — {reason}")
             self.retry_at = current + timedelta(minutes=RETRY_MINUTES)
             return "deferred"
+        ignored = update_verdict(self.rt)[1]
+        if ignored:
+            journal(self.rt.conn, "auto_reboot", f"התעלמות — {ignored}")
         self.reboot()
         (Path(self.rt.data_dir) / MARKER).write_text(current.isoformat(), encoding="ascii")
         journal(self.rt.conn, "auto_reboot", "בוצע — הפעלה מחדש לפי לוח הזמנים")

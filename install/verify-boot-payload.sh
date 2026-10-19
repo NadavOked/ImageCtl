@@ -27,7 +27,7 @@ APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
     cat <<'EOF'
-ImageCtl — בדיקה שהשרת מגיש את הקרנל ואת ה-initrd.
+ImageSrv — בדיקה שהשרת מגיש את הקרנל ואת ה-initrd.
 
   sudo bash install/verify-boot-payload.sh --server-url http://<כתובת>:8080
 
@@ -161,7 +161,7 @@ cat >&2 <<EOF
 
 תפריט ה-GRUB מפנה כל תחנה שיש לה משימה אל /boot/vmlinuz ו-/boot/initrd.img.
 המתקין אינו בונה אותם — זהו שלב נפרד, ובלעדיו השרת עולה, הקונסולה עובדת,
-ואף מחשב לא מגיע ל-ImageCtl. מסך הבריאות אומר את אותו הדבר, בשורה
+ואף מחשב לא מגיע ל-ImageSrv. מסך הבריאות אומר את אותו הדבר, בשורה
 "קבצי האתחול".
 
 מה עושים (docs/server-install.md, "שלב שני, חובה: הקרנל וה-initrd"):

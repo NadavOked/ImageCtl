@@ -46,9 +46,11 @@ def _state(app) -> dict:
 
 
 @pytest.mark.parametrize("make", [create_agent_app])
-def test_state_carries_the_server_name_and_version(tmp_path, images_root, make):
+def test_state_carries_the_server_name_and_version(tmp_path, images_root, make, monkeypatch):
     rt = _runtime(tmp_path, images_root, lambda _repo: "v0.59.2")
-    set_setting(rt.ctx.conn, "server_name", "TA")
+    # נדב 17/10: שם אחד — שם המארח. הגדרה ישנה `server_name` במסד אינה נקראת עוד, והשם יציב.
+    monkeypatch.setattr(socket, "gethostname", lambda: "TA")
+    set_setting(rt.ctx.conn, "server_name", "stale-display-name")
     body = _state(make(rt))
     assert body["server_name"] == "TA"
     assert body["server_version"] == "v0.59.2"

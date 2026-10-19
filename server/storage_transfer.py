@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import shutil
 import threading
 import uuid
@@ -32,7 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from . import interserver_auth, storage_client, storage_nodes, transfer_cap
+from . import disk_reserve, interserver_auth, storage_client, storage_nodes, transfer_cap
 from .db import _write_lock, journal, now_iso, writing
 
 log = logging.getLogger("imagectl.storage_transfer")
@@ -88,7 +89,7 @@ def list_transfers(conn, user: tuple[str, str], *,
     rows = conn.execute(
         "SELECT t.id, t.node_id, n.label AS node_label, t.image_id, t.image_name,"
         " t.state, t.bytes_sent, t.bytes_total, t.error, t.started_by,"
-        " t.created_at, t.updated_at, t.direction"
+        " t.created_at, t.updated_at, t.direction, t.location_id"
         " FROM storage_transfers t JOIN storage_nodes n ON n.id = t.node_id"
         " ORDER BY t.created_at DESC, t.id LIMIT ?", (limit,)).fetchall()
     now = datetime.now(timezone.utc)
@@ -131,16 +132,19 @@ def _set_state(conn, transfer_id: str, state: str, *, bytes_sent: int | None = N
 
 
 def start_transfer(ctx, data_dir, node_id: str, image_id: str,
-                   user: tuple[str, str], *, run_in_thread: bool = True) -> str:
+                   user: tuple[str, str], *, location_id: str = "loc_local",
+                   run_in_thread: bool = True) -> str:
     """מאמת (משני קיים ופעיל, אימג' קיים, אין העברה פעילה לאותו זוג), רושם
     שורה ``queued`` ומפעיל את הדחיפה ברקע. מחזיר את מזהה ההעברה."""
     conn = ctx.conn
     storage_nodes.assert_can_manage_nodes(conn, user)
+    if re.fullmatch(r"loc_(?:local|[0-9a-f]{8})", location_id) is None:
+        raise TransferError(400, "מזהה מיקום האחסון אינו תקין")
     node = _node(conn, node_id)
     if node is None:
-        raise TransferError(404, "שרת משני לא קיים")
+        raise TransferError(404, "שרת משנה לא קיים")
     if node["disabled_at"]:
-        raise TransferError(409, "השרת המשני מושבת")
+        raise TransferError(409, "שרת המשנה מושבת")
     manifest = ctx.library.get(image_id)
     if manifest is None:
         raise TransferError(404, "אימג' לא קיים")
@@ -155,14 +159,15 @@ def start_transfer(ctx, data_dir, node_id: str, image_id: str,
             " AND state IN ('queued', 'sending', 'verifying')",
             (node_id, image_id)).fetchone()
         if active is not None:
-            raise TransferError(409, "כבר רצה העברה של האימג' הזה למשני הזה")
+            raise TransferError(409, "כבר רצה העברה של האימג' הזה לשרת המשנה הזה")
         stamp = now_iso()
         conn.execute(
             "INSERT INTO storage_transfers (id, node_id, image_id, image_name,"
             " state, bytes_sent, bytes_total, error, started_by, created_at,"
-            " updated_at) VALUES (?, ?, ?, ?, 'queued', 0, ?, NULL, ?, ?, ?)",
+            " updated_at, location_id)"
+            " VALUES (?, ?, ?, ?, 'queued', 0, ?, NULL, ?, ?, ?, ?)",
             (transfer_id, node_id, image_id, manifest["name"], total, user[0],
-             stamp, stamp))
+             stamp, stamp, location_id))
     journal(conn, "storage_transfer_start",
             f'{transfer_id} {image_id} "{manifest["name"]}" -> {node["label"]}',
             user[0])
@@ -177,7 +182,8 @@ def run_transfer(ctx, data_dir, transfer_id: str) -> None:
     כל חריגה מסתיימת ב-``failed`` עם סיבה מוסתרת-סודות; אין "נתקע"."""
     conn = ctx.conn
     row = conn.execute(
-        "SELECT node_id, image_id, image_name, bytes_total FROM storage_transfers"
+        "SELECT node_id, image_id, image_name, bytes_total, location_id"
+        " FROM storage_transfers"
         " WHERE id = ?", (transfer_id,)).fetchone()
     if row is None:
         return
@@ -200,7 +206,7 @@ def _push(ctx, data_dir, transfer_id: str, row) -> None:
     conn = ctx.conn
     node = _node(conn, row["node_id"])
     if node is None:
-        raise RuntimeError("השרת המשני נמחק לפני שההעברה התחילה")
+        raise RuntimeError("שרת המשנה נמחק לפני שההעברה התחילה")
     manifest = ctx.library.get(row["image_id"])
     if manifest is None:
         raise RuntimeError("האימג' נמחק לפני שההעברה התחילה")
@@ -231,7 +237,8 @@ def _push(ctx, data_dir, transfer_id: str, row) -> None:
             _set_state(conn, transfer_id, "verifying", bytes_sent=row["bytes_total"])
 
         result = client.put_stream(f"/images/{image_id}", token, chunks(),
-                                   row["bytes_total"], on_progress=on_progress)
+                                   row["bytes_total"], on_progress=on_progress,
+                                   headers={"ImageCtl-Location-Id": row["location_id"]})
     if result.get("ok") is not True or result.get("id") != image_id:
         raise RuntimeError(f"תשובה לא צפויה מהמשני: {result!r}")
     journal(conn, "storage_transfer_done",
@@ -266,17 +273,20 @@ def _check_pull_space(root: Path, incoming: Path, files: list[str], total: int) 
     ב-``.incoming`` מניסיון קודם כבר תופס מקום, ולכן מנוכה. "לא הצלחנו
     לבדוק" — גודל שלא דווח או מקום שלא נקרא — הוא כשל, לא "נכנס" (עיקרון 5)."""
     if total <= 0:
-        raise RuntimeError("המשני לא דיווח את גודל האימג' (size_bytes) —"
+        raise RuntimeError("שרת המשנה לא דיווח את גודל האימג' (size_bytes) —"
                            " לא ניתן לבדוק אם יש מקום בראשי")
     already = sum((incoming / name).stat().st_size for name in files
                   if (incoming / name).is_file())
-    need = max(total - already, 0) + PULL_FREE_SPACE_MARGIN
+    # ‏#1737: ועוד הרזרבה למערכת (`disk_reserve`).
+    keep = disk_reserve.reserve()
+    need = max(total - already, 0) + PULL_FREE_SPACE_MARGIN + keep
     try:
         free = _free_bytes(root)
     except OSError as exc:
         raise RuntimeError(f"לא ניתן לקרוא את המקום הפנוי בספריית הראשי: {exc}") from exc
     if free < need:
-        raise RuntimeError(f"אין די מקום פנוי בראשי: נדרשים {need} בייטים, פנויים {free}"
+        raise RuntimeError(f"אין די מקום פנוי בראשי: נדרשים {need} בייטים"
+                           f" (מתוכם {keep} נשמרים למערכת), פנויים {free}"
                            f" (חסרים {need - free})")
 
 
@@ -297,7 +307,7 @@ def cancel_transfer(conn, transfer_id: str, user: tuple[str, str]) -> dict:
     if row is None:
         raise TransferError(404, "העברה לא קיימת")
     if row["direction"] != "pull":
-        raise TransferError(409, "ביטול נתמך רק בהעברה מהמשני")
+        raise TransferError(409, "ביטול נתמך רק בהעברה משרת המשנה")
     if row["state"] not in ACTIVE_STATES:
         raise TransferError(409, "ההעברה אינה פעילה")
     _cancel_flag(transfer_id).set()
@@ -313,9 +323,9 @@ def start_pull(ctx, data_dir, node_id: str, image_id: str,
     storage_nodes.assert_can_manage_nodes(conn, user)
     node = _node(conn, node_id)
     if node is None:
-        raise TransferError(404, "שרת משני לא קיים")
+        raise TransferError(404, "שרת משנה לא קיים")
     if node["disabled_at"]:
-        raise TransferError(409, "השרת המשני מושבת")
+        raise TransferError(409, "שרת המשנה מושבת")
     if not valid_image_id(image_id):
         raise TransferError(400, f"מזהה אימג' לא תקין: {image_id!r}")
     if ctx.library.get(image_id) is not None:
@@ -329,7 +339,7 @@ def start_pull(ctx, data_dir, node_id: str, image_id: str,
             " AND state IN ('queued', 'sending', 'verifying')",
             (node_id, image_id)).fetchone()
         if active is not None:
-            raise TransferError(409, "כבר רצה העברה של האימג' הזה עם המשני הזה")
+            raise TransferError(409, "כבר רצה העברה של האימג' הזה עם שרת המשנה הזה")
         stamp = now_iso()
         conn.execute(
             "INSERT INTO storage_transfers (id, node_id, image_id, image_name,"
@@ -388,12 +398,12 @@ def run_pull(ctx, data_dir, transfer_id: str) -> None:
 
 
 def _pull(ctx, data_dir, transfer_id: str, row, incoming: Path | None) -> None:
-    from .images import (inside, streamed_partitions, validate_display_name,
-                         valid_image_id)
+    from .images import (ImageLibrary, inside, safe_partition_filename,
+                         streamed_partitions, validate_display_name, valid_image_id)
     conn = ctx.conn
     node = _node(conn, row["node_id"])
     if node is None:
-        raise RuntimeError("השרת המשני נמחק לפני שההעברה התחילה")
+        raise RuntimeError("שרת המשנה נמחק לפני שההעברה התחילה")
     image_id = row["image_id"]
     if not valid_image_id(image_id):
         raise RuntimeError(f"מזהה אימג' לא תקין: {image_id!r}")
@@ -402,13 +412,19 @@ def _pull(ctx, data_dir, transfer_id: str, row, incoming: Path | None) -> None:
     root = Path(ctx.library.root)
     if incoming is None:
         raise RuntimeError("תיקיית הביניים יוצאת משורש הספרייה")
-    last = {"mark": 0}
+    last = {"mark": 0, "seen": 0}
     # ‏#1473: הקריאה בקצב התקרה — חלון ה-TCP מאט את המשני ששולח (`transfer_cap`).
     pace = transfer_cap.pacer(conn)
+    # ‏#1737: הבדיקה המוקדמת סופרת את מה שהמשני הצהיר; כותב אחר (קליטה במקביל)
+    # או קובץ ארוך מההצהרה נעצרים כאן, ברזרבה ולא באפס.
+    guard = disk_reserve.StreamGuard(lambda: _free_bytes(root), "ההעברה משרת המשנה")
 
     def on_progress(sent: int) -> None:
         if _is_cancelled(transfer_id):
             raise Cancelled()
+        if sent > last["seen"]:
+            guard.wrote(sent - last["seen"])
+        last["seen"] = sent
         if sent - last["mark"] >= PROGRESS_STEP:
             last["mark"] = sent
             _set_state(conn, transfer_id, "sending", bytes_sent=sent)
@@ -419,7 +435,7 @@ def _pull(ctx, data_dir, transfer_id: str, row, incoming: Path | None) -> None:
         listing = client.get_json("/images", token)
         storage_nodes.record_contact(conn, node["id"], error=None)   # #1017: ענה
         if not isinstance(listing, list):
-            raise RuntimeError("תשובה לא צפויה מהמשני לרשימת אימג'ים")
+            raise RuntimeError("תשובה לא צפויה משרת המשנה לרשימת אימג'ים")
         item = next((x for x in listing if isinstance(x, dict)
                      and x.get("id") == image_id), None)
         if item is None:
@@ -436,11 +452,21 @@ def _pull(ctx, data_dir, transfer_id: str, row, incoming: Path | None) -> None:
         _set_state(conn, transfer_id, "sending", bytes_sent=0, bytes_total=total)
         manifest = client.get_json(f"/images/{image_id}/manifest", token)
         if not isinstance(manifest, dict) or manifest.get("id") != image_id:
-            raise RuntimeError("מניפסט לא צפוי מהמשני")
+            raise RuntimeError("מניפסט לא צפוי משרת המשנה")
         validate_display_name(str(manifest.get("name") or ""), "שם האימג'")
         if manifest.get("folder"):
             validate_display_name(str(manifest["folder"]), "שם התיקייה")
+        # ‏#1340: המניפסט הוא של המשני — אותו שער כמו מניפסט בספרייה, **לפני**
+        # שנוגעים בדיסק. ``file`` הוא שם קובץ יחיד בתוך ``.incoming``: ‏"../" או
+        # נתיב מוחלט היו כותבים כ-root מחוץ לספרייה, וה-sha256 נבדק רק אחרי הכתיבה.
+        problem = ImageLibrary._validate(manifest)
+        if problem is not None:
+            raise RuntimeError(f"מניפסט המשני נפסל: {problem}")
         files = [p["file"] for p in streamed_partitions(manifest)]
+        for filename in files:
+            if not safe_partition_filename(filename) or inside(
+                    incoming / filename, incoming) is None:
+                raise RuntimeError(f"שם קובץ מחיצה לא תקין במניפסט המשני: {filename!r}")
         _check_pull_space(root, incoming, files, total)
         incoming.mkdir(parents=True, exist_ok=True)
         completed = 0

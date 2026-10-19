@@ -13,7 +13,7 @@
  *   - a summary line under the grid;
  *   - on open, one record value for every chosen disk with a model.
  * The live round's per-drawer outcome (drawer_list[].drivers) is said in
- * words under the grid, like the unidentified drives of #1235. */
+ * the drawer's own row, under its bar (#1331, lcbay.c: lc_bay_drivers). */
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -124,7 +124,7 @@ void room_drv_tag_click(App *a, int mi, int port) {
     const RoomDrawer *drawer = NULL;
     for (int j = 0; j < m->nroom_drawers; j++)
         if (m->room_drawers[j].port == port) { drawer = &m->room_drawers[j]; break; }
-    if (!drawer || !room_selectable(drawer)) return;
+    if (!drawer || !room_pickable(drawer)) return;   /* #1732 */
     const char *v, *md;
     if (drv_slot(a, m, port, &v, &md) && drv_same(v, md, a->drv_vendor, a->drv_model))
         drv_map_set(a, m->mac, port, "", "");
@@ -148,7 +148,7 @@ int room_drv_encode(App *a, char *out, size_t n) {
         const Machine *m = &a->st.machines[mi];
         for (int j = 0; j < m->nroom_drawers; j++) {
             const RoomDrawer *d = &m->room_drawers[j];
-            if (!room_selectable(d) || !drv_selected(a, m, d)) continue;
+            if (!room_pickable(d) || !drv_selected(a, m, d)) continue;   /* #1732 */
             chosen++;
             const char *v, *md;
             if (!drv_slot(a, m, d->port, &v, &md)) continue;          /* "בלי" */
@@ -327,7 +327,7 @@ Text room_drv_summary_make(App *a, cairo_t *cr, double w) {
         int gn[MAX_DRAWERS], ng = 0;
         for (int j = 0; j < m->nroom_drawers; j++) {
             const RoomDrawer *d = &m->room_drawers[j];
-            if (!room_selectable(d) || !drv_selected(a, m, d)) continue;
+            if (!room_pickable(d) || !drv_selected(a, m, d)) continue;   /* #1732 */
             const char *v, *md;
             if (!drv_slot(a, m, d->port, &v, &md)) v = md = "";
             int k = 0;
@@ -365,45 +365,4 @@ void room_drv_summary_draw(App *a, cairo_t *cr, double x, double y, double w, Te
     draw_border_rrect(cr, box, th->radius_sm, th->hair, 1);
     cairo_restore(cr);
     text_draw(cr, t, box.x + DRV_SUM_PADX, box.y + DRV_SUM_PADY, th->ink);
-}
-
-/* ---- the live round: what happened to each drawer's drivers ------------------ */
-
-static const char *drv_reason_he(const char *reason) {
-    if (!strcmp(reason, "not_windows")) return "האימג' אינו Windows";
-    if (!strcmp(reason, "no_model"))    return "לא נבחר דגם לדיסק הזה";
-    return reason;
-}
-
-/* One line per drawer with an outcome; a failed one sets *any_failed (the
- * restore itself is done: orange, not red). When they do not all fit, the
- * last line says more were left out -- never a silent cut. */
-Text room_drv_results_make(cairo_t *cr, const State *s, double w, int *any_failed) {
-    char buf[2048];
-    const char *more = "\nועוד תוצאות דרייברים — ראו בקונסולה";
-    size_t used = 0, cap = sizeof buf - strlen(more) - 1;
-    *any_failed = 0;
-    buf[0] = 0;
-    for (int i = 0; i < s->nmachines; i++) {
-        const Machine *m = &s->machines[i];
-        for (int j = 0; j < m->nroom_drawers; j++) {
-            const RoomDrawer *d = &m->room_drawers[j];
-            if (!d->present || !d->drv_state[0]) continue;
-            int failed = !strcmp(d->drv_state, "failed"), staged = !strcmp(d->drv_state, "staged");
-            const char *word = staged ? "הונחו" : failed ? "לא הונחו" : "דולגו";
-            const char *detail = staged || failed ? d->drv_detail : drv_reason_he(d->drv_detail);
-            char label[SLOT_NAME_MAX + 64]; room_drawer_label(m, d, label, sizeof label);
-            int k = snprintf(buf + used, cap - used, "%sדרייברים · %s · %s: %s%s%s",
-                              used ? "\n" : "", m->name[0] ? m->name : m->mac, label, word,
-                             detail[0] ? " — " : "", detail);
-            if (k < 0 || (size_t)k >= cap - used) {
-                buf[used] = 0; strcat(buf, used ? more : more + 1);
-                return rtl_block_make(cr, N_SUB, 600, buf, w);
-            }
-            used += (size_t)k;
-            if (failed) *any_failed = 1;
-        }
-    }
-    if (!used) return (Text){ NULL, 0, 0 };
-    return rtl_block_make(cr, N_SUB, 600, buf, w);
 }

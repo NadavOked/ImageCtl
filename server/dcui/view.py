@@ -30,6 +30,9 @@ from .data import NicInfo, ServiceState, Snapshot
 CERT_WARN_DAYS = 30
 #: The hero lists at most this many problems; the title carries the full count.
 MAX_PROBLEMS_SHOWN = 3
+#: The primary pings every paired secondary every 150 seconds (#1564,
+#: ``storage_heartbeat``); ten minutes tolerates three missed beats.
+PARENT_CONTACT_FRESH_SECONDS = 10 * 60
 
 SERVICE_LABELS = {
     "imagectl-server": "שרת ImageSrv והקונסולה",
@@ -42,7 +45,7 @@ MENU_TEXT = (   # app.MENU_ITEMS, in the same order (#1203: no wizard item -- #1
     ("rnet", "הפעלה מחדש של רשת הניהול", "החלה מחדש של ההגדרה השמורה"),
     ("svc", "הפעלה מחדש של השירותים", "שרת ImageSrv ו־dnsmasq"),
     ("cert", "תעודת אבטחה", "טביעת אצבע, שמות ותוקף"),
-    ("net", "הכתובת שהראשי רואה", "לשרת משני — מאחורי NAT, הכתובת החיצונית"),
+    ("net", "הכתובת שהראשי רואה", "לשרת משנה — מאחורי NAT, הכתובת החיצונית"),
 )
 
 RO_NOTE = "· המסך לקריאה בלבד · רענון אחרון {refreshed} · כל 5 שניות"
@@ -85,6 +88,7 @@ class Extras:
     has_parent: bool = False
     primary_url: str = ""
     advertised_url: str = ""          # 16/10: the address the primary sees
+    parent_last_contact: str | None = None
 
 
 def collect_extras(conn, uptime_path: Path = Path("/proc/uptime")) -> Extras:
@@ -111,10 +115,16 @@ def collect_extras(conn, uptime_path: Path = Path("/proc/uptime")) -> Extras:
     except Exception:  # noqa: BLE001
         has_parent, primary = False, ""
     try:
+        # its own try: an unreadable contact is "unknown" (never green), and
+        # must not turn a paired secondary into "not paired yet" (#1564)
+        parent_contact = storage_nodes.parent_last_contact(conn)
+    except Exception:  # noqa: BLE001
+        parent_contact = None
+    try:
         advertised = storage_nodes.advertised_url(conn)
     except Exception:  # noqa: BLE001
         advertised = ""
-    return Extras(uptime, secondaries, has_parent, primary, advertised)
+    return Extras(uptime, secondaries, has_parent, primary, advertised, parent_contact)
 
 
 # ---- translation of the backend's ASCII messages ------------------------------
@@ -156,6 +166,12 @@ _EXACT = {
         "המצב החי שנקרא בחזרה אינו מה שביקשנו.",
     "Network change applied; confirm within 60 seconds.":
         "השינוי הוחל. מאשרים תוך 60 שניות.",
+    "Management network restarted; the address read back live.":
+        "רשת הניהול הופעלה מחדש, והכתובת נקראה בחזרה מהמצב החי.",
+    "Management network restart was not verified.": "ההפעלה מחדש של רשת הניהול לא אומתה.",
+    "ifdown/ifup failed.": "‏ifdown/ifup נכשל.",
+    "Live read-back did not match the saved configuration.":
+        "המצב החי שנקרא בחזרה אינו ההגדרה השמורה.",
     "The management interface has no saved configuration.":
         "אין הגדרה שמורה לכרטיס הניהול.",
     "The saved management network configuration is invalid.":
@@ -195,7 +211,7 @@ _EXACT = {
     "Restart/shutdown cancelled; nothing was done.": "בוטל — לא בוצע דבר.",
     # F4 on a secondary (16/10)
     "The server database is not available.": "מסד הנתונים של השרת אינו זמין.",
-    "Pairing codes are shown only on a secondary server.": "קוד צימוד מוצג רק בשרת משני.",
+    "Pairing codes are shown only on a secondary server.": "קוד צימוד מוצג רק בשרת משנה.",
     "This server is already paired; disconnect it first.":
         "השרת כבר מצומד — מנתקים אותו קודם (F4).",
     "The pairing window could not be opened.": "לא הצלחנו לפתוח קוד צימוד.",
@@ -275,7 +291,7 @@ class Problem:
 def role_label(snapshot: Snapshot) -> str:
     if snapshot.pre_install:
         return "התקנה"
-    return "שרת משני" if snapshot.storage_role == "secondary" else "שרת ראשי"
+    return "שרת משנה" if snapshot.storage_role == "secondary" else "שרת ראשי"
 
 
 def deploy_needed(snapshot: Snapshot, extras: Extras) -> bool:
@@ -521,19 +537,41 @@ def _round_row(snapshot: Snapshot) -> Row:
                sub, "info", "פתוח")
 
 
-def _peer_row(snapshot: Snapshot, extras: Extras) -> Row:
+def _parent_contact(extras: Extras, today: datetime) -> tuple[str, str]:
+    """Return fresh/stale/unknown and the operator-facing contact text."""
+    raw = extras.parent_last_contact
+    if not raw:
+        return "unknown", "מצומד · מגע לא ידוע"
+    try:
+        when = datetime.fromisoformat(raw)
+        if when.tzinfo is not None:
+            when = when.astimezone().replace(tzinfo=None)
+        now = today.astimezone().replace(tzinfo=None) if today.tzinfo else today
+        age = (now - when).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return "unknown", "מצומד · מגע לא ידוע"
+    if age < 0:
+        return "unknown", "מצומד · מגע לא ידוע"
+    if age <= PARENT_CONTACT_FRESH_SECONDS:
+        return "fresh", f"מחובר · מגע לפני {int(age // 60)} דק'"
+    return "stale", f"מצומד · אין מגע מאז {when:%H:%M}"
+
+
+def _peer_row(snapshot: Snapshot, extras: Extras, today: datetime) -> Row:
     if snapshot.storage_role == "secondary":
         if not extras.has_parent:
             return Row("שרת ראשי", "עדיין לא התחבר", "F4 מציג את קוד הצימוד להקלדה בראשי",
                        "info", "ממתין")
         host = _host_of(extras.primary_url) or "לא ידוע"
-        return Row("שרת ראשי", host, "", "ok", "מחובר ✓", "", "", "mono")
+        state, text = _parent_contact(extras, today)
+        return Row("שרת ראשי", host, "", "ok" if state == "fresh" else "warn",
+                   text, "" if state == "fresh" else "warn", "", "mono")
     names = extras.secondaries
     if not names:
-        return Row("שרתים משניים", "אין", "מוסיפים מהקונסולה: שרתים ← הוספת שרת משני",
+        return Row("שרתי משנה", "אין", "מוסיפים מהקונסולה: שרתים ← הוספת שרת משנה",
                    "off", "אין")
     count = f"{len(names)} רשום" if len(names) == 1 else f"{len(names)} רשומים"
-    return Row("שרתים משניים", count, " · ".join(iso(name) for name in names), "ok", "רשום")
+    return Row("שרתי משנה", count, " · ".join(iso(name) for name in names), "ok", "רשום")
 
 
 def advertised_row(url: str) -> Row:
@@ -542,6 +580,16 @@ def advertised_row(url: str) -> Row:
         return Row("הכתובת שהראשי רואה", url, "מוצגת במסך הקוד (F4)", value_style="mono")
     return Row("הכתובת שהראשי רואה", "לא הוגדרה", "הגדרות (F2) ← הכתובת שהראשי רואה",
                "warn", "לא הוגדרה", "warn")
+
+
+def system_updates_row(day: str) -> Row:
+    """#1411: Debian updates arrive only inside signed releases -- their date says
+    how fresh the server's packages are.  Not known is said, not hidden.  One
+    line, last in the lower tile: the services tile is clipped once the hero
+    lists problems (rendered 17/10 at 1024x768)."""
+    if day:
+        return Row("עדכוני מערכת", f"מתאריך {iso(day)}")
+    return Row("עדכוני מערכת", "תאריך לא ידוע", "", "warn", "לא נבדק")
 
 
 def _host_of(url: str) -> str:
@@ -590,18 +638,21 @@ def main_keys(snapshot: Snapshot, extras: Extras) -> tuple:
     return (f4,) + MAIN_KEYS
 
 
-def _main_state(snapshot: Snapshot, extras: Extras, found: list[Problem]) -> tuple[str, str]:
+def _main_state(snapshot: Snapshot, extras: Extras, found: list[Problem], today: datetime) -> tuple[str, str]:
     """(dot, word) for the status line."""
     if found:
         return "bad", f"דורש טיפול · {len(found)}"
     if snapshot.storage_role == "secondary":
-        return ("ok", "תקין · מחובר לראשי") if extras.has_parent else ("info", "ממתין לחיבור מהראשי")
+        if not extras.has_parent:
+            return "info", "ממתין לחיבור מהראשי"
+        state, text = _parent_contact(extras, today)
+        return ("ok", text) if state == "fresh" else ("warn", text)
     if snapshot.deploy_round and snapshot.deploy_round.state == "running":
         return "warn", "סבב הפצה רץ"
     return "ok", "תקין"
 
 
-def _hero(frame: Frame, snapshot: Snapshot, extras: Extras, found: list[Problem]) -> None:
+def _hero(frame: Frame, snapshot: Snapshot, extras: Extras, found: list[Problem], today: datetime) -> None:
     uptime = (("פועל ברציפות", uptime_text(extras.uptime_seconds))
               if extras.uptime_seconds is not None else ("", ""))
     if found:
@@ -614,13 +665,17 @@ def _hero(frame: Frame, snapshot: Snapshot, extras: Extras, found: list[Problem]
     if snapshot.storage_role == "secondary" and not extras.has_parent:
         frame.add("hero", "wait", "ממתין לחיבור מהשרת הראשי",
                   "השרת מוכן לצימוד. <b>F4</b> מציג קוד חד־פעמי, את טביעת הזהות ואת הכתובת "
-                  "שמקלידים בקונסולה של השרת הראשי: <b>סניפים ← רישום שרת משני</b>.", "", "")
+                  "שמקלידים בקונסולה של השרת הראשי: <b>שרתי משנה ← רישום שרת משנה</b>.", "", "")
         return
     if snapshot.storage_role == "secondary":
         host = _host_of(extras.primary_url)
-        frame.add("hero", "ok", f"תקין · מחובר לשרת הראשי {iso(host)} ✓" if host else
-                  "תקין · מחובר לשרת הראשי ✓",
-                  "האימג׳ים מסונכרנים מהראשי. ההפצה כאן היא רק למחשבים ברשת של השרת הזה.",
+        state, contact = _parent_contact(extras, today)
+        title = f"{contact} · {iso(host)}" if host else contact
+        detail = ("האימג׳ים מסונכרנים מהראשי. ההפצה כאן היא רק למחשבים ברשת של השרת הזה."
+                  if state == "fresh" else
+                  "השרת מצומד לראשי, אך אין ראיה למגע טרי. ההפצה המקומית ממשיכה בנפרד.")
+        frame.add("hero", "ok" if state == "fresh" else "warn", title,
+                  detail,
                   *uptime)
         return
     if snapshot.deploy_round and snapshot.deploy_round.state == "running":
@@ -640,10 +695,11 @@ def _tiles(frame: Frame, snapshot: Snapshot, extras: Extras, today: datetime) ->
     frame.add(*nic_row("רשת ניהול", snapshot.management).record())
     frame.add(*deploy_row(snapshot, extras).record())
     frame.add("tile", "שרתים והפצה", "", "")
-    frame.add(*_peer_row(snapshot, extras).record())
+    frame.add(*_peer_row(snapshot, extras, today).record())
     if snapshot.storage_role == "secondary" and not extras.has_parent:
         frame.add(*advertised_row(extras.advertised_url).record())
     frame.add(*_round_row(snapshot).record())
+    frame.add(*system_updates_row(snapshot.system_updates).record())
     frame.add("tile", "גישה לקונסולה", "", "")
     url = snapshot.console_url if not snapshot.no_address else "אין כתובת"
     frame.add(*Row("כתובת", url, value_style="strong-mono").record())
@@ -674,7 +730,7 @@ def _main_body(frame: Frame, snapshot: Snapshot, extras: Extras, today: datetime
     if snapshot.pre_install:
         _preinstall(frame, snapshot)
         return
-    _hero(frame, snapshot, extras, problems(snapshot, extras, today))
+    _hero(frame, snapshot, extras, problems(snapshot, extras, today), today)
     _tiles(frame, snapshot, extras, today)
 
 
@@ -682,7 +738,7 @@ def main_state(snapshot: Snapshot, extras: Extras, today: datetime) -> tuple[str
     """(dot, word) of the status line -- the server's state on every screen."""
     if snapshot.pre_install:
         return ("info", "התקנה בתהליך") if snapshot.console_url else ("bad", "אין כתובת")
-    return _main_state(snapshot, extras, problems(snapshot, extras, today))
+    return _main_state(snapshot, extras, problems(snapshot, extras, today), today)
 
 
 def _keys(frame: Frame, keys) -> None:
@@ -768,7 +824,7 @@ def _power_dialog(frame: Frame, snapshot: Snapshot, extras: Extras, runtime) -> 
     frame.add("d.bullet", "מחשבים שיופעלו בינתיים יעלו מהדיסק המקומי שלהם.")
     if snapshot.storage_role != "secondary" and extras.secondaries:
         names = " · ".join(mono_m(name) for name in extras.secondaries)
-        word = "השרת המשני" if len(extras.secondaries) == 1 else "השרתים המשניים"
+        word = "שרת המשנה" if len(extras.secondaries) == 1 else "שרתי המשנה"
         frame.add("d.bullet", f"{word} <b>{names}</b> ימשיך לעבוד, בלי סנכרון עד שהראשי יחזור.")
     if snapshot.rollback_interface:
         frame.add("d.bullet", f"שינוי ברשת הניהול ({mono_m(snapshot.rollback_interface)}) עדיין "
@@ -930,7 +986,7 @@ def _pair_dialog(frame: Frame, runtime, wall: float) -> None:
     else:
         frame.add("d.alert", "<b>הכתובת שהראשי רואה לא הוגדרה.</b> "
                              "הגדרות (F2) ← הכתובת שהראשי רואה.", "warn")
-    frame.add("d.bullet", "<b>בשרת הראשי:</b> סניפים ← רישום שרת משני")
+    frame.add("d.bullet", "<b>בשרת הראשי:</b> שרתי משנה ← רישום שרת משנה")
     frame.add("d.bullet", "<b>מקלידים את הכתובת</b> ומוודאים שהטביעה זהה לזו שכאן")
     frame.add("d.bullet", "<b>מקלידים את הקוד</b> — 8 תווים, שימוש חד־פעמי")
     if runtime.pair_error:
@@ -970,7 +1026,7 @@ def _settings_body(frame: Frame, runtime, today: datetime) -> None:
     frame.add("ttl", "הגדרות השרת", "רק מה שצריך לעשות מול המכונה עצמה. כל השאר — בקונסולה.")
     for index, (icon, title, sub) in enumerate(MENU_TEXT):
         frame.add("item", icon, title, sub, int(index == runtime.menu_index))
-    frame.add("na", "<b>לא זמין כאן</b> (בקונסולה): מחיקת אימג׳ים · הסרת שרתים משניים · "
+    frame.add("na", "<b>לא זמין כאן</b> (בקונסולה): מחיקת אימג׳ים · הסרת שרתי משנה · "
                     "רשת ההפצה וטבלת המחשבים")
     mgmt = snapshot.management
     selected = runtime.menu_index
@@ -983,10 +1039,11 @@ def _settings_body(frame: Frame, runtime, today: datetime) -> None:
         frame.add("pnote", "רשת ההפצה לא מוגדרת כאן — בקונסולה: רשת ← הפצה.")
     elif selected == 1:
         frame.add("pane", "הפעלה מחדש של רשת הניהול",
-                  f"מחיל מחדש את ההגדרה השמורה של {mono_m(mgmt.name)}, עם אותה רשת ביטחון של "
-                  "60 שניות. ההצלחה נקבעת לפי המצב החי שנקרא בחזרה.")
+                  f"מוריד ומעלה את {mono_m(mgmt.name)} עם ההגדרה השמורה, בלי לשנות דבר. "
+                  "ההצלחה נקבעת לפי הכתובת שנקראת בחזרה מהמצב החי.")
         frame.add(*nic_row("עכשיו", mgmt).record("prow"))
-        frame.add("pnote", "<b>רשת ביטחון:</b> אם הכתובת לא חוזרת, ההגדרה הקודמת חוזרת לבד.")
+        frame.add("pnote", "אין כאן שינוי ולכן אין מה לאשר. לשינוי כתובת — "
+                           "הגדרת רשת הניהול, עם רשת הביטחון.")
     elif selected == 2:
         frame.add("pane", "הפעלה מחדש של השירותים",
                   f"מפעיל מחדש את {mono_m('imagectl-server')}, ואת {mono_m('dnsmasq')} רק כשהוא מופעל — ואז קורא "
@@ -998,7 +1055,7 @@ def _settings_body(frame: Frame, runtime, today: datetime) -> None:
         frame.add("pnote", "מחשבים שבאמצע שיכפול עלולים להיכשל בזמן ההפעלה מחדש.")
     elif selected == 4:
         frame.add("pane", "הכתובת שהראשי רואה",
-                  "הכתובת שבה השרת הראשי מגיע לשרת המשני הזה (פורט 8443). מוצגת במסך "
+                  "הכתובת שבה השרת הראשי מגיע לשרת המשנה הזה (פורט 8443). מוצגת במסך "
                   "קוד הצימוד (F4) — זו הכתובת שמקלידים בראשי.")
         extras = getattr(runtime, "extras", None) or Extras()
         frame.add(*advertised_row(extras.advertised_url).record("prow"))

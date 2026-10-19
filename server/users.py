@@ -151,19 +151,21 @@ def flags(conn: sqlite3.Connection, username: str) -> dict:
     row = lookup(conn, username)
     if row is None:
         return {"must_change_password": False, "mfa_enabled": False,
-                "is_builtin": False, "mfa_secret": None, "mfa_last_step": None}
+                "is_builtin": False, "mfa_secret": None, "mfa_last_step": None,
+                "mfa_required": False}
     return {
         "must_change_password": bool(row["must_change_password"]),
         "mfa_enabled": bool(row["mfa_enabled"]),
         "is_builtin": bool(row["is_builtin"]),
         "mfa_secret": row["mfa_secret"],
         "mfa_last_step": row["mfa_last_step"],
+        "mfa_required": bool(row["mfa_required"]),   # נדב 18/10
     }
 
 
 def create(conn: sqlite3.Connection, username: str, password: str, role: str, by: str,
            *, is_builtin: bool = False, must_change_password: bool = False,
-           check_policy: bool = True) -> None:
+           check_policy: bool = True, mfa_required: bool = False) -> None:
     if role not in ("admin", "deploy"):
         raise ValueError("התפקיד חייב להיות admin או deploy")
     username = username.strip()
@@ -179,12 +181,14 @@ def create(conn: sqlite3.Connection, username: str, password: str, role: str, by
     with _write_lock, writing(conn):
         conn.execute(
             "INSERT INTO users (username, pw_hash, role, created_at,"
-            " must_change_password, is_builtin)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            " must_change_password, is_builtin, mfa_required)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (username, _hash(password, secrets.token_hex(16)), role, now_iso(),
-             1 if must_change_password else 0, 1 if is_builtin else 0),
+             1 if must_change_password else 0, 1 if is_builtin else 0,
+             1 if mfa_required else 0),
         )
-    journal(conn, "user_create", f"{username} ({role})", by)
+    journal(conn, "user_create",
+            f"{username} ({role})" + (" mfa_required" if mfa_required else ""), by)
 
 
 def verify(conn: sqlite3.Connection, username: str, password: str) -> str | None:
@@ -221,9 +225,9 @@ def verify(conn: sqlite3.Connection, username: str, password: str) -> str | None
 def update(
     conn: sqlite3.Connection, username: str, by: str,
     password: str | None = None, role: str | None = None,
-    *, check_policy: bool = True,
+    *, check_policy: bool = True, mfa_required: bool | None = None,
 ) -> None:
-    """שינוי תפקיד ו/או איפוס סיסמה. שדה שלא נשלח — לא נוגעים בו."""
+    """שינוי תפקיד, איפוס סיסמה ו/או "דרוש אימות דו-שלבי". שדה שלא נשלח — לא נוגעים בו."""
     row = lookup(conn, username)
     if row is None:
         raise ValueError("משתמש לא קיים")
@@ -257,6 +261,10 @@ def update(
                 (_hash(password, secrets.token_hex(16)), username),
             )
             changed.append("password")
+        if mfa_required is not None and bool(mfa_required) != bool(row["mfa_required"]):
+            conn.execute("UPDATE users SET mfa_required = ? WHERE username = ?",
+                         (1 if mfa_required else 0, username))
+            changed.append("mfa_required=true" if mfa_required else "mfa_required=false")
     if changed:
         journal(conn, "user_edit", f"{username} " + ", ".join(changed), by)
 
@@ -341,7 +349,7 @@ def delete(conn: sqlite3.Connection, username: str, by: str) -> None:
 def list_users(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         "SELECT username, role, created_at, disabled_at,"
-        " must_change_password, mfa_enabled, is_builtin,"
+        " must_change_password, mfa_enabled, is_builtin, mfa_required,"
         " last_login_at, last_login_from"
         " FROM users ORDER BY username"
     ).fetchall()
@@ -351,6 +359,7 @@ def list_users(conn: sqlite3.Connection) -> list[dict]:
         "must_change_password": bool(r["must_change_password"]),
         "mfa_enabled": bool(r["mfa_enabled"]),
         "is_builtin": bool(r["is_builtin"]),
+        "mfa_required": bool(r["mfa_required"]),
     } for r in rows]
 
 

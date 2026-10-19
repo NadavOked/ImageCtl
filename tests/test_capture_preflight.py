@@ -4,6 +4,7 @@ import json
 import pytest
 
 from server import capture
+from server.disk_reserve import SYSTEM_RESERVE_BYTES
 from server.tasks import TOKEN_HEADER
 from test_capture import make_task, setup_build_machine, task_token
 from test_capture_refusals import (
@@ -13,6 +14,10 @@ from native import requires_native
 from test_agent import BASH
 from test_agent import AGENT, posix
 from test_timeouts import run_sh
+
+#: #1737: this module reasons about the system reserve -- it stays 10GiB here
+#: (conftest `_host_free_space` sets it to 0 elsewhere).
+pytestmark = pytest.mark.system_reserve
 
 
 def preflight(server, monkeypatch, parts, free=53_300_000_000, token=None):
@@ -29,9 +34,15 @@ def preflight(server, monkeypatch, parts, free=53_300_000_000, token=None):
     return task, response
 
 
+#: ‏#1737: מה שהקליטה רשאית לתפוס — הפנוי פחות הרזרבה למערכת (53.3GB − 10GiB).
+ROOM = 53_300_000_000 - SYSTEM_RESERVE_BYTES
+
+
 @pytest.mark.parametrize("used,status", [
-    (223_000_000_000, "refused"), (53_300_000_000, "warning"),
-    (26_650_000_001, "warning"), (26_650_000_000, "ok"), (0, "ok"),
+    (223_000_000_000, "refused"), (53_300_000_000, "refused"),
+    # ‏#1737: הגבול זז ברזרבה — בית אחד מעליו נדחה, בדיוק עליו מותר (עם אזהרה).
+    (ROOM + 1, "refused"), (ROOM, "warning"),
+    (ROOM // 2 + 1, "warning"), (ROOM // 2, "ok"), (0, "ok"),
 ])
 def test_capacity_thresholds_and_operator_reason(server, monkeypatch, used, status):
     task, response = preflight(server, monkeypatch, [{"index": 2, "used_bytes": used}])
@@ -41,6 +52,7 @@ def test_capacity_thresholds_and_operator_reason(server, monkeypatch, used, stat
     assert result["used_bytes"] == used
     assert result["free_bytes"] == 53_300_000_000
     assert f"תפוס {used / 1e9:.1f} GB · פנוי בשרת 53.3 GB" in result["reason"]
+    assert "נשמרים למערכת 10.7 GB" in result["reason"]
     row = server["ctx"].conn.execute("SELECT * FROM tasks WHERE id = ?", (task,)).fetchone()
     assert row["state"] == ("failed" if status == "refused" else "pending")
     if status in ("refused", "warning"):

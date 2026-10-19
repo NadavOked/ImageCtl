@@ -6,7 +6,7 @@
 static void console_guess(const InstallState *s,char *out,size_t n){
     const char *host=s->static_mode&&s->address[0]?s->address:s->hostname;char clean[96];
     if(!host[0]&&s->nic>=0&&s->nic<s->nnics)host=s->nics[s->nic].current;
-    snprintf(clean,sizeof clean,"%s",host[0]?host:"imagectl-server");char *slash=strchr(clean,'/');if(slash)*slash=0;
+    snprintf(clean,sizeof clean,"%s",host[0]?host:"imagesrv-server");char *slash=strchr(clean,'/');if(slash)*slash=0;
     snprintf(out,n,"https://%s:8081",clean);
 }
 
@@ -22,9 +22,9 @@ static void summary(App *a,cairo_t *cr,InstallLayout l){
     InstallState *s=&a->install;const Theme *t=a->theme;double x=l.body.x,w=l.body.w,y=l.body.y;Rect card={x,y,w,242};install_card(cr,t,card);char value[400],url[192];
     InstallDisk *d=s->disk>=0&&s->disk<s->ndisks?&s->disks[s->disk]:NULL;
     snprintf(value,sizeof value,"%s · %s",d&&d->model[0]?d->model:"—",d?d->path:"");summary_row(a,cr,(Rect){x+1,y+1,w-2,48},"דיסק",value,0);
-    if(s->secondary)snprintf(value,sizeof value,"שרת משני · ראשי: %s",s->primary_url);else snprintf(value,sizeof value,"שרת ראשי");summary_row(a,cr,(Rect){x+1,y+49,w-2,48},"תפקיד",value,1);
+    if(s->secondary)snprintf(value,sizeof value,"שרת משנה · ראשי: %s",s->primary_url);else snprintf(value,sizeof value,"שרת ראשי");summary_row(a,cr,(Rect){x+1,y+49,w-2,48},"תפקיד",value,1);
     const char *nic=s->nic>=0&&s->nic<s->nnics?s->nics[s->nic].name:"—";snprintf(value,sizeof value,s->static_mode?"%s · %s / %s":"%s · DHCP",nic,s->address,s->netmask);summary_row(a,cr,(Rect){x+1,y+97,w-2,48},"כתובת השרת",value,2);
-    summary_row(a,cr,(Rect){x+1,y+145,w-2,48},"שם השרת",s->hostname,3);snprintf(value,sizeof value,"%s · הסיסמה הוגדרה",s->admin_user);summary_row(a,cr,(Rect){x+1,y+193,w-2,48},"משתמש הניהול",value,4);
+    snprintf(value,sizeof value,"%s · %s",s->hostname,s->timezone);summary_row(a,cr,(Rect){x+1,y+145,w-2,48},"שם השרת",value,3);snprintf(value,sizeof value,"%s · הסיסמה הוגדרה",s->admin_user);summary_row(a,cr,(Rect){x+1,y+193,w-2,48},"משתמש הניהול",value,4);
     console_guess(s,url,sizeof url);install_text_r(cr,t,"הקונסולה תהיה ב־",12,500,x+w-16,y+258,160,t->muted);install_text_ltr(cr,url,13,500,x+24,y+258,w-210,t->indigo);y+=292;
     Rect seq={x,y,fmin(760,w),112};install_card(cr,t,seq);install_text_r(cr,t,"מה יקרה בלחיצה על \"החל התקנה\"",14,600,seq.x+seq.w-16,y+14,seq.w-32,t->ink);
     install_text_r(cr,t,"מחיקת הדיסק ← מערכת בסיס ← חבילות ImageSrv ← מנהל אתחול ← הגדרות",13,500,seq.x+seq.w-16,y+50,seq.w-32,t->ink);

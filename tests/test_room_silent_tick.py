@@ -68,6 +68,17 @@ def _age(ctx, wave: str, macs: list[str], seconds: int) -> None:
     ctx.conn.commit()
 
 
+def _future(ctx, wave: str, macs: list[str], seconds: int) -> None:
+    stamp = (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(
+        timespec="seconds")
+    ctx.conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (stamp, wave))
+    for mac in macs:
+        ctx.conn.execute(
+            "UPDATE session_members SET updated_at = ? WHERE session_id = ? AND mac = ?",
+            (stamp, wave, mac))
+    ctx.conn.commit()
+
+
 def _member_state(ctx, wave: str, mac: str) -> tuple[str, int]:
     row = ctx.conn.execute(
         "SELECT state, done FROM session_members WHERE session_id = ? AND mac = ?",
@@ -84,12 +95,16 @@ def _events(ctx) -> list[str]:
 
 
 def test_a_fully_silent_running_wave_advances_from_the_background_sweep(room_server):
-    """שתי מכונות הצטרפו וכתבו, ואז **שתיהן** נעלמו — אין יותר hello.
+    """שתי מכונות הצטרפו וכתבו; אחת סיימה ויצאה (אתחול), השנייה נעלמה באמצע.
+    מכאן אין יותר hello משום מכונה — החדר שקט לגמרי.
 
-    בלי שעון-הרקע אף אחד אינו מריץ `tick`: שתיהן נשארות `writing`, הגל
+    בלי שעון-הרקע אף אחד אינו מריץ `tick`: השנייה נשארת `writing`, הגל
     נשאר `running` לנצח, ואין גל שני. עם השעון (מיוצג כאן בקריאה ישירה
-    ל-`room.sweep`, בלי hello ובלי GET שמניע): שתיהן `lost`, הגל מסתיים,
-    וגל 2 נפתח (היעד 4 לא הושג).
+    ל-`room.sweep`, בלי hello ובלי GET שמניע): היא `lost`, הגל מסתיים,
+    וגל 2 נפתח (2 נכתבו, היעד 4 לא הושג).
+
+    ‏#1672 (נדב 17/10): גל שלא כתב **אף** מגירה מסיים את הסבב `failed` ואינו
+    פותח גל נוסף — ולכן כאן גל שכתב חלק. הגל המת בנתיב השעון — הטסט הבא.
     """
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
 
@@ -102,22 +117,39 @@ def test_a_fully_silent_running_wave_advances_from_the_background_sweep(room_ser
     # שתיהן דיווחו כתיבה — ואז נעלמו. שום hello ושום progress מכאן והלאה.
     _progress_writing(anon, wave1, CLONER1, ["sda", "sdb"])
     _progress_writing(anon, wave1, CLONER2, ["sda", "sdb"])
-    _age(ctx, wave1, [CLONER1, CLONER2], _AGE)
+    report(anon, wave1, CLONER1, {"sda": "done", "sdb": "done"})   # סיימה ויצאה
+    _age(ctx, wave1, [CLONER2], _AGE)
 
     # שעון-הרקע יורה. **אין** heartbeat של שורד ו**אין** GET שמניע tick.
     assert room_mod.sweep(ctx.conn, ctx.store) is True
 
-    for mac in (CLONER1, CLONER2):
-        state, done = _member_state(ctx, wave1, mac)
-        assert state == "lost", f"{mac} לא הוכרז אבוד — החדר השקט נשאר תקוע"
-        assert done == 0
+    state, done = _member_state(ctx, wave1, CLONER2)
+    assert state == "lost", f"{CLONER2} לא הוכרז אבוד — החדר השקט נשאר תקוע"
+    assert done == 0
 
     view = room(deploy)["round"]                  # קריאה = תצפית בלבד (#446)
     assert view is not None, "הסבב נסגר, אף שהיעד (4) לא הושג"
-    assert view["written_drives"] == 0, "אף מגירה לא הושלמה — אין ראיה שנכתב"
+    assert view["written_drives"] == 2, "רק המגירות של המכונה שסיימה נכתבו"
     assert view["wave_number"] == 2, "הגל לא התקדם — החדר השקט נשאר תקוע"
     assert view["wave_state"] == "open"
     assert "client_lost" in _events(ctx), "האובדן לא נרשם ביומן (עיקרון 5)"
+
+
+def test_future_wave_progress_is_swept_as_a_clock_step(room_server):
+    """#1771: future progress must not suppress the lost-member sweep."""
+    deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
+    _open(room_server, target=4)
+    wave = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
+    cloner_hello(anon, CLONER2, ["S3", "S4"])
+    heartbeat(room_server)
+    _progress_writing(anon, wave, CLONER1, ["sda", "sdb"])
+    _progress_writing(anon, wave, CLONER2, ["sda", "sdb"])
+    report(anon, wave, CLONER1, {"sda": "done", "sdb": "done"})
+    _future(ctx, wave, [CLONER2], 3 * 60 * 60)
+
+    assert room_mod.sweep(ctx.conn, ctx.store) is True
+    assert _member_state(ctx, wave, CLONER2)[0] == "lost"
+    assert room(deploy)["round"] is not None
 
 
 # --- #659: מקבל שמאבד חשמל לצמיתות אינו תוקע את הסבב -------------------------
@@ -131,6 +163,11 @@ def test_power_loss_while_writing_is_marked_terminal_so_the_wave_finishes(room_s
     כאן אין שורד — המכונה היחידה מתה — ולכן ההפקעה מגיעה משעון-הרקע (#456).
     התוצאה שנדרשת ב-DoD של #659: החבר מסומן terminal אחרי הסף, `_finish_wave`
     רץ, והסבב מתקדם במקום להיתקע לנצח על מקבל שלא יחזור.
+
+    ‏#1672 (נדב 17/10): כאן הגל לא כתב אף מגירה, ולכן "מתקדם" פירושו שהסבב
+    נסגר `failed` ומשחרר את חריץ המולטיקאסט — לא גל 2 שממתין לנצח
+    (`room_72308383` על ברזל). זה אותו מסלול כמו ב-`test_room_dead_wave_fails_round`,
+    אבל בלי שורד: ההפקעה מגיעה רק משעון-הרקע.
     """
     deploy, anon, ctx = room_server["deploy"], room_server["anon"], room_server["ctx"]
 
@@ -149,10 +186,14 @@ def test_power_loss_while_writing_is_marked_terminal_so_the_wave_finishes(room_s
     assert done == 0, "`lost` אינו הצלחה — אין ראיה שכתב"
 
     view = room(deploy)["round"]
-    assert view is not None, "הסבב נסגר, אף שהיעד (2) לא הושג"
-    assert view["wave_number"] == 2, "_finish_wave לא רץ — הסבב תקוע על מקבל מת"
-    assert view["wave_state"] == "open"
+    assert view is not None and view["state"] == "failed", (
+        f"_finish_wave לא רץ — הסבב תקוע על מקבל מת: {view}")
+    assert view["failed_reason"], "סבב שנכשל בלי סיבה — המפעיל לא יודע למה"
+    open_waves = ctx.conn.execute(
+        "SELECT id FROM sessions WHERE state IN ('open', 'running')").fetchall()
+    assert not open_waves, "גל נשאר פתוח ותופס את החריץ אחרי שהסבב נכשל"
     assert "client_lost" in _events(ctx)
+    assert "room_failed" in _events(ctx), "הכשל לא נרשם ביומן (עיקרון 5)"
 
 
 # --- שומר-החיווט: הלולאה באמת יורה (עיקרון 5) --------------------------------

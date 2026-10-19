@@ -176,6 +176,7 @@ def loadable_functions() -> str:
     # capture_end_ask (#409) was removed on 11/10 -- GUI only.
     wanted = ("hold_unheard", "do_task",                       # task.sh
               "task_done_stays_on",                            # #1222: task.sh
+              "build_end_ask",                                 # #1560: task.sh
               "do_restore_drawers", "do_restore")
     return "\n".join(body for body in (cut_function(n) for n in wanted)
                      if body is not None)
@@ -189,6 +190,7 @@ def sourced_libs() -> str:
              "ui.sh", "hold.sh", "clonergui.sh",   # #708: resolve_target_drawers (#701) lives here
              "smart.sh", "crcdelta.sh"]   # #872: crc_delta_after sits on the write line of do_restore
     names += ["attended.sh", "shrinkplan.sh"]   # attended beats; the capture's shrink plan
+    names += ["idle.sh"]   # #1560: end_countdown / end_failed_round -- the end of a cloner round
     return "".join(f". {posix(AGENT)}/lib/{n}; "
                    for n in names if (AGENT / "lib" / n).exists())
 
@@ -315,19 +317,23 @@ def test_a_class_round_does_not_reboot_when_the_final_report_was_refused(
 
 
 @native_tools
-def test_the_cloning_room_does_not_power_off_when_the_final_report_was_refused(
+def test_the_cloning_room_powers_off_even_when_the_final_report_was_refused(
         tmp_path, reports):
-    """אותו כשל במסלול המגירות, ושם הוא חמור באותה מידה: המגירות
-    מוחלפות כשהמכונה כבויה, ולכן כיבוי בלי אישור פירושו שהסבב לא
-    יתפנה — ‏`_spent` דורש `done` מכל חבר — והסבב הבא ייחסם."""
+    """נדב 17/10: מחשב שיכפול נכבה בכל מצב — גם כשה-`done` לא אושר.
+    לפני כן המסלול נעצר כאן על מסך ההמתנה (‏hold_unheard), והמחשב נשאר
+    דלוק גם אחרי שהשרת חזר לענות (ברזל, room_72308383). הדיסקים כתובים;
+    הדיווח ממשיך ברקע עד הכיבוי, ואם השרת לא שמע — גל שלא נספר בו דבר
+    נסגר אצלו כנכשל (#1672) ולא חוסם את הסבב הבא."""
     reports.refuse_first = -1
 
     result = run_path(tmp_path, url_of(reports),
                       f"do_restore_drawers {IMAGE} {SESSION}")
 
-    assert "TEST-HOLD" in result["out"], "המכונה נכבתה בלי אישור מהשרת"
-    assert HOLD in result["out"]
-    assert "RETURNED rc=1" in result["out"]
+    assert "TEST-HOLD" not in result["out"], "המחשב נעצר על מסך ההמתנה"
+    assert HOLD not in result["out"]
+    assert "RETURNED rc=1" not in result["out"]
+    assert "the done report was not confirmed" in result["log"]
+    assert "drawers complete" in result["log"], "המסלול לא הגיע לכיבוי"
     assert reports.received[-1]["session_id"] == SESSION
     assert reports.received[-1]["state"] == "done"
 
@@ -485,8 +491,9 @@ def test_the_answer_is_read_before_the_machine_leaves():
     room = agent_functions("do_restore_drawers")
     # ‏rindex ולא index: שער ה-SMART (#652) מוסיף `finish_and_stop` *מוקדם*
     # במסלול "החלף דיסק" — כיבוי לפני שנכתב בייט, שאין עליו דיווח סיום.
-    # הכלל של #101 הוא על הכיבוי שאחרי שחזור שהושלם — האחרון.
-    assert room.index("report_final") < room.rindex("finish_and_stop")
+    # הכלל של #101 הוא על הכיבוי שאחרי שחזור שהושלם — האחרון. ‏#1560: הכיבוי
+    # הזה הוא ספירה לאחור (idle.sh end_countdown -> finish_and_stop).
+    assert room.index("report_final") < room.rindex("end_countdown")
 
 
 @native_tools

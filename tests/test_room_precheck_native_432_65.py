@@ -156,8 +156,10 @@ def test_a_malformed_machine_posts_nothing(tmp_path):
 @requires_native(("bash", BASH), "jq", "awk")
 def test_wake_and_start_still_reach_their_endpoints(tmp_path):
     """‏room-wake/room-start אוחדו לזרוע אחת ב-guibridge (קיר 300) — אותה פעולה."""
-    for token in ("room-start", "room-wake"):
-        rc, path, _ = _bridge(tmp_path / token, f"{token}\n\n")
+    # 17/10: room-wake carries the picked cloners (cloner=); without them it posts
+    # nothing (test_failed_round_not_stuck.py)
+    for token, extra in (("room-start", ""), ("room-wake", "cloner=3c:52:82:a1:00:21\n")):
+        rc, path, _ = _bridge(tmp_path / token, f"{token}\n{extra}\n")
         assert path == f"room/{token[5:]}", (token, path)
 
 

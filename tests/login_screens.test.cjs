@@ -266,7 +266,9 @@ test('final mockup: "החשבון שלי" is a page in the tree (ניהול), sa
   assert.match(html, /<div class="obj-name">החשבון שלי<span class="pill info">מנהל<\/span><\/div>/);
   assert.match(html, /class="obj-sub"[^>]*>nadav</);
   assert.match(html, /openSessionInfo\(\)">פרטי החיבור/);
-  assert.equal((html.match(/c6 card/g) || []).length, 3, 'password, MFA and backup codes are half-width cards');
+  assert.equal((html.match(/c6 card/g) || []).length, 4, 'password, MFA, backup codes and "מראה" are half-width cards');
+  // סידור ההגדרות (נדב 17/10): "מראה" הוא העדפה של המשתמש — עבר מההגדרות לכאן.
+  assert.match(html, /<span>מראה<\/span>[\s\S]*setThemePref\('dark'\)/);
   assert.doesNotMatch(html, /<span>חשבון<\/span>/);
   assert.match(html, /accountChangePassword\(\)">שנה סיסמה/);
   run('ME.is_builtin=true; ME.mfa_enabled=false');

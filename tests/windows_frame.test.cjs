@@ -151,7 +151,7 @@ test('new user: the password is permanent — no must-change option in the sheet
   const body = source.slice(source.indexOf('function openNewUser()'), source.indexOf('/* ---------- #984'));
   assert.doesNotMatch(body, /must_change|temporary|זמנית/);
   assert.match(body, /type: "password"/);
-  assert.match(body, /post\("\/users", v\)/);
+  assert.match(body, /post\("\/users", \{ \.\.\.v, mfa_required: !!v\.mfa_required \}\)/);   // + "דרוש אימות דו-שלבי" (18/10)
 });
 
 test('wizard: steps on the side, the next button follows step validity, finish calls onFinish with the state', async () => {

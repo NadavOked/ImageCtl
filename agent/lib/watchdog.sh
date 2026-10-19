@@ -1,6 +1,9 @@
 # watchdog.sh -- cloner dead-man; POSIX sh, independent of progress reporting.
 # Only explicit control-loop progress renews the lease. /proc/uptime is
 # monotonic: DHCP/NTP/wall-clock corrections cannot expire a healthy lease.
+# NOT a guard for a power-off that hangs: iTCO_wdt calls watchdog_stop_on_reboot(),
+# so the kernel stops the hardware timer on SYS_POWER_OFF, before device_shutdown()
+# (v6.12 drivers/watchdog/watchdog_core.c:158-176). The lease needs a live kernel (#1563).
 watchdog_now() {
     IFS=' ' read -r _wd_up _wd_rest < "${WATCHDOG_UPTIME:-/proc/uptime}" || return 1
     _wd_up=${_wd_up%%.*}

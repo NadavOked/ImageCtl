@@ -58,8 +58,11 @@ gui_dispatch() {
     # cloner screen, and only the three valid tokens.
     case "$token" in
         shrink-*) gui_shrink_dispatch; return $? ;;   ask-*) gui_ask_dispatch; return $? ;;   # 11/10: askgui.sh
+        end-poweroff) [ -s "$RUN_DIR/end.poweroff" ] && : > "$RUN_DIR/end.now"; return $? ;;   # #1560: "כבה עכשיו" (idle.sh), no session needed
+        end-hold) case "$(cut -d'|' -f2 "$RUN_DIR/end.poweroff" 2>/dev/null)" in partial|failed) : > "$RUN_DIR/end.hold" ;; *) return 1 ;; esac ;;   # #1560: read the results
         logout) rm -f "$CONSOLE_JAR" "$RUN_DIR/console_login.json"; return $? ;;   # GUI sign-out ends the session here too
         boot-*|lc-*) [ "${GUI_SCREEN:-}" = cloner ] || return 1; lc_gui_dispatch; return $? ;;   # #1322, lcgui.sh
+        "drawer-cancel|"*) [ "${GUI_SCREEN:-}" = cloner ] || return 1; cancel_request "${token#*|}" "ממסך מחשב השיכפול"; [ $? -ne 1 ]; return $? ;;   # #1386: no sign-in, like SMART; 2 (asked) is not a handoff
         touch)
             # #434: a key press in the GUI -- the idle clock's activity, and
             # what cancels the power-off countdown. Before gui_role: it needs
@@ -123,7 +126,8 @@ gui_dispatch() {
             [ "$_gc" = 200 ] || { gui_error "סבב ההפצה הישירה לא נפתח (http $_gc)" "The direct round was not opened (http $_gc)"; return 1; }
             log "direct round opened from the GUI: /dev/$_gd -> $slots"
             ;;
-        room-wake|room-start) room_action "${token#room-}" ;;
+        room-wake|room-start) room_action "${token#room-}" "$cloner" ;;   # 17/10: wake = the picked cloners
+        room-drawer-cancel) room_drawer_cancel "$cloner" "$dev" ;;   # #1386: roomflow.sh
         room-poweroff) room_poweroff "$cloner" "$confirm" "$local_copy" ;;   # #65/#1367
         room-poweroff-all) room_poweroff_all "$confirm" "$local_copy" ;;      # #1367
         room-close|class-start|class-close)
@@ -138,7 +142,8 @@ gui_dispatch() {
             fi
             jq -n --arg c "$confirm" '{confirm_name:$c}' > "$RUN_DIR/gui-action.json" || return 1
             _gc=$(console_post "$_gp" "$RUN_DIR/gui-action.json" "$RUN_DIR/gui-result.json") || return 1
-            [ "$_gc" = 200 ] && jq -e '.ok == true' "$RUN_DIR/gui-result.json" >/dev/null
+            [ "$_gc" = 200 ] && jq -e '.ok == true' "$RUN_DIR/gui-result.json" >/dev/null || return 1
+            [ "$token" != room-close ] || rm -f "$RUN_DIR/room.watch"   # #1560: closed here -- nothing to ask
             ;;
         class-pick)
             # The class round after the pick was a text flow (sign-in again,
@@ -163,6 +168,9 @@ gui_dispatch() {
             [ -s "$CONSOLE_JAR" ] && cp "$CONSOLE_JAR" "$GUI_DIR/handoff.jar" || return 1
             printf 'restore-start\n%s\n' "$image" > "$GUI_DIR/handoff.next" &&
                 mv "$GUI_DIR/handoff.next" "$GUI_DIR/handoff" || return 1
+            # #1561: the display is released next (gui_cleanup). While the GUI still holds it,
+            # the VT's backlog is reset, so no English flashes before the restore's GUI.
+            printf '\033c\033[?25l' > "${IMAGECTL_TTY:-/dev/tty0}" 2>/dev/null || :
             return 2
             ;;
         *) gui_error "פעולה לא מוכרת: $token" "Unknown action: $token" ;;
@@ -242,10 +250,10 @@ gui_libs() {
     . "$LIB_DIR/guistate.sh"
     . "$LIB_DIR/shrinkgui.sh"; . "$LIB_DIR/askgui.sh"   # 11/10: the question dialog
     . "$LIB_DIR/sysinfo.sh"; . "$LIB_DIR/disklink.sh"   # disk_port + disk_link (#432), for the cloner state producer
-    . "$LIB_DIR/progress.sh"; . "$LIB_DIR/diskfit.sh"; . "$LIB_DIR/expand.sh"  # target_bytes, the per-drawer local truth; #1484: lc_verdict_for's min-free rule
-    . "$LIB_DIR/smart.sh"     # smart_hello_field: the cached verdict per cdisk (#834)
+    . "$LIB_DIR/progress.sh"; . "$LIB_DIR/diskfit.sh"; . "$LIB_DIR/expand.sh"; . "$LIB_DIR/restore.sh"  # target_bytes, the per-drawer local truth; #1484: lc_verdict_for's min-free rule; restore.sh: manifest_plan, which expand.sh's _expand_candidate calls (min_free_check)
+    . "$LIB_DIR/smart.sh"; . "$LIB_DIR/manifest.sh"     # smart_hello_field: the cached verdict per cdisk (#834); manifest.sh: _partition_role, lc_role's fallback (#1591)
     . "$LIB_DIR/failmark.sh"; . "$LIB_DIR/slotnames.sh"   # the server's memory per cdisk (#874); slot names (#704)
-    . "$LIB_DIR/lcinv.sh"; . "$LIB_DIR/lcgui.sh"; . "$LIB_DIR/clonergui.sh"; . "$LIB_DIR/drawers.sh"; . "$LIB_DIR/lcpull.sh"; . "$LIB_DIR/tools.sh"   # #649: the toolbox (tool-list / tool-run); tools_load pulls toolbins.sh + tools_*.sh itself (#1050)
+    . "$LIB_DIR/lcinv.sh"; . "$LIB_DIR/lcgui.sh"; . "$LIB_DIR/clonergui.sh"; . "$LIB_DIR/drvgui.sh"; . "$LIB_DIR/drawers.sh"; . "$LIB_DIR/cancel.sh"; . "$LIB_DIR/lcpull.sh"; . "$LIB_DIR/tools.sh"   # #649: the toolbox (tool-list / tool-run); tools_load pulls toolbins.sh + tools_*.sh itself (#1050)
 }
 
 gui_main() {
@@ -276,6 +284,6 @@ gui_main() {
     # shellcheck disable=SC2046 # --backend/--fb-file are words. nice: data path wins the CPU (#1493)
     /usr/bin/nice -n 10 /usr/bin/imagectl-station-gui "$@" $(gui_backend_args) --mac "$MAC" --ip "$IP" \
         --state "$GUI_DIR/state" --auth-cmd '/usr/bin/imagectl-kiosk --auth' > "$GUI_DIR/actions" &
-    GUI_PID=$!
+    GUI_PID=$!; echo "$GUI_PID $GUI_STATE_PID" > "$GUI_DIR/station.pid"   # #1726: for gui_keep (guiparent.sh)
     gui_records < "$GUI_DIR/actions"
 }

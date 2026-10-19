@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from .db import journal
-from .registry import normalize_mac
+from .registry import CLONERS_GROUP, ROOM_GROUPS, normalize_mac
 
 log = logging.getLogger("imagectl.wol")
 
@@ -257,9 +257,16 @@ def wake_group(
     sent = 0
     failed: list[str] = []
     reasons: list[str] = []
-    rows = conn.execute(
-        "SELECT mac FROM machines WHERE group_id = ? ORDER BY mac", (group_id,)
-    ).fetchall()
+    # ‏#1554: הגל של החדר הוא session על grp_CLONERS, אבל החדר הוא כל
+    # מחשבי השיכפול — גם בקבוצות משכפלים אחרות.
+    if group_id == CLONERS_GROUP:
+        rows = conn.execute(
+            f"SELECT mac FROM machines WHERE group_id IN {ROOM_GROUPS} ORDER BY mac"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT mac FROM machines WHERE group_id = ? ORDER BY mac", (group_id,)
+        ).fetchall()
     for row in rows:
         mac = row["mac"]
         if mac == skip:

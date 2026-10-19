@@ -32,8 +32,8 @@ function setup() {
     '/journal':[{ts:today+'T09:41:00Z',user:'nadav',event:'session_open',label:'סבב הפצה נפתח לכיתה 303',severity:'info'},
                 {ts:'2026-09-16T08:12:00Z',user:'server',event:'transfer_failed',label:'העברה נכשלה',severity:'err'}],
     '/update':{current:'v0.30.0',enabled:true},
-    '/storage-nodes':[{id:'haifa',label:'סניף חיפה',disabled_at:null}],
-    '/storage-transfers':[{id:'x1',node_id:'haifa',node_label:'סניף חיפה',image_name:'Ubuntu 24.04',state:'failed',bytes_sent:38,bytes_total:100,error:'הסניף לא ענה',created_at:today+'T08:10:00Z',started_by:'nadav'}],
+    '/storage-nodes':[{id:'haifa',label:'חיפה',disabled_at:null}],
+    '/storage-transfers':[{id:'x1',node_id:'haifa',node_label:'חיפה',image_name:'Ubuntu 24.04',state:'failed',bytes_sent:38,bytes_total:100,error:'שרת המשנה לא ענה',created_at:today+'T08:10:00Z',started_by:'nadav'}],
     '/images':[{id:'i1',name:'Kali 2026.2',folder:'Linux',created:'2026-09-12T10:00:00Z'},{id:'i2',name:'Office',folder:'Office',created:'2026-09-01T10:00:00Z'}],
     '/folders':[{name:'Linux'},{name:'Office'}],
     '/machines':[{mac:'cc:cc:cc:cc:cc:cc',suffix:'2',group_id:'grp_CLONERS'}],'/groups':[],
@@ -224,6 +224,27 @@ test('#1300: storage thresholds — orange from 90%, red from 95%, and a "needs 
   html=at(5);        // 95%
   assert.match(html,/kpi kpi-store err/); assert.match(html,/<li class="attn-i err">.*אחסון האימג'ים כמעט מלא/);
 });
+test('#1737: near the system reserve the card colours and the row says what the server keeps — even on a disk the percent calls fine',async()=>{
+  const {run}=await loaded();
+  // דיסק של 4TB עם הרבה רזרבות פנויות — הסף החדש אינו מוסיף רעש
+  const at=(freeGb)=>{ run(`OVERVIEW={...OVERVIEW,storage:{total_bytes:4096*1024**3,free_bytes:${freeGb}*1024**3,reserve_bytes:10*1024**3}}`); return run('home(0)'); };
+  let html=at(500);  // 88%, ‏50 רזרבות
+  assert.match(html,/kpi kpi-store info/); assert.doesNotMatch(html,/אחסון האימג'ים כמעט מלא/);
+  html=at(3500);     // 15% — ושוב שקט
+  assert.doesNotMatch(html,/כמעט מלא/);
+  // בלי reserve_bytes (שרת ישן) — האחוז בלבד, כמו #1300
+  run('OVERVIEW={...OVERVIEW,storage:{total_bytes:100*1024**3,free_bytes:40*1024**3}}');
+  assert.doesNotMatch(run('home(0)'),/כמעט מלא/);
+  // ‏40GB מתוך 100GB — 60% באחוזים, אבל פחות מ-5 רזרבות: כתום, והשורה מסבירה
+  run('OVERVIEW={...OVERVIEW,storage:{total_bytes:100*1024**3,free_bytes:40*1024**3,reserve_bytes:10*1024**3}}');
+  html=run('home(0)');
+  assert.match(html,/kpi kpi-store warn/);
+  assert.match(html,/<li class="attn-i warn">.*<b>אחסון האימג'ים כמעט מלא<\/b> — <bdi dir="ltr">60%<\/bdi> בשימוש, נשארו <bdi dir="ltr">40.0 GB<\/bdi> פנויים\. השרת שומר <bdi dir="ltr">10.0 GB<\/bdi> למערכת \(ה-DB, היומנים ועדכוני השרת\), ומסרב לכל קליטה, העלאה או העברה של אימג' שתשאיר פחות מזה\./);
+  // ‏19GB — פחות מ-2 רזרבות: אדום
+  run('OVERVIEW={...OVERVIEW,storage:{total_bytes:100*1024**3,free_bytes:19*1024**3,reserve_bytes:10*1024**3}}');
+  html=run('home(0)');
+  assert.match(html,/kpi kpi-store err/); assert.match(html,/<li class="attn-i err">.*השרת שומר <bdi dir="ltr">10.0 GB<\/bdi> למערכת/);
+});
 test('#1300: storage the server could not read is "unknown" — never 0 and never coloured (principle 5)',async()=>{
   const {run}=await loaded();
   run('OVERVIEW={...OVERVIEW,storage:null}');
@@ -253,36 +274,49 @@ test('#1300: the "active round" card — image, bar, machines; the now-table mov
   assert.match(card,/onclick="startRound\(\)">התחל עכשיו/);
   const tasks=run('layout(pages.home,1)');
   assert.match(tasks,/קליטת אימג&#39; — Office 2024 v3<\/span><span class="sub">בנייה 1 · <bdi dir="ltr">sda<\/bdi> · <bdi dir="ltr">\d\d\/\d\d\/\d{4} 09:40<\/bdi>.*<td>תיקיית Office<\/td>.*<span class="st warn">ממתין שהמחשב יעלה ב-PXE<\/span>/,'#968: the target column is the capture folder from /tasks');
-  assert.match(tasks,/העברה לסניף סניף חיפה — Ubuntu 24.04.*bar err.*--w:38%.*<span class="st err">נכשל — הסניף לא ענה<\/span>/);
+  assert.match(tasks,/העברה לשרת המשנה חיפה — Ubuntu 24.04.*bar err.*--w:38%.*<span class="st err">נכשל — שרת המשנה לא ענה<\/span>/);
 });
-test('#1300: a cloning round shows written/target drives and the stream rate; unmeasured rate is not shown',async()=>{
+test('#1300: a cloning round shows written/target drives and the rate; unmeasured rate is not shown',async()=>{
   const {run}=await loaded();
-  run('OVERVIEW={...OVERVIEW,session:null,room:{state:"active",image_name:"Office 2024",target_drives:4,written_drives:1,wave_state:"running",target_slots:[{mac:"a"},{mac:"b"}],throughput_bps:111149056}}');
+  // 17/10: the rate is round.rate_bps (the last 10 s, the GUI's number), not udp-sender's throughput_bps
+  run('OVERVIEW={...OVERVIEW,session:null,room:{state:"active",image_name:"Office 2024",target_drives:4,written_drives:1,wave_state:"running",target_slots:[{mac:"a"},{mac:"b"}],rate_bps:111149056,throughput_bps:53687091}}');
   let card=run('homeRoundCard()');
   assert.match(card,/<b>Office 2024<\/b><span class="pct">25%<\/span>/);
   assert.match(card,/2 מחשבים · 1\/4 דיסקים נכתבו · <bdi dir="ltr">106 MB\/s<\/bdi>/);
   assert.match(card,/selectPageById\('deploy'\)">לחדר המשכפלים/);
-  run('OVERVIEW.room.throughput_bps=null');
+  run('OVERVIEW.room.rate_bps=null');
   assert.doesNotMatch(run('homeRoundCard()'),/MB\/s/);
   run('OVERVIEW={...OVERVIEW,room:null}');
   assert.match(run('homeRoundCard()'),/אין סבב פעיל.*selectPageById\('deploy'\)">התחל סבב</,'empty = a start button');
 });
-test('"needs attention" lists the red disk, the unregistered machine, the unreachable branch and the health warning — each with an action button',async()=>{
+test('17/10 (room_855f6a13): a live cloning round is one row — its wave is not a second round; one percent; machines by target_slots',async()=>{
+  const {run}=await loaded();
+  run('OVERVIEW={...OVERVIEW,session:{id:"ses_51a29f5a",state:"running",image_name:"test2",group_label:"מחשבי שיכפול",group_id:"grp_CLONERS",joined:1,expected_clients:3,progress:19},room:{state:"active",wave_session_id:"ses_51a29f5a",image_name:"test2",target_drives:2,written_drives:0,wave_state:"running",target_slots:[{mac:"78:ac:c0:9b:11:c2",ports:[2,3]}],rate_bps:53687091}}');
+  const card=run('homeRoundCard()');
+  assert.equal((card.match(/<div class="round">/g)||[]).length,1,'one round, one block');
+  assert.match(card,/<b>test2<\/b><span class="pct">19%<\/span>/,'the wave percent while it runs — not 0% and 19% side by side');
+  assert.match(card,/פעיל · 1 מחשבים · 0\/2 דיסקים נכתבו · <bdi dir="ltr">51.2 MB\/s<\/bdi>/);
+  assert.doesNotMatch(card,/1\/3 מחשבים/,'never the whole group');
+  const now=run('homeNowRows(true)').map(r=>r.join('|')).join(' // ');
+  assert.doesNotMatch(now,/סבב הפצה — test2/); assert.match(now,/סבב שיכפול — test2.*1 מחשבים · 2 דיסקים.*--w:19%/);
+  run('OVERVIEW.room.wave_session_id="ses_other"');
+  assert.equal((run('homeRoundCard()').match(/<div class="round">/g)||[]).length,2,'a different session is still shown');
+});
+test('"needs attention" lists the unregistered machine, the unreachable branch and the health warning — each with an action button (Nadav 18/10: no disk)',async()=>{
   const {run}=await loaded();
   run('SECONDARY_STATUS={haifa:{connected:false,error:"timeout"}}');
   const html=run('home(0)');
   const card=html.slice(html.indexOf('id="home-attn"'),html.indexOf('</ul>',html.indexOf('id="home-attn"')));
-  assert.match(card,/<summary>.*דורש טיפול<\/span><span class="cnt">4<\/span><\/summary>/,'a row with a counter');
+  assert.match(card,/<summary>.*דורש טיפול<\/span><span class="cnt">3<\/span><\/summary>/,'a row with a counter');
   assert.match(html,/id="home-attn" open/,'#1300: open by default (console-full.html)');
   assert.ok(html.indexOf('id="home-attn"')<html.indexOf('<div class="kpi '),'the row sits between the header and the numbers');
   // ‏#1300: הפעולה — כפתור בעמודה נפרדת בסוף השורה, לא קישור בתוך הטקסט
   const btn=(label,fn)=>new RegExp(`<\\/div><button class="btn sm flat" onclick="${fn}">${label}<\\/button><\\/li>`);
-  assert.match(card,/<b>דיסק אדום<\/b> — 2 · דיסק 3 \(<span class="mono">S5Y2NX0R<\/span>\) נכשל בכתיבה, סיבה: כבל\/חריץ SATA 2\./);
-  assert.match(card,btn('נקה אחרי החלפה',"selectPageById\\('machines'\\)"));
+  assert.doesNotMatch(card,/S5Y2NX0R|נכשל בשיכפול הקודם|נקה אחרי החלפה/,'Nadav 18/10: the failed disk is not here');
   assert.match(card,/<b>מכונה לא רשומה<\/b> ברשת ההפצה — <span class="mono">de:ad:be:ef:00:01<\/span> קיבלה <bdi dir="ltr">10.44.12.199<\/bdi>/);
   assert.match(card,btn('רשום','openNewMachine\\(\\)'));
   // טקסט גולמי באנגלית (שגיאת מערכת מהשרת) לא בגוף הפריט — מאחורי "פרטים טכניים"
-  assert.match(card,/<b>סניף סניף חיפה לא מגיב<\/b>\.<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">timeout<\/code><\/details><\/div><button class="btn sm flat" onclick="selectPageById\('branches'\)">פרטי הסניף<\/button>/);
+  assert.match(card,/<b>שרת משנה חיפה לא מגיב<\/b>\.<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">timeout<\/code><\/details><\/div><button class="btn sm flat" onclick="selectPageById\('branches'\)">פרטי שרת המשנה<\/button>/);
   assert.match(card,/<b>מולטיקאסט<\/b>\.<details class="tech"><summary>פרטים טכניים<\/summary><code dir="ltr">udp-sender לא נמצא<\/code><\/details><\/div><button class="btn sm flat" onclick="selectPageById\('health'\)">לבריאות<\/button>/);
   assert.doesNotMatch(card,/<div class="b">[^<]*<a /,'no inline link inside the item text');
   assert.doesNotMatch(card.replace(/<details class="tech">.*?<\/details>/g,''),/timeout|udp-sender/,'no raw English outside the technical details');
@@ -453,29 +487,36 @@ test('UI.noteTech: raw Latin error text goes behind "technical details"; a Hebre
   assert.match(run(`UI.noteTech("warn","a","<script>alert(1)</script>")`),/&lt;script&gt;/,'escaped');
 });
 
-// ---- #1300: סניפים ודוק המשימות -------------------------------------------------
-test('#1300: branches card — one tile per configured secondary: status dot, last seen, version (read from the secondary; never read = not checked)',async()=>{
+// ---- נדב 18/10: אין כרטיס "שרתי משנה" בסקירה ("יש בשביל זה את הלשוניות") — ההתראות נשארות ----
+test('Nadav 18/10: the overview has no secondary-servers card, with secondaries configured', async () => {
   const s=await loaded();
-  s.run(`HOME.nodes=[{id:'haifa',label:'סניף חיפה',disabled_at:null,last_seen_at:'${today}T09:44:00Z',server_version:'v0.72.0',server_version_at:'${today}T09:44:00Z'},{id:'bs',label:'באר שבע',disabled_at:null,last_seen_at:null},{id:'old',label:'ישן',disabled_at:'2026-09-01T00:00:00Z',server_version:null,server_version_at:'2026-08-30T00:00:00Z'}]`);
-  s.run('SECONDARY_STATUS={haifa:{connected:true},bs:{connected:false,error:"timeout"}}');
+  s.run(`HOME.nodes=[{id:'haifa',label:'חיפה',disabled_at:null,last_seen_at:'${today}T09:44:00Z'}]`);
+  s.run('SECONDARY_STATUS={haifa:{connected:true}}');
   const html=s.run('home(0)');
-  const card=html.slice(html.indexOf('<span>סניפים</span>'));
-  assert.ok(html.indexOf('<span>שירותים')<html.indexOf('<span>סניפים</span>'),'after the services card');
-  assert.equal((card.match(/<div class="tile"/g)||[]).length,3);
-  assert.match(card,/<span class="led ok"><\/span><div><div class="tt">סניף חיפה<\/div><small>מחובר · נראה לאחרונה \d\d:\d\d · גרסה v0.72.0<\/small>/);
-  assert.match(card,/title="לא מגיב · לא נראה עדיין · גרסה לא נבדקה — timeout"><span class="led err"><\/span>/);
-  assert.match(card,/<span class="led "><\/span><div><div class="tt">ישן<\/div><small>מושבת · [^<]*גרסה לא ידועה<\/small>/);
-  assert.match(card,/selectPageById\('branches'\)">לסניפים</);
+  assert.doesNotMatch(html,/<span>שרתי משנה<\/span>/,'no card titled שרתי משנה');
+  assert.doesNotMatch(html,/<div class="tt">חיפה<\/div>/,'no tile per secondary');
+  assert.doesNotMatch(html,/>לשרתי המשנה</,'no "to the secondaries" card button');
+  assert.equal(s.run('typeof homeBranchesCard'),'undefined');
   balanced(html);
-  s.run('SECONDARY_STATUS={}');
-  assert.match(s.run('homeBranchesCard()'),/<span class="led "><\/span><div><div class="tt">סניף חיפה<\/div><small>לא נבדק · /,'unmeasured is grey "not checked", never green');
 });
-test('#1300: branches — none configured = nothing; an unread list is said, not hidden (principle 5)',async()=>{
+test('Nadav 18/10: without the card the alerts stay -- a silent secondary and an unread list are in "דורש טיפול"', async () => {
   const s=await loaded();
-  s.run('HOME.nodes=[]');
-  assert.equal(s.run('homeBranchesCard()'),'');
-  s.run('HOME.nodes=null;HOME.err.nodes="db locked"');
-  assert.match(s.run('homeBranchesCard()'),/<span>סניפים<\/span>.*<div class="note warn">.*רשימת הסניפים לא נקראה — db locked/);
+  s.run(`HOME.nodes=[{id:'haifa',label:'חיפה',disabled_at:null}]`);
+  s.run('SECONDARY_STATUS={haifa:{connected:false,error:"timeout"}}');
+  assert.match(s.run('homeAttention()'),/<b>שרת משנה חיפה לא מגיב<\/b>/);
+  s.run('HOME.nodes=null;HOME.err.nodes="db locked";SECONDARY_STATUS={}');
+  const att=s.run('homeAttention()');
+  assert.match(att,/<b>רשימת שרתי המשנה לא נקראה<\/b> — לא ידוע אם הם עונים\./,'said, not hidden, even with nothing else to handle');
+  assert.match(att,/<code dir="ltr">db locked<\/code>/,'the raw reason in the technical details');
+  assert.match(att,/selectPageById\('branches'\)">לשרתי המשנה</);
+});
+test('Nadav 18/10: the alert bell counts a secondary that did not answer, not one that did', async () => {
+  const s=await loaded();
+  const badge=s.node('#alertBadge'); badge.removeAttribute=()=>{}; badge.setAttribute=()=>{};
+  s.run('MACHINES=[];HEALTH=[];SECONDARY_STATUS={haifa:{connected:true}}');
+  s.run('updateAlertBadge()'); assert.equal(badge.textContent,'');
+  s.run('SECONDARY_STATUS={haifa:{connected:false,error:"timeout"},bs:{connected:true}}');
+  s.run('updateAlertBadge()'); assert.equal(badge.textContent,'1');
 });
 test('#1300: the task dock ("what is happening now") opens by itself when activity starts — once, not against a manual close',async()=>{
   const s=setup();
@@ -518,4 +559,22 @@ test('#1300: an active cloner round and inter-site transfers are dock activity t
   s.run('HOME.transfers=[]'); s.run('home(0)');
   s.run('OVERVIEW.room={state:"active",image_name:"X",target_drives:2,written_drives:0,wave_state:"running"}');
   s.run('home(0)'); assert.equal(toggles,2,'a cloner round opens it');
+});
+test('Nadav 18/10: no disk information in "needs attention" — not a failed write (red or orange), not NVMe SMART, not "נקה אחרי החלפה"; the machines page and the machine drawer still show it and clear it',async()=>{
+  const {run}=await loaded();
+  run('SECONDARY_STATUS={}; HOME.net=[]; HEALTH=[]');
+  run('DISK_FAILURES='+JSON.stringify([{id:2,mac:'cc:cc:cc:cc:cc:cc',port:3,disk_number:3,serial:'S6PN',cause:'readonly'},
+                                        {id:3,mac:'cc:cc:cc:cc:cc:cc',port:1,disk_number:1,serial:'S1X',cause:'cable'}]));
+  run(`MACHINES[0].probe_verdicts=[{key:'nvme:nvme0n1',level:'err',text_he:'NVMe nvme0n1: 2 שגיאות מדיה'},{key:'battery',level:'err',text_he:'המחשב על סוללה'}]`);
+  const html=run('home(0)');
+  const card=html.slice(html.indexOf('id="home-attn"'),html.indexOf('</ul>',html.indexOf('id="home-attn"')));
+  assert.doesNotMatch(html,/S6PN|S1X|נכשל בשיכפול הקודם|נקה אחרי החלפה|קריאה בלבד|NVMe/,'not a word about disks on the overview');
+  assert.match(card,/<span class="cnt">1<\/span>/,'only the battery verdict -- a machine item that is not a disk stays');
+  assert.match(card,/המחשב על סוללה/);
+  assert.match(run('machinesTabs().join("|")'),/דיסקים אדומים \(2\)/);
+  const tab=run('diskFailuresCard()');   // the body of that tab
+  assert.match(tab,/clearDiskFailure\(2\)/); assert.match(tab,/clearDiskFailure\(3\)/);
+  const drawer=run('machineDrawerHtml(MACHINES[0])');
+  assert.match(drawer,/clearDiskFailure\(2\)">נקה אחרי החלפה/,'cleared from the machine drawer');
+  assert.match(drawer,/clearDiskFailure\(3\)">נקה אחרי החלפה/);
 });

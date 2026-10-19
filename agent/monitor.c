@@ -46,7 +46,7 @@
 
 #define DEFAULT_PORT 5900
 #define DEFAULT_FPS 10
-#define UINPUT_NAME "ImageCtl remote monitor"
+#define UINPUT_NAME "ImageSrv remote monitor"
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
 /*
@@ -279,6 +279,16 @@ static int ascii_key(rfbKeySym symbol) {
         return digits[symbol - '0'];
 
     switch (symbol) {
+    case ')': return KEY_0;
+    case '!': return KEY_1;
+    case '@': return KEY_2;
+    case '#': return KEY_3;
+    case '$': return KEY_4;
+    case '%': return KEY_5;
+    case '^': return KEY_6;
+    case '&': return KEY_7;
+    case '*': return KEY_8;
+    case '(': return KEY_9;
     case '-': case '_': return KEY_MINUS;
     case '=': case '+': return KEY_EQUAL;
     case '[': case '{': return KEY_LEFTBRACE;

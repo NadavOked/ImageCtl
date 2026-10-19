@@ -130,7 +130,7 @@ def normalize_config(role_value: str, url: str | None) -> tuple[str, str]:
     url = (url or "").strip()
     if role_value == ROLE_SECONDARY and not url:
         raise StorageConfigError(
-            "שרת משני מחייב כתובת שרת ראשי (--primary-url)")
+            "שרת משנה מחייב כתובת שרת ראשי (--primary-url)")
     return role_value, (url if role_value == ROLE_SECONDARY else "")
 
 
@@ -189,10 +189,10 @@ def assert_can_manage_nodes(conn, user: tuple[str, str]) -> None:
     """
     if user[1] != "admin":
         raise NodeManagementUnauthorized(
-            "ניהול שרתים משניים מותר למנהל בלבד")
+            "ניהול שרתי משנה מותר למנהל בלבד")
     if role(conn) != ROLE_STANDALONE:
         raise NodeManagementForbidden(
-            "ניהול שרתים משניים אפשרי רק בשרת ראשי (standalone)")
+            "ניהול שרתי משנה אפשרי רק בשרת ראשי (standalone)")
 
 
 # --- קבוצות אחסון ----------------------------------------------------------
@@ -334,7 +334,7 @@ def edit_node(conn, node_id: str, user: tuple[str, str], *,
     if label is not _UNSET:
         label = (label or "").strip()
         if not label:
-            raise ValueError("שם המשני ריק")
+            raise ValueError("שם שרת המשנה ריק")
     if group_id is not _UNSET:
         group_id = group_id or None
         # קבוצה שאינה קיימת נדחית בקול — אחרת ה-FK היה זורק IntegrityError סתום.
@@ -353,13 +353,13 @@ def edit_node(conn, node_id: str, user: tuple[str, str], *,
                 "UPDATE storage_nodes SET label = ? WHERE id = ?",
                 (label, node_id),
             ).rowcount != 1:
-                raise ValueError("משני לא קיים")
+                raise ValueError("שרת משנה לא קיים")
         if group_id is not _UNSET:
             if conn.execute(
                 "UPDATE storage_nodes SET group_id = ? WHERE id = ?",
                 (group_id, node_id),
             ).rowcount != 1:
-                raise ValueError("משני לא קיים")
+                raise ValueError("שרת משנה לא קיים")
     detail = [f"label={label}"] if label is not _UNSET else []
     if group_id is not _UNSET:
         detail.append(f"group={group_id or '—'}")
@@ -378,7 +378,7 @@ def set_node_disabled(conn, node_id: str, disabled: bool,
             conn, "UPDATE storage_nodes SET disabled_at = ? WHERE id = ?",
             (stamp, node_id),
         ):
-            raise ValueError("משני לא קיים")
+            raise ValueError("שרת משנה לא קיים")
     journal(conn, "storage_node_disable" if disabled else "storage_node_enable",
             node_id, user[0])
 
@@ -389,7 +389,7 @@ def delete_node(conn, node_id: str, user: tuple[str, str]) -> None:
         if not update_one(
             conn, "DELETE FROM storage_nodes WHERE id = ?", (node_id,)
         ):
-            raise ValueError("משני לא קיים")
+            raise ValueError("שרת משנה לא קיים")
     journal(conn, "storage_node_delete", node_id, user[0])
 
 
@@ -432,6 +432,14 @@ def has_parent(conn) -> bool:
     ).fetchone() is not None
 
 
+def parent_last_contact(conn) -> str | None:
+    """Last positively authenticated contact from the paired parent."""
+    row = conn.execute(
+        "SELECT last_contact_at FROM parent_credentials WHERE singleton = 1"
+    ).fetchone()
+    return row["last_contact_at"] if row is not None else None
+
+
 def assert_local_pairing_allowed(conn, user: tuple[str, str]) -> None:
     """השומר של פעולות ה-pairing המקומיות: admin **וגם** secondary.
 
@@ -441,7 +449,7 @@ def assert_local_pairing_allowed(conn, user: tuple[str, str]) -> None:
         raise NodeManagementUnauthorized("פעולת pairing מותרת למנהל בלבד")
     if role(conn) != ROLE_SECONDARY:
         raise NotSecondaryError(
-            "חלון pairing נפתח רק על שרת משני (secondary)")
+            "חלון pairing נפתח רק על שרת משנה (secondary)")
 
 
 def open_local_pairing(conn, user: tuple[str, str]) -> dict:
@@ -514,7 +522,7 @@ PHYSICAL_ACTOR = "dcui"
 def _assert_secondary(conn) -> None:
     if role(conn) != ROLE_SECONDARY:
         raise NotSecondaryError(
-            "חלון pairing נפתח רק על שרת משני (secondary)")
+            "חלון pairing נפתח רק על שרת משנה (secondary)")
 
 
 def open_physical_pairing(conn) -> dict:
@@ -754,16 +762,19 @@ def contact_fields(conn, node_id: str) -> dict:
     return {k: row[k] for k in CONTACT_FIELDS}
 
 
-def node_client(conn, data_dir, node) -> tuple:
+def node_client(conn, data_dir, node, *, timeout: float | None = None) -> tuple:
     """‏``(PinnedMTLSClient לא-פתוח, token)`` למשני רשום: הטוקן מקובץ ה-0600,
-    תעודת-הלקוח מזהות השרת, וה-SPKI המוצמד מהרשומה. הקורא פותח ב-``with``."""
+    תעודת-הלקוח מזהות השרת, וה-SPKI המוצמד מהרשומה. הקורא פותח ב-``with``.
+    ‏``timeout`` (‏#1564, הדופק) = תקרה קצרה גם ל-handshake וגם לבקשה;
+    ‏``None`` = ברירות המחדל של הלקוח."""
     from . import storage_client
     token = interserver_auth.load_credential(node["credential_ref"])
     ident = identity(conn, data_dir=data_dir)
     host, port, _ = interserver_auth.parse_interserver_url(node["base_url"])
     client = storage_client.PinnedMTLSClient(
         host, port, expected_secondary_spki=node["pinned_spki"],
-        cert_pem=ident["cert_pem"], key_pem=ident["key_pem"])
+        cert_pem=ident["cert_pem"], key_pem=ident["key_pem"],
+        **({} if timeout is None else {"timeout": timeout, "request_timeout": timeout}))
     return client, token
 
 
@@ -804,6 +815,16 @@ def rebind_parent_cert(conn, *, bound_cert_ref: str) -> None:
             raise ValueError("אין אב רשום לעדכון הכריכה")
 
 
+def record_parent_contact(conn) -> None:
+    """Record positive contact only after the shared parent guard succeeded."""
+    with _write_lock, writing(conn):
+        cur = conn.execute(
+            "UPDATE parent_credentials SET last_contact_at = ? WHERE singleton = 1",
+            (now_iso(),))
+        if cur.rowcount != 1:
+            raise ValueError("אין אב רשום לעדכון מגע")
+
+
 #: ‏#883: צורת מזהה המשני — ``sn_`` + 16 הקסה (``node_id_from_spki``). זה
 #: גם שם קובץ הטוקן ב-``secondaries/``, ולכן הצורה נאכפת כאן ולא רק
 #: בנקודת הגזירה.
@@ -827,7 +848,7 @@ def enroll_node(conn, user: tuple[str, str], *, label: str, base_url: str,
     assert_can_manage_nodes(conn, user)
     label = (label or "").strip()
     if not label:
-        raise ValueError("שם המשני ריק")
+        raise ValueError("שם שרת המשנה ריק")
     if not valid_node_id(node_id):
         raise ValueError(f"מזהה משני לא תקין: {node_id!r}")
     if group_id and conn.execute(

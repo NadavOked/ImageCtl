@@ -1,6 +1,8 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "canceldlg.h"
+#include "lcui.h"
 #include "screens_rounds.h"
 
 /* ---- #695: visual room machine grid ------------------------------------- */
@@ -151,11 +153,17 @@ static int room_machine_all_selected(const App *a, const Machine *m) {
     int any = 0;
     for (int i = 0; i < m->nroom_drawers; i++) {
         const RoomDrawer *d = &m->room_drawers[i];
-        if (!room_selectable(d)) continue;
+        if (!room_pickable(d)) continue;   /* #1732 */
         any = 1;
         if (!room_selection_override(a, m, d->port, d->selected)) return 0;
     }
     return any;
+}
+
+int room_picked(const App *a, const char *mac) {
+    for (int i = 0; i < a->nroom_pick; i++)
+        if (!strcmp(a->room_pick[i], mac)) return 1;
+    return 0;
 }
 
 static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
@@ -163,24 +171,26 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
     const Theme *t = a->theme;
     const char *name = m->name[0] ? m->name : m->mac;
     /* The name is a button (#714): click it to select/clear every disk of the
-     * machine. It fills indigo when they are all selected, so the state shows. */
-    int all_sel = m->awake && room_machine_all_selected(a, m);
+     * machine. It fills indigo when they are all selected, so the state shows.
+     * Nadav 17/10: an off machine's name is a button too -- it picks the
+     * machine itself for "הער", before it has reported a single drawer. */
+    int picked = room_picked(a, m->mac);
+    int all_sel = picked || (m->awake && room_machine_all_selected(a, m));
     int warn = m->awake && room_machine_has_warn(m);
     int nsel = 0;                                  /* owner, 10/10: say how many are picked */
     for (int i = 0; m->awake && i < m->nroom_drawers; i++)
-        if (room_selectable(&m->room_drawers[i]) && room_selection_override(a, m, m->room_drawers[i].port, m->room_drawers[i].selected)) nsel++;
+        if (room_pickable(&m->room_drawers[i]) && room_selection_override(a, m, m->room_drawers[i].port, m->room_drawers[i].selected)) nsel++;
     char st[96];
     if (m->awake && nsel) snprintf(st, sizeof st, "ער · %d מגירות מוכנות · %d נבחרו", m->fresh_drawers, nsel);
-    else if (m->awake)    snprintf(st, sizeof st, "ער · %d מגירות מוכנות", m->fresh_drawers);
-    else                  snprintf(st, sizeof st, "כבוי");
+    else if (m->awake)    snprintf(st, sizeof st, "ער · %d מגירות מוכנות%s", m->fresh_drawers, picked ? " · נבחר" : "");
+    else                  snprintf(st, sizeof st, "%s", picked ? "כבוי · נבחר להערה" : "כבוי");
     Text small = text_make(cr, FONT_SANS, N_NODE_SUB, 400, st, (int)(item.w - 2*N_ROOM_PAD), DIR_RTL);
-    Rect card = room_node_chrome(a, cr, item, g, name, all_sel,
-                                 m->awake ? HIT_ROOM_MACHINE_BASE + mi : 0,
+    Rect card = room_node_chrome(a, cr, item, g, name, all_sel, HIT_ROOM_MACHINE_BASE + mi,
                                  m->awake ? (warn ? t->warn : t->led_ok) : t->hair,
                                  !m->awake ? t->disk_line : warn ? t->node_warn_line : t->node_active_line,
                                  &small);
     text_free(&small);
-    if (nsel) draw_border_rrect(cr, item, RADIUS_SM, t->indigo, 2);   /* a machine with picked disks */
+    if (nsel || picked) draw_border_rrect(cr, item, RADIUS_SM, t->indigo, 2);   /* a picked machine */
 
     int slots = room_rows(m);
     int mapped_rows = m->nrslots > 0 ? m->nrslots : m->drawer_count;
@@ -193,13 +203,13 @@ static void room_machine_draw(App *a, cairo_t *cr, const Machine *m, int mi,
         const RoomDrawer *d = room_drawer_row(m, row, &j);
         int mapped = row < mapped_rows;
         Rect slot = { sx, sy + row * (g->slot_h + SLOT_GAP), sw, g->slot_h };
-        int selected = d && room_selectable(d) && room_selection_override(a, m, d->port, d->selected);
+        int selected = d && room_pickable(d) && room_selection_override(a, m, d->port, d->selected);   /* #1732 */
         int avail = m->awake && d && room_selectable(d);
         /* owner, 10/10: picked vs not must read at a glance. Picked = the
          * SMART colour solid, a 3px action ring 2px outside and a check at
          * the start. Available but not picked = the same colour lightened
          * (45% surface) inside a border of the colour itself -- the SMART
-         * meaning (green ok / orange warn / red failed_last) stays. */
+         * meaning (green ok / orange warn, failed_last / red SMART fail, #1580) stays. */
         Rgb smart = avail ? room_drawer_color(t, d) : t->led_idle;
         Rgb light = { smart.r * .55 + t->surface.r * .45, smart.g * .55 + t->surface.g * .45,
                       smart.b * .55 + t->surface.b * .45 };
@@ -321,67 +331,116 @@ static void room_grid_draw(App *a, cairo_t *cr, double x, double y,
     }
 }
 
-/* The live round as .room-node tiles.  The protocol has one progress value
- * per machine and SMART per physical drawer, so every drawer gets its own
- * labelled bar with the machine progress and its own health colour. */
-static void room_live_grid_draw(App *a, cairo_t *cr, double x, double y, double w,
-                                const RoomGrid *g, int wave_open) {
-    const Theme *t = a->theme;
-    if (a->st.nmachines == 0) {
-        Text empty = sub_make(cr, "אין מחשבי שיכפול רשומים — רושמים אותם בקונסולה, במסך המחשבים.", w);
-        text_draw_r(cr, &empty, x + w, y, t->muted);
-        text_free(&empty);
-        return;
-    }
-    for (int i = 0; i < a->st.nmachines; i++) {
-        const Machine *m = &a->st.machines[i];
-        int row = i / g->cols, col = i % g->cols;
-        Rect item = { x + w - g->card_w - col * (g->card_w + g->gap), y + row * (g->item_h + g->gap),
-                      g->card_w, g->item_h };
-        int on = m->awake || m->joined;
-        int failed = !strcmp(m->state, "failed"), partial = !strcmp(m->state, "partial");
-        char mk[1024];
-        room_status_markup(a, m, wave_open ? ROWS_ROOM_SETUP : ROWS_ROOM_LIVE, mk, sizeof mk);
-        Text small = text_make_markup(cr, FONT_SANS, N_NODE_SUB, 400, mk, (int)(item.w - 2*N_ROOM_PAD), DIR_RTL);
-        if (!on) cairo_push_group(cr);                       /* .room-row.dim{opacity:.55} */
-        Rect body = room_node_chrome(a, cr, item, g, m->name[0] ? m->name : m->mac, 0, 0,
-                  failed ? t->danger : partial ? t->warn : on ? t->led_ok : t->hair,
-                                     failed ? t->danger : partial ? t->node_warn_line : on ? t->node_active_line : t->disk_line,
-                                     &small);
-        text_free(&small);
-        int pct = m->pct >= 0 ? m->pct : (!strcmp(m->state, "done") ? 100 : 0);
-        /* mockup 10/10: a bar per disk the machine REPORTED (present
-         * drawers, by port), not per configured slot -- a slot with no disk
-         * was drawn as "דיסק 3 —" with the machine's progress on it. */
-        const RoomDrawer *found[MAX_DRAWERS]; int nfound = 0;
-        for (int j = 0; j < m->nroom_drawers; j++) if (m->room_drawers[j].present) {
-            const RoomDrawer *v = &m->room_drawers[j]; int k = nfound;
-            while (k > 0 && room_drawer_after(found[k - 1], v)) { found[k] = found[k - 1]; k--; }
-            found[k] = v; nfound++;
+/* Nadav 17/10 ("גרסה ב׳"): the live round in the local clone's design -- one
+ * cage per cloner of the round, a row per drawer it writes (lcbay.c). Which
+ * drawer is a target: its own target state (room_drawer fields 16-17); an
+ * older agent has none, and every present drawer takes the machine's. */
+static int live_target(const RoomDrawer *d) {
+    return d->present && (!d->own_progress || d->tstate[0] || d->selected);
+}
+
+static int live_kind(const Machine *m, const RoomDrawer *d) {
+    const char *st = d->own_progress ? d->tstate : m->state;
+    if (!strcmp(st, "cancelled")) return BAY_CANCELED;                           /* #1386 */
+    if (!strcmp(st, "writing") && d->cancel_text[0]) return BAY_CANCELING;
+    if (!strcmp(st, "writing") || !strcmp(st, "verifying")) return BAY_WRITING;
+    if (!strcmp(st, "done")) return BAY_DONE;
+    if (!strcmp(st, "failed")) return BAY_FAILED;
+    if (!strcmp(st, "skipped")) return BAY_SKIPPED;
+    return BAY_WAITING;
+}
+
+static int live_pct(const Machine *m, const RoomDrawer *d) {
+    int k = live_kind(m, d);
+    if (k == BAY_DONE) return 100;
+    if (k == BAY_SKIPPED || k == BAY_CANCELED || k == BAY_CANCELING) return -1;   /* #1386: empty, not "16%" */
+    return d->own_progress ? d->pct : m->pct;
+}
+
+static void live_bay(const Theme *t, const State *s, const Machine *m, const RoomDrawer *d, LcBay *y) {
+    memset(y, 0, sizeof *y);
+    y->kind = live_kind(m, d);
+    y->drawer = eff_drawer(d->drawer, d->port);
+    room_drawer_label(m, d, y->name, sizeof y->name);
+    char sz[32] = "", mi[96] = "";
+    fmt_bytes(sz, sizeof sz, (double)d->size_bytes);
+    if (d->model[0]) bidi_isolate(d->model, mi, sizeof mi);
+    snprintf(y->sub, sizeof y->sub, "%s%s%s", sz, mi[0] ? " · " : "", mi);
+    /* #432/#1366/#652: the drawer's health, the grid's colour (room_drawer_color: SMART
+     * first, then a slow link or a risen CRC); words only when it is not green */
+    y->toned = 1; y->tone = room_drawer_color(t, d);
+    y->note = smart_level(d->smart) ? smart_he_why(d->smart, d->smart_reason) :   /* #1742 */ d->link_slow ? "קישור איטי" : d->crc_suspect ? "CRC עלה" : NULL;
+    int pct = live_pct(m, d);
+    if (pct >= 0) { snprintf(y->pct, sizeof y->pct, "%d%%", pct > 100 ? 100 : pct); y->share = pct / 100.0; }
+    else { snprintf(y->pct, sizeof y->pct, "%s", "—"); y->share = -1; }
+    switch (y->kind) {
+    case BAY_WRITING:
+        if (s->rate_bps > 0) { char r[48], ri[64]; snprintf(r, sizeof r, "%.0f MB/s", s->rate_bps / 1e6);
+            bidi_isolate(r, ri, sizeof ri); snprintf(y->line, sizeof y->line, "כותב · %s", ri); }
+        else snprintf(y->line, sizeof y->line, "כותב");
+        break;
+    case BAY_DONE:   y->pill = "הושלם"; snprintf(y->line, sizeof y->line, "הושלם · נבדק"); break;   /* #1331 mockup v2 */
+    case BAY_FAILED:
+        y->pill = "נכשל";
+        {   /* the machine's error is "sdb: <why>; sdc: <why>" -- the why, without the device */
+            const char *why = m->error, *colon = strstr(why, ": ");
+            if (colon && colon - why < 12) why = colon + 2;
+            snprintf(y->line, sizeof y->line, "נכשל%s%s", why[0] ? ": " : "", why);
         }
-        int slots = nfound ? nfound : 1;
-        double slot_h = body.h / slots;
-        for (int k = 0; k < slots; k++) {
-            const RoomDrawer *d = nfound ? found[k] : NULL;
-            /* #704: the slot's name instead of "דיסק N" when the operator gave one */
-            char size[32] = "—", label[SLOT_NAME_MAX + 128], base[SLOT_NAME_MAX + 64], percent[16];
-            if (d && d->size_bytes) fmt_bytes(size, sizeof size, (double)d->size_bytes);
-            /* #1495: "דיסק N" by the drawer (room_drawer_label), never by port */
-            if (d) { room_drawer_label(m, d, base, sizeof base); snprintf(label, sizeof label, "%s  %s", base, size); }
-            else   snprintf(label, sizeof label, "%s", "לא דווחו דיסקים");
-            snprintf(percent, sizeof percent, "%d%%", pct);
-            Text lt = rtl_block_make(cr, 11, 500, label, body.w - 48);
-            Text pt = text_make(cr, FONT_MONO, 11, 500, percent, 0, DIR_LTR);
-            double sy = body.y + k * slot_h;
-            text_draw_r(cr, &lt, body.x + body.w, sy, t->ink);
-            text_draw(cr, &pt, body.x, sy, t->muted);
-            Rgb bar = failed ? t->danger : partial ? t->warn :
-                      d ? room_drawer_color(t, d) : t->bar_done;
-            draw_thin_bar(cr, t, (Rect){body.x, sy + 15, body.w, N_BAR_SM}, pct, bar);
-            text_free(&lt); text_free(&pt);
-        }
-        if (!on) { cairo_pop_group_to_source(cr); cairo_paint_with_alpha(cr, N_DIM_ALPHA); }
+        break;
+    case BAY_SKIPPED: y->pill = "דולג"; snprintf(y->line, sizeof y->line, "דולג לפי הכרעת SMART"); break;
+    case BAY_CANCELED:   /* #1386: the server's "בוטל על ידי … · 16:06" */
+        y->pill = "בוטל"; y->toned = 0;
+        snprintf(y->line, sizeof y->line, "%s · טבלת המחיצות נמחקה, ריק", d->cancel_text[0] ? d->cancel_text : "בוטל");
+        break;
+    case BAY_CANCELING: y->pill = "מבטל…"; y->toned = 0;
+        snprintf(y->line, sizeof y->line, "עוצר את הכתיבה ומוחק את טבלת המחיצות…"); break;
+    default: snprintf(y->line, sizeof y->line, "%s", s->wave_open ? "ממתין שהגל יצא" : "ממתין לתחילת הזרם");
     }
+    /* #1331 (mockup v2): the drawer's drivers, under its bar */
+    if (d->drv_state[0]) lc_bay_drivers(y, d->drv_state, d->drv_detail, d->drv_boot, d->drv_bsvc, d->drv_berr);
+    if (d->drv_lstate[0]) lc_bay_linux(y, d->drv_lstate, d->drv_lmod, d->drv_ldet);   /* #1331 T8 */
+}
+
+/* #1386: the drawers "בטל דיסק זה" can name on this screen -- writing now (own
+ * target state), with a device, not already asked -- in cage and row order. A
+ * row's button is HIT_BAY_CANCEL_BASE + its index here. */
+static int live_bays(const Machine *m, const RoomDrawer **out);
+static int live_cancelable(const RoomDrawer *d) {
+    return d->own_progress && !strcmp(d->tstate, "writing") && d->dev[0] && !d->cancel_text[0];
+}
+
+int room_cancel_picks(const App *a, CancelPick *out, int max) {
+    const State *s = &a->st; int k = 0;
+    if (!s->has_round) return 0;
+    for (int i = 0; i < s->nmachines; i++) {
+        const Machine *m = &s->machines[i]; const RoomDrawer *b[MAX_DRAWERS];
+        int nb = live_bays(m, b);
+        for (int j = 0; j < nb && k < max; j++) {
+            if (!live_cancelable(b[j])) continue;
+            CancelPick *p = &out[k++]; memset(p, 0, sizeof *p);
+            snprintf(p->mac, sizeof p->mac, "%s", m->mac); snprintf(p->dev, sizeof p->dev, "%s", b[j]->dev);
+            room_drawer_label(m, b[j], p->label, sizeof p->label);
+            p->drawer = eff_drawer(b[j]->drawer, b[j]->port);
+            if (p->drawer > 0) snprintf(p->where, sizeof p->where, "מחשב שיכפול %s · מגירה %d", m->name[0] ? m->name : m->mac, p->drawer);
+            else snprintf(p->where, sizeof p->where, "מחשב שיכפול %s", m->name[0] ? m->name : m->mac);
+            snprintf(p->model, sizeof p->model, "%s", b[j]->model);
+            fmt_bytes(p->size, sizeof p->size, (double)b[j]->size_bytes);
+            p->pct = b[j]->pct;
+        }
+    }
+    return k;
+}
+
+/* the drawers of a machine that the round writes, in drawer order */
+static int live_bays(const Machine *m, const RoomDrawer **out) {
+    int n = 0;
+    for (int j = 0; j < m->nroom_drawers; j++) if (live_target(&m->room_drawers[j])) {
+        const RoomDrawer *v = &m->room_drawers[j]; int k = n;
+        while (k > 0 && room_drawer_after(out[k - 1], v)) { out[k] = out[k - 1]; k--; }
+        out[k] = v; n++;
+    }
+    return n;
 }
 
 /* mockup 10/10 ("חדר + סבב חי"): "עצור סבב…" stands apart at the start as
@@ -391,7 +450,7 @@ static void room_live_grid_draw(App *a, cairo_t *cr, double x, double y, double 
  * waiting for replaced disks. Same test as the console (roomWaveProgress). */
 static int wave_ended(const State *s) { return s->wave_open && s->wave_number > 1 && s->remaining > 0; }
 
-static void live_footer(App *a, cairo_t *cr, Rect foot) {
+static void live_footer(App *a, cairo_t *cr, Rect foot, int boot_red) {
     const Theme *t = a->theme; const State *s = &a->st;
     double bh = btn_height(cr), by = foot.y + N_ACTION_TOP;
     Text stop = btn_label(cr, "עצור סבב…");
@@ -401,6 +460,12 @@ static void live_footer(App *a, cairo_t *cr, Rect foot) {
     if(a->admin){
         Text all=btn_label(cr,"כבה את כל החדר");double aw=btn_width(&all);sx-=aw+8;
         draw_btn(a,cr,(Rect){sx,by,aw,bh},&all,BTN_GHOST_DANGER,HIT_ROOM_POWEROFF_ALL);text_free(&all);
+    }
+    CancelPick picks[MAX_CANCEL_PICKS];
+    int ncancel = room_cancel_picks(a, picks, MAX_CANCEL_PICKS);
+    if (ncancel) {   /* #1386: "בטל דיסק…" -- X; the window chooses among the writers */
+        Text cx = btn_label(cr, "בטל דיסק…  X"); double cw = btn_width(&cx); sx -= cw + 8;
+        draw_btn(a, cr, (Rect){ sx, by, cw, bh }, &cx, BTN_GHOST_DANGER, HIT_CDLG_OPEN); text_free(&cx);
     }
     Text labels[3]; int kinds[3], ids[3], nb = 0;     /* from the inline end: the primary first */
     if (s->wave_open) { labels[nb] = btn_label(cr, "התחל עכשיו"); kinds[nb] = BTN_PRIMARY; ids[nb++] = HIT_ROOM_START; }
@@ -415,7 +480,10 @@ static void live_footer(App *a, cairo_t *cr, Rect foot) {
     }
     double room = sx - 12 - (x + 4);
     if (room > 80) {
-        Text h = rtl_block_make(cr, 12, 400, "עצירה באמצע — אחרי אישור בחלון", room);
+        /* #1331: a disk that may not boot outranks the stop hint (and #1386's cancel hint) */
+        Text h = rtl_block_make(cr, 12, 400, boot_red ? "הדיסק האדום — לבדוק לפני שמחזירים לכיתה"
+                                           : ncancel ? "עצירה באמצע — אחרי אישור בחלון · ביטול דיסק אחד — הגל ממשיך"
+                                                     : "עצירה באמצע — אחרי אישור בחלון", room);
         text_draw_r(cr, &h, sx - 12, by + (bh - h.h) / 2, t->muted);
         text_free(&h);
     }
@@ -545,6 +613,13 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
         double err_h = dmax(err.h, ERROR_MIN_H);
         Text unid = room_unidentified_make(cr, s, inner);
         double unid_h = unid.layout ? unid.h + N_LABEL_GAP : 0;
+        /* 17/10: the last round failed -- one line on top, the picker stays usable */
+        char fbuf[360]; Text failed = { NULL, 0, 0 };
+        if (s->room_failed[0]) {
+            snprintf(fbuf, sizeof fbuf, "הסבב הקודם נכשל: %s", s->room_failed);
+            failed = text_make(cr, FONT_SANS, N_SUB, 600, fbuf, (int)inner, DIR_RTL);
+        }
+        double failed_h = failed.layout ? failed.h + N_FORM_GAP : 0;
         double grid_h = s->nmachines ? grid.total_h : text_line_height(cr, FONT_SANS, N_SUB);
         double sel_all_h = s->nmachines ? btn_h : 0;
         double ready_line_h = dmax(ready_t.h, sel_all_h);
@@ -553,16 +628,19 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
         double drv_h = room_drv_block_height(a, cr, inner);
         Text drv_sum = room_drv_summary_make(a, cr, inner);
         double drv_sum_h = room_drv_summary_height(&drv_sum);
-        double body_h = N_PAD + fields_h + drv_h + ready_line_h + N_ACTION_GAP + grid_h + N_LABEL_GAP + drv_sum_h + unid_h + err_h + N_PAD;
-        Text labels[3] = { btn_label(cr, direct ? "פתח סבב והער את המחשבים שנבחרו" : "פתח סבב והער את החדר"), btn_label(cr, "העֵר את מחשבי השיכפול"), btn_label(cr, "חזרה") };
-        /* Nadav 16/10: no round yet -- waking acts on nothing, so the button is grey and takes no click */
-        static const int kinds[3] = { BTN_PRIMARY, BTN_OFF, BTN_PLAIN };
+        double body_h = N_PAD + failed_h + fields_h + drv_h + ready_line_h + N_ACTION_GAP + grid_h + N_LABEL_GAP + drv_sum_h + unid_h + err_h + N_PAD;
+        Text labels[3] = { btn_label(cr, "פתח סבב והער את המחשבים שנבחרו")   /* 17/10: the server wakes only them */, btn_label(cr, "העֵר את המחשבים שנבחרו"), btn_label(cr, "חזרה") };
+        /* Nadav 17/10 (over 16/10's grey button, which sent nothing): it wakes
+         * the picked cloners -- whole machines and machines with a ticked
+         * drawer -- and only them; none picked says so (room_wake, main.c). */
+        static const int kinds[3] = { BTN_PRIMARY, BTN_PLAIN, BTN_PLAIN };
         static const int ids[3] = { HIT_ROOM_OPEN, HIT_ROOM_WAKE, HIT_BACK };
 
         Rect body, foot;
         card_frame(a, cr, W, H, head_h, &hd, body_h, foot_height(cr, btn_h), &body, &foot);
         body_clip_begin(a, cr, body);
         double x = body.x + N_PAD, y = body.y + N_PAD;
+        if (failed.layout) { text_draw_r(cr, &failed, x + inner, y, t->danger_fg); y += failed_h; }
         const char *opts[MAX_IMAGES + 1]; char obuf[MAX_IMAGES][168];
         int nopt = image_options(a, opts, obuf, MAX_IMAGES + 1);
         Rect sel_r = { x, y + l1.h + 2, inner, in_h };
@@ -603,88 +681,156 @@ void screen_room(App *a, cairo_t *cr, double W, double H, double head_h) {
             draw_popup(a, cr, drv_sel, dopts, dn, dsel);
         }
         text_free(&l1); text_free(&l2); text_free(&ready_t); text_free(&err); text_free(&unid); text_free(&drv_sum);
+        text_free(&failed);
         return;
     }
 
-    /* ---- renderLive ---- */
-    char sub[300], count[48], hint[1200], hint0[520], prog[300], est[96], pace[160], age[64], image[112];
+    /* ---- renderLive: the local clone's design (Nadav 17/10, "גרסה ב׳") ---- */
+    double cw = fmin(980, W - 48), x0 = (W - cw) / 2, xr = x0 + cw, y = head_h + 22;
+    /* 17/10 (metal): a failed wave said "משדר" and "הגל משדר"; only a running
+     * wave (or an older agent's record, which has no wave state) says so. */
+    int wave_failed = !strcmp(s->wave_state, "failed");
+    int wave_over = !s->wave_open && s->wave_state[0] && strcmp(s->wave_state, "running");
+    int ndisk = 0, nmach = 0, nw = 0, nf = 0, nsk = 0, sum = 0, known = 0;
+    /* #1331: the drivers -- placed, not placed, no model; the disk that may not boot */
+    int dv_line = 0, dv_any = 0, dv_ok = 0, dv_no = 0, dv_nomodel = 0, dv_bad = 0;
+    char bad_name[SLOT_NAME_MAX + 160] = "";
+    for (int i = 0; i < s->nmachines; i++) {
+        const Machine *m = &s->machines[i]; const RoomDrawer *bays[MAX_DRAWERS];
+        int nb = live_bays(m, bays); if (nb) nmach++;
+        for (int k = 0; k < nb; k++) {
+            LcBay dg; live_bay(t, s, m, bays[k], &dg);
+            if (dg.drv_tone) dv_line = 1;   /* #1331 T8: the Linux line needs the tall row, not the Windows summary */
+            if (dg.drv_tone && dg.drv_tone <= DRV_BAD) {
+                dv_any = 1; dv_ok += !strcmp(bays[k]->drv_state, "staged"); dv_no += dg.drv_tone == DRV_WARN;
+                dv_nomodel += !strcmp(bays[k]->drv_state, "skipped") && !strcmp(bays[k]->drv_detail, "no_model");
+                if (dg.drv_tone == DRV_BAD && !dv_bad++) snprintf(bad_name, sizeof bad_name, "%s במחשב %s", dg.name, m->name[0] ? m->name : m->mac);
+            }
+            int kind = live_kind(m, bays[k]), pct = live_pct(m, bays[k]); ndisk++;
+            nw += kind == BAY_WRITING; nf += kind == BAY_FAILED; nsk += kind == BAY_SKIPPED;
+            if (pct >= 0 && (kind == BAY_WRITING || kind == BAY_DONE)) { sum += pct; known++; }
+        }
+    }
+    char label[400], h1[200], s2[700], big[24], left[96], age[64], image[112];
     /* #410: how old this picture is, next to the wave -- a state file that
      * stopped changing shows a growing number, not a current-looking screen. */
     pace_age(s->updated, age, sizeof age);
     bidi_isolate(s->round_image, image, sizeof image);   /* a Latin-first name stays one run */
-    snprintf(sub, sizeof sub, RLM "משדר: %s · גל %d%s%s", image, s->wave_number,
-             age[0] ? " · " : "", age);
-    snprintf(count, sizeof count, "%d / %d", s->written, s->target);
-    if (s->wave_open) {
+    /* #1331 (mockup v2): a wave that ended does not say "משדר" -- a failed one still says "נכשל"; a round with drivers says so */
+    snprintf(label, sizeof label, RLM "הפצה למחשבי שיכפול · %s%s · גל %d%s%s%s", wave_failed ? "נכשל: " : wave_over ? "" : "משדר: ",
+             image, s->wave_number, dv_any ? " · חבילת דרייברים לפי דגם המגירה" : "", age[0] ? " · " : "", age);
+    snprintf(big, sizeof big, "%s", "—"); left[0] = 0;
+    if (wave_failed) {
+        snprintf(h1, sizeof h1, "הגל נכשל");
+        snprintf(s2, sizeof s2, "הגל נכשל — הסיבה ביומן ובקונסולה. עוצרים את הסבב ופותחים חדש.");
+    } else if (s->wave_open) {
         int need = s->remaining - s->ready; if (need < 0) need = 0;
-        snprintf(hint0, sizeof hint0, "הגל ממתין: %d מגירות מוכנות, צריך עוד %d — או \"התחל עכשיו\". החלפתם מגירות? הדליקו את המכונות והן יצטרפו.",
-                 s->ready, need);
+        snprintf(h1, sizeof h1, "הגל ממתין למגירות");
+        snprintf(s2, sizeof s2, "הגל ממתין: %d מגירות מוכנות, צריך עוד %d — או \"התחל עכשיו\". החלפתם מגירות? הדליקו את המכונות והן יצטרפו.%s",
+                 s->ready, need, wave_ended(s) ? "\nהגל הסתיים — החליפו דיסקים והעירו את מחשבי השיכפול כדי להמשיך" : "");
+        snprintf(left, sizeof left, "הגל עוד לא יצא");
+    } else if (wave_over) {
+        if (nmach > 1) snprintf(h1, sizeof h1, "הגל הסתיים — %d דיסקים נכתבו ב-%d מחשבי שיכפול", s->written, nmach);
+        else snprintf(h1, sizeof h1, "הגל הסתיים");
+        snprintf(s2, sizeof s2, "נכתבו %d מתוך %d דיסקים בסבב.", s->written, s->target);
+        if (dv_ok || dv_bad) {   /* #1331 */
+            char p1[96] = "", p2[400] = "";
+            if (dv_ok == 1) snprintf(p1, sizeof p1, "דרייברים הונחו בדיסק אחד"); else if (dv_ok) snprintf(p1, sizeof p1, "דרייברים הונחו ב-%d דיסקים", dv_ok);
+            if (dv_bad == 1) snprintf(p2, sizeof p2, "%s עלול לא לעלות (דרייבר האחסון לא הוגדר)", bad_name);
+            else if (dv_bad) snprintf(p2, sizeof p2, "%d דיסקים עלולים לא לעלות (דרייבר האחסון לא הוגדר)", dv_bad);
+            snprintf(s2, sizeof s2, "%s%s%s.", p1, p1[0] && p2[0] ? "; " : "", p2);
+        }
+        if (known) { snprintf(big, sizeof big, "%d%%", sum / known); snprintf(left, sizeof left, "הגל הסתיים"); }
     } else {
-        /* #410: elapsed, rate and ETA come from the server (round= record);
-         * "לא נמדד" in words when it has nothing yet -- never a 0 rate. */
-        pace_text(s->elapsed_s, s->rate_bps, s->eta_s, 0, pace, sizeof pace);
-        snprintf(hint0, sizeof hint0, "הגל משדר — %s. מכונה שסיימה — מכבים, מחליפים מגירות, מדליקים.",
-                 pace[0] ? pace : "זמן וקצב טרם נמדדו");
+        if (ndisk == 1) snprintf(h1, sizeof h1, "משדר לדיסק אחד");
+        else if (nmach > 1) snprintf(h1, sizeof h1, "משדר ל-%d דיסקים ב-%d מחשבי שיכפול", ndisk, nmach);
+        else {   /* one cloner: name it */
+            const char *who = "";
+            for (int i = 0; i < s->nmachines && !who[0]; i++) { const RoomDrawer *b[MAX_DRAWERS];
+                if (live_bays(&s->machines[i], b)) who = s->machines[i].name[0] ? s->machines[i].name : s->machines[i].mac; }
+            snprintf(h1, sizeof h1, "משדר ל-%d דיסקים במחשב שיכפול %s", ndisk, who);
+        }
+        char a1[64] = "", a2[64] = "";
+        if (nsk == 1) snprintf(a1, sizeof a1, "דיסק אחד דולג"); else if (nsk) snprintf(a1, sizeof a1, "%d דיסקים דולגו", nsk);
+        if (nf == 1) snprintf(a2, sizeof a2, "דיסק אחד נכשל"); else if (nf) snprintf(a2, sizeof a2, "%d דיסקים נכשלו", nf);
+        if (a1[0] || a2[0]) snprintf(s2, sizeof s2, "%s%s%s; השאר ממשיכים. מכונה שסיימה — מכבים, מחליפים מגירות, מדליקים.",
+                                     a1, a1[0] && a2[0] ? " ו" : "", a2);
+        else snprintf(s2, sizeof s2, "הזרם נכתב לכל הדיסקים יחד. מכונה שסיימה — מכבים, מחליפים מגירות, מדליקים.");
+        if (known) snprintf(big, sizeof big, "%d%%", sum / known);
+        if (s->eta_s >= 0 && s->rate_bps > 0) {
+            if (s->eta_s < 60) snprintf(left, sizeof left, "פחות מדקה נותרה");
+            else snprintf(left, sizeof left, "כ-%d דק' נותרו", (s->eta_s + 30) / 60);
+        } else snprintf(left, sizeof left, "הזמן שנותר טרם נמדד");
     }
-    /* #989 item 3: where the round stands across waves, from the round= record only;
-     * K = ceil(left / ready now), and no estimate at all when nothing is ready. */
-    prog[0] = 0;
+    y += lc_hero(a, cr, x0, xr, y, label, h1, s2, big, left, wave_failed) + 16;   /* a failed wave reads as failed */
+
+    /* .mets: speed (#1577: the last 10 s), drives written, time passed */
+    double mw = (cw - 24) / 3, mh = 80;
+    char v1[48], v2[48], c2[160], v3[32];
+    if (s->rate_bps > 0) snprintf(v1, sizeof v1, "%.0f MB/s", s->rate_bps / 1e6); else snprintf(v1, sizeof v1, "%s", wave_over ? "—" : "עוד לא נמדדה");
+    snprintf(v2, sizeof v2, RLM "%d מתוך %d", s->written, s->target);   /* Hebrew: digits alone drew "4 / 0" */
     if (s->remaining > 0) {
-        if (s->ready > 0) snprintf(est, sizeof est, "משוער: עוד %d גלים", (s->remaining + s->ready - 1) / s->ready);
-        else snprintf(est, sizeof est, "ממתין לדיסקים חדשים");
-        snprintf(prog, sizeof prog, "גל %d · נכתבו %d מתוך %d · נשארו %d · %s\n",
-                 s->wave_number, s->written, s->target, s->remaining, est);
-    }
-    snprintf(hint, sizeof hint, "%s%s%s", prog, hint0,
-             wave_ended(s) ? "\nהגל הסתיים — החליפו דיסקים והעירו את מחשבי השיכפול כדי להמשיך" : "");
-    int pct = s->target > 0 ? (int)floor(100.0 * s->written / s->target + 0.5) : 0;
+        if (s->ready > 0) snprintf(c2, sizeof c2, "דיסקים בסבב · נשארו %d · משוער: עוד %d גלים", s->remaining, (s->remaining + s->ready - 1) / s->ready);
+        else snprintf(c2, sizeof c2, "דיסקים בסבב · נשארו %d · ממתין לדיסקים חדשים", s->remaining);
+    } else if (dv_any) {   /* #1331 */
+        char p1[32] = "", p2[32] = "", p3[32] = "";
+        if (dv_ok) snprintf(p1, sizeof p1, "%d הונחו", dv_ok);
+        if (dv_no) snprintf(p2, sizeof p2, "%s%d לא", p1[0] ? ", " : "", dv_no);
+        if (dv_nomodel) snprintf(p3, sizeof p3, "%s%d בלי דגם", p1[0] || p2[0] ? ", " : "", dv_nomodel);
+        snprintf(c2, sizeof c2, "דיסקים בסבב · דרייברים: %s%s%s", p1, p2, p3);
+    } else snprintf(c2, sizeof c2, "דיסקים בסבב");
+    if (s->elapsed_s >= 0) snprintf(v3, sizeof v3, "%02d:%02d", s->elapsed_s / 60, s->elapsed_s % 60); else snprintf(v3, sizeof v3, "—");
+    lc_met(a, cr, (Rect){ xr - mw, y, mw, mh }, "מהירות", v1, s->rate_bps > 0 ? "10 השניות האחרונות" : "", t->muted);
+    lc_met(a, cr, (Rect){ xr - 2 * mw - 12, y, mw, mh }, "נכתבו", v2, c2, t->muted);
+    lc_met(a, cr, (Rect){ x0, y, mw, mh }, "זמן שעבר", v3, "", t->muted);
+    y += mh + 12;
 
-    Head hd = head_make(cr, "הפצה למחשבי שיכפול", sub, inner);
-    ProgLine pl = progline_make(cr, count, "כוננים שנכתבו", inner);
-    Text hint_t = alert_make(cr, hint, inner);                  /* .native-alert */
-    int live_slots = 1;                 /* the deepest machine, in disks it reported */
+    double pre_h = room_pre_block(a, cr, 0, 0, cw, 0);       /* #432/#65 */
+    if (pre_h > 0) { room_pre_block(a, cr, x0, y, cw, 1); y += pre_h + 12; }
+
+    /* the cages: one per cloner of the round, two side by side */
+    double btn_hh = btn_height(cr), foot_hh = foot_height(cr, btn_hh);
+    Text err = error_make(cr, s->room_error, cw);
+    Text unid = room_unidentified_make(cr, s, cw);
+    /* #1331 (mockup v2): each drawer's drivers are said in its own row -- no list under the cages */
+    double notes_h = (unid.layout ? unid.h + N_LABEL_GAP : 0) + dmax(err.h, ERROR_MIN_H);
+    int cols = nmach > 1 ? 2 : 1, rows = (nmach + cols - 1) / cols, most = 1;
+    for (int i = 0; i < s->nmachines; i++) { const RoomDrawer *b[MAX_DRAWERS]; int nb = live_bays(&s->machines[i], b); if (nb > most) most = nb; }
+    double room = H - N_STATUS_H - foot_hh - 8 - y - notes_h - rows * (10 + 16 + 8 + 10) - (rows - 1) * 12;
+    double bh = dv_line ? LC_BAY_DRV_H : LC_BAY_H;   /* #1331: the row with its drivers line */
+    if (rows * most * bh + rows * (most - 1) * 10 > room) bh = fmax(56, floor((room - rows * (most - 1) * 10) / (rows * most)));
+    double cage_w = (cw - (cols - 1) * 12) / cols, cage_h = 10 + 16 + 8 + most * bh + (most - 1) * 10 + 10;
+    if (!nmach) {
+        Text empty = sub_make(cr, "אין מחשבי שיכפול בסבב הזה — רושמים אותם בקונסולה, במסך המחשבים.", cw);
+        text_draw_r(cr, &empty, xr, y, t->muted); y += empty.h + 12; text_free(&empty);
+    }
+    int c = 0, ci = 0;   /* ci, #1386: the row's index among room_cancel_picks */
     for (int i = 0; i < s->nmachines; i++) {
-        int found = 0;
-        for (int j = 0; j < s->machines[i].nroom_drawers; j++) found += s->machines[i].room_drawers[j].present;
-        if (found > live_slots) live_slots = found;
+        const Machine *m = &s->machines[i]; const RoomDrawer *bays[MAX_DRAWERS];
+        int nb = live_bays(m, bays); if (!nb) continue;
+        int row = c / cols, col = c % cols; c++;
+        Rect cage = { xr - cage_w - col * (cage_w + 12), y + row * (cage_h + 12), cage_w, cage_h };
+        char title[160], cnt[96]; int writing = 0;
+        for (int k = 0; k < nb; k++) writing += live_kind(m, bays[k]) == BAY_WRITING;
+        snprintf(title, sizeof title, "מחשב שיכפול %s%s", m->name[0] ? m->name : m->mac,
+                 m->awake || m->joined ? "" : " · כבוי");
+        int cancelled = 0, written = 0;
+        for (int k = 0; k < nb; k++) { cancelled += live_kind(m, bays[k]) == BAY_CANCELED; written += live_kind(m, bays[k]) == BAY_DONE; }
+        if (wave_over) snprintf(cnt, sizeof cnt, "%d מתוך %d נכתבו", written, nb);   /* #1331 mockup v2 */
+        else snprintf(cnt, sizeof cnt, "%d מתוך %d כותבים", writing, nb);
+        if (cancelled) { size_t u = strlen(cnt); snprintf(cnt + u, sizeof cnt - u, " · %d בוטל", cancelled); }   /* #1386 */
+        double by = lc_cage(a, cr, cage, title, cnt);
+        for (int k = 0; k < nb; k++) {
+            LcBay g; live_bay(t, s, m, bays[k], &g);
+            if (live_cancelable(bays[k])) { g.act = "בטל…"; g.act_hit = HIT_BAY_CANCEL_BASE + ci++; }   /* #1386 */
+            lc_bay_draw(a, cr, (Rect){ cage.x + 10, by, cage.w - 20, bh }, &g); by += bh + 10;
+        }
     }
-    RoomGrid grid = room_grid_make(cr, inner, s->nmachines, live_slots,
-                                   room_cols, (H-head_h-N_STATUS_H)/2);
-    double rows_h = s->nmachines ? grid.total_h : text_line_height(cr, FONT_SANS, N_SUB);
-    Text err = error_make(cr, s->room_error, inner);
-    double err_h = dmax(err.h, ERROR_MIN_H);
-    Text unid = room_unidentified_make(cr, s, inner);
-    double unid_h = unid.layout ? N_LABEL_GAP + unid.h : 0;
-    /* #1269: what happened to each drawer's drivers (drawer_list[].drivers) */
-    int drv_failed = 0;
-    Text drv_res = room_drv_results_make(cr, s, inner, &drv_failed);
-    double drv_res_h = drv_res.layout ? N_LABEL_GAP + drv_res.h : 0;
-    double pre_h = room_pre_block(a, cr, 0, 0, inner, 0);       /* #432/#65 */
-    double pre_gap = pre_h > 0 ? N_ACTION_GAP : 0;
-    double body_h = N_PAD + pl.h + N_LABEL_GAP + N_BAR_H + N_ACTION_GAP + alert_height(&hint_t) + pre_gap + pre_h + N_CHOICE_GAP + rows_h + unid_h + drv_res_h + N_LABEL_GAP + err_h + N_PAD;
-
-    Rect body, foot;
-    card_frame(a, cr, W, H, head_h, &hd, body_h, foot_height(cr, btn_h), &body, &foot);
-    body_clip_begin(a, cr, body);
-    double x = body.x + N_PAD, y = body.y + N_PAD;
-    text_draw_r(cr, &pl.big, x + inner, y, t->ink);
-    text_draw_r(cr, &pl.small, x + inner - pl.big.w - 10, y + pl.drop, t->ink);
-    text_free(&pl.big); text_free(&pl.small);             y += pl.h + N_LABEL_GAP;
-    draw_big_bar(cr, t, (Rect){ x, y, inner, N_BAR_H }, pct, 0); y += N_BAR_H + N_ACTION_GAP;
-    draw_alert(cr, t, (Rect){ x, y, inner, alert_height(&hint_t) }, &hint_t); y += alert_height(&hint_t);
-    if (pre_h > 0) { y += pre_gap; room_pre_block(a, cr, x, y, inner, 1); y += pre_h; }   /* #432/#65 */
-    y += N_CHOICE_GAP;
-    room_live_grid_draw(a, cr, x, y, inner, &grid, s->wave_open); y += rows_h;
-    if (unid.layout) { text_draw_r(cr, &unid, x + inner, y + N_LABEL_GAP, t->warning_ink); y += unid_h; }
-    if (drv_res.layout) {           /* failed = done without its drivers: orange, not red (#856) */
-        text_draw_r(cr, &drv_res, x + inner, y + N_LABEL_GAP, drv_failed ? t->warning_ink : t->ink);
-        y += drv_res_h;
-    }
-    y += N_LABEL_GAP;
-    text_draw(cr, &err, x, y, t->danger_fg);
-    body_clip_end(a, cr);
-    foot_draw_bg(cr, t, foot);
-    live_footer(a, cr, foot);
-    card_end(a, cr);
-    text_free(&hint_t); text_free(&err); text_free(&unid); text_free(&drv_res);
+    if (nmach) y += rows * (cage_h + 12);
+    if (unid.layout) { text_draw_r(cr, &unid, xr, y, t->warning_ink); y += unid.h + N_LABEL_GAP; }
+    text_draw(cr, &err, x0, y, t->danger_fg);
+    Rect foot = { x0 - N_PAD, H - N_STATUS_H - foot_hh - 8, cw + 2 * N_PAD, foot_hh };
+    live_footer(a, cr, foot, dv_bad > 0);
+    text_free(&err); text_free(&unid);
+    (void)inner;
 }

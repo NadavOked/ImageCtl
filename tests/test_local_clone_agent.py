@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+import hygiene
 from native import requires_native
 from test_cloner_gui import BASH, posix
 
@@ -28,7 +29,7 @@ pytestmark = requires_native(("bash", BASH))
 
 LIBS = ("common", "jsonq", "waits", "sysinfo", "progress", "restore", "diskfit", "expand", "grow",
         "drawers", "verdict", "failmark", "ntfsboot", "manifest", "hibernation", "shrinkplan", "shrink",
-        "shrinkmem", "smart", "guistate", "attended", "lcinv", "lcplan", "lcsnap", "lccopy", "localclone", "lcwait", "idle", "lcgui")   # attended, lcwait, idle: #1367
+        "shrinkmem", "smart", "guistate", "attended", "lcinv", "lcsize", "lcplan", "lcsnap", "lctune", "lccopy", "localclone", "lcwait", "idle", "lcgui")   # attended, lcwait, idle: #1367
 
 
 def run(tmp_path: Path, script: str, timeout: int = 60, **env) -> subprocess.CompletedProcess:
@@ -36,9 +37,13 @@ def run(tmp_path: Path, script: str, timeout: int = 60, **env) -> subprocess.Com
     pre = f'export RUN_DIR={posix(run_dir)!r} IMAGECTL_TEST=1 MAC=aa:bb:cc:dd:ee:ff; '
     pre += "".join(f'export {k}={v!r}; ' for k, v in env.items())
     pre += "".join(f'. {posix(LIB)}/{name}.sh; ' for name in LIBS)
-    return subprocess.run([BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + pre + script],
-                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
-                          cwd=str(REPO))
+    # #1736: the scripts leave background helpers behind -- a 20 s fallback that ends a
+    # paused choice (test_lc_hello_1367), the kiosk's bridge (test_lc_poweroff_1483) --
+    # and a subshell carries this bash -c's command line, tmp_path included. The whole
+    # group goes at the end, as test_cloner_pull_agent's run does.
+    return hygiene.run_group([BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + pre + script],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                             stdin=subprocess.DEVNULL, cwd=str(REPO))
 
 
 # --- the verdict (lcinv.sh lc_verdict) -------------------------------------------
@@ -66,7 +71,12 @@ def test_the_verdict_rule(tmp_path, target, need, state, need_min, reason, want)
 
 # --- the boot choice (localclone.sh) ----------------------------------------------
 
-BOOT = 'list_drawers() { echo sda; echo sdb; echo sdc; }; D_ROLE=cloner; sleep 300 & _gui_pid=$!; '
+#: the GUI as the agent sees it: a live process that, once the boot choice is in
+#: $LC/screen, stamps its first frame on the display (main.c, lcboot.shown --
+#: the count starts there; test_boot_choice_first_frame.py)
+GUI_UP = ('( while [ "$(cat "$LC/screen" 2>/dev/null)" != boot ]; do sleep 0.1; done; '
+          'mkdir -p "$RUN_DIR/gui"; date +%s > "$RUN_DIR/gui/lcboot.shown"; exec sleep 300 ) & _gui_pid=$!; ')
+BOOT = 'list_drawers() { echo sda; echo sdb; echo sdc; }; D_ROLE=cloner; ' + GUI_UP
 
 
 def test_no_touch_is_the_server_and_nothing_else_changes(tmp_path):
@@ -235,7 +245,7 @@ def _stream(tmp_path: Path, **env) -> tuple[str, Path]:
     t += 'mkdir -p "$LC/run"; ata_capture() { :; }; target_init sda 100; target_init sdb 100; '
     t += f'lc_stream 1 dd sdc sda sdb > {posix(box)}/stream.log 2>&1; echo "rc=$?"; '
     t += 'for d in sda sdb; do echo "$d=$(cat $RUN_DIR/targets/$d/state)|$(cat $RUN_DIR/targets/$d/lc_ok 2>/dev/null)|$(cat $RUN_DIR/targets/$d/error 2>/dev/null)"; done; '
-    t += 'echo "sha=$(cat "$LC/run/source.sha" 2>/dev/null)"; echo "base=$(cat "$LC/run/src.base" 2>/dev/null)"'
+    t += 'echo "sha=$(cat "$LC/run/source.sha" 2>/dev/null)"; echo "copied=$(cat "$LC/run/bytes.1" 2>/dev/null)"'
     out = run(tmp_path, t, timeout=120, WAIT_HELPER_S="20", WAIT_DRAWER_S="20", **env)
     assert out.returncode == 0, out.stderr
     return out.stdout, dev
@@ -247,7 +257,7 @@ def test_the_stream_takes_fanouts_hash_and_count_and_each_targets_own(tmp_path):
     want = hashlib.md5(data).hexdigest()[:16]
     assert "rc=0" in out and "sda=waiting|1|" in out and "sdb=waiting|1|" in out, out
     assert f"\nsha=1|{want}\n" in out, out                       # the source hash is fanout -H's file, whole
-    assert f"base={len(data)}" in out, out                       # the counter is fanout -P's file
+    assert f"copied={len(data)}" in out, out                     # the counter is fanout -P's file, one per partition
     assert (dev / "sda1").read_bytes() == data == (dev / "sdb1").read_bytes()
 
 
@@ -285,7 +295,7 @@ def test_the_state_file_carries_the_verdicts_against_the_measured_source(tmp_pat
     assert [l.split("|")[0] for l in disks] == ["lc_disk=1", "lc_disk=2", "lc_disk=3"], disks   # by port
     assert {"machine_name=CLONER-02", "server_name=imagectl-ta", "server_version=v1.2.3",
             "agent_version=v1.2.2"} <= set(lines)
-    assert "lc_src=sdc|done" in lines
+    assert "lc_src=sdc|done||" in lines          # #1443: the copy's size not measured yet = empty, not 0
     assert "lc_fit=sda|shrink|200000000000|" in lines and "lc_fit=sdb|fits|480000000000|" in lines
 
 
@@ -303,7 +313,7 @@ def test_the_choice_wraps_the_idle_cloner_and_nothing_else():
 
 def test_the_kernel_command_line_is_not_read():
     """Principle 2: nothing of the local clone travels on the command line."""
-    for name in ("lcinv", "lcplan", "lcsnap", "lccopy", "localclone", "lcwait", "lcgui"):
+    for name in ("lcinv", "lcsize", "lcplan", "lcsnap", "lctune", "lccopy", "localclone", "lcwait", "lcgui"):
         text = (LIB / f"{name}.sh").read_text(encoding="utf-8")
         assert "/proc/cmdline" not in text and "imagectl.mode" not in text and "parse_cmdline" not in text, name
 
@@ -315,3 +325,8 @@ def test_nothing_is_written_before_lc_run():
     for tool in ("ntfsresize -s", "sgdisk -n", "sgdisk -d", "sgdisk -c", "--" + "zap", "mkswap", " -O ", "of=/dev"):
         assert tool not in code, tool
     assert re.search(r"mount -t \"\$2\" -o \"\$_lo_o\"", text) and "ro,noload" in text
+    # #1443: the copy's size is measured by partclone with no target at all -- no -o/-O, never -r
+    size = "\n".join(l.split("#")[0] for l in (LIB / "lcsize.sh").read_text(encoding="utf-8").splitlines())
+    for tool in (" -O ", " -o ", "of=/dev", "dd ", "ntfsresize", "sgdisk", "mount"):
+        assert tool not in size, tool
+    assert re.findall(r'"\$_lz_pcl" (-\w+)', size) == ["-c"], "partclone runs once, in clone mode (to /dev/null)"

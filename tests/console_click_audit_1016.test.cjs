@@ -95,8 +95,9 @@ test('1016/4: deleting a class that still has machines does not open a sheet pro
   assert.doesNotMatch(run('globalThis.__sheets[0].note'), /על כל \d+ המחשבים/);
 });
 
-test('1016: cache-busting bumped to 11.47 everywhere', () => {
+test('1016: cache-busting bumped to 11.47 or later everywhere', () => {
+  // one version everywhere is test_console_static's; here: not older than this fix
   const html = read('index.html');
-  assert.ok(!/\?v=11\.45/.test(html));
-  assert.ok(/\?v=11\.47/.test(html));
+  const vs = [...html.matchAll(/\?v=11\.(\d+)/g)].map((m) => Number(m[1]));
+  assert.ok(vs.length > 0 && vs.every((v) => v >= 47), String(vs));
 });

@@ -23,8 +23,8 @@ import pytest
 pytest.importorskip("OpenSSL", reason="pyOpenSSL נדרש ל-mTLS הבין-שרתי (#740)")
 
 from conftest import MANIFEST_256, PARTITION_BYTES, write_image
-from server import (archive, db, interserver_api, interserver_auth,
-                    storage_client, storage_nodes, storage_transfer)
+from server import (archive, db, disk_reserve, interserver_api, interserver_auth,
+                    storage_client, storage_locations, storage_nodes, storage_transfer)
 from server.images import ImageLibrary
 
 try:
@@ -141,6 +141,84 @@ def test_transfer_end_to_end_lands_verified_copy(server, secondary, paired):
     ).fetchone()["n"] == 1
     # ההעברה נראית גם ברשימה הכללית.
     assert any(t["id"] == tid for t in admin.get("/api/console/storage-transfers").json())
+
+
+def test_transfer_end_to_end_uses_selected_secondary_location(
+        server, secondary, paired, tmp_path):
+    mount = tmp_path / "secondary_200gb"
+    mount.mkdir()
+    loc_id = "loc_1234abcd"
+    secondary["conn"].execute(
+        "INSERT INTO storage_locations (id, name, type, mount_point, state,"
+        " state_since, state_detail, created_by, created_at)"
+        " VALUES (?, 'דיסק 200GB', 'nfs', ?, 'connected', '', '', 'noc', '')",
+        (loc_id, str(mount)))
+    secondary["conn"].commit()
+
+    resp = server["admin"].post(
+        f"/api/console/storage-nodes/{paired}/transfer",
+        json={"image_id": IMAGE, "location_id": loc_id})
+    assert resp.status_code == 200, resp.text
+    row = _wait(server["admin"], paired, resp.json()["id"])
+    assert row["state"] == "done", row
+    assert row["location_id"] == loc_id
+    assert (mount / "images" / IMAGE / "manifest.json").is_file()
+    assert not (secondary["root"] / IMAGE).exists()
+
+
+def _add_location(conn, loc_id: str, name: str, mount: Path, state: str = "connected"):
+    conn.execute(
+        "INSERT INTO storage_locations (id, name, type, mount_point, state,"
+        " state_since, state_detail, created_by, created_at)"
+        " VALUES (?, ?, 'nfs', ?, ?, '', '', 'noc', '')",
+        (loc_id, name, str(mount), state))
+    conn.commit()
+
+
+def test_full_local_location_507_reaches_the_primary_console_then_second_location_lands(
+        server, secondary, paired, tmp_path, monkeypatch):
+    """#1697, חיפה: ‏loc_local קטן ודיסק 200GB מחובר. העברה ל-loc_local נדחית
+    ב-507 לפני שבייט נשלח, והשורה בקונסולת הראשי אומרת כמה פנוי **בכל**
+    מיקום ואיזה מהם מספיק. העברה חדשה לדיסק הנוסף נוחתת שם, זהה בייט-בייט
+    (sha256 אומת במשני לפני הכניסה, עיקרון 6), ולא ב-loc_local."""
+    mount = tmp_path / "haifa_200gb"
+    mount.mkdir()
+    loc_id = "loc_1234abcd"
+    _add_location(secondary["conn"], loc_id, "דיסק 200GB", mount)
+    local = secondary["root"]
+    real = interserver_api.shutil.disk_usage
+
+    def usage(path):
+        if Path(path) == local:
+            return type("Usage", (), {"free": 1, "total": 60 * 10 ** 9})()
+        if Path(path) in (mount, mount / "images"):
+            return type("Usage", (), {"free": 200 * 10 ** 9, "total": 200 * 10 ** 9})()
+        return real(path)
+
+    monkeypatch.setattr(interserver_api.shutil, "disk_usage", usage)
+    admin = server["admin"]
+    tid = admin.post(f"/api/console/storage-nodes/{paired}/transfer",
+                     json={"image_id": IMAGE,
+                           "location_id": storage_locations.LOCAL_ID}).json()["id"]
+    row = _wait(admin, paired, tid)
+    assert row["state"] == "failed", row
+    assert row["bytes_sent"] == 0
+    error = row["error"]
+    assert "(507)" in error, error
+    assert '"דיסק 200GB" (loc_1234abcd) — פנויים 200.0 GB, מספיק' in error, error
+    assert "(loc_local) — פנויים 0.0 GB, חסרים" in error, error
+    assert 'אפשר להעביר אל: "דיסק 200GB" (loc_1234abcd)' in error, error
+    assert secondary["ctx"].library.scan() == {}
+    assert not (local / IMAGE).exists() and not (mount / "images" / IMAGE).exists()
+
+    tid = admin.post(f"/api/console/storage-nodes/{paired}/transfer",
+                     json={"image_id": IMAGE, "location_id": loc_id}).json()["id"]
+    row = _wait(admin, paired, tid)
+    assert row["state"] == "done", row
+    assert row["location_id"] == loc_id
+    src = Path(server["ctx"].library.get(IMAGE)["_dir"])
+    assert _tree(mount / "images" / IMAGE) == _tree(src)
+    assert not (local / IMAGE).exists()
 
 
 def test_tar_size_matches_the_stream(server):
@@ -345,6 +423,47 @@ def test_ingress_present_and_length_and_space_prechecks(paired_ctx, monkeypatch)
     assert e.value.status == 409
 
 
+@pytest.mark.system_reserve   # #1737: the real 10GiB (conftest _host_free_space)
+def test_ingress_selected_location_controls_space_check_and_destination(
+        paired_ctx, tmp_path, monkeypatch):
+    """loc_local קטן אינו חוסם יעד נוסף; בחירה מפורשת ב-local כן מחזירה 507."""
+    ctx, peer, token = paired_ctx
+    mount = tmp_path / "large_disk"
+    mount.mkdir()
+    loc_id = "loc_1234abcd"
+    ctx.conn.execute(
+        "INSERT INTO storage_locations (id, name, type, mount_point, state,"
+        " state_since, state_detail, created_by, created_at)"
+        " VALUES (?, 'דיסק 200GB', 'nfs', ?, 'connected', '', '', 'noc', '')",
+        (loc_id, str(mount)))
+    ctx.conn.commit()
+    src = tmp_path / "src"
+    write_image(src, MANIFEST_256)
+    body = b"".join(archive.tar_stream(src / IMAGE, IMAGE))
+    local = Path(ctx.library.root)
+    large_root = mount / "images"
+
+    def usage(path):
+        free = 1 if Path(path) == local else (len(body) + interserver_api.FREE_SPACE_MARGIN
+                                              + disk_reserve.SYSTEM_RESERVE_BYTES)   # #1737
+        return type("Usage", (), {"free": free, "total": free})()
+
+    monkeypatch.setattr(interserver_api.shutil, "disk_usage", usage)
+    plan = interserver_api.receive_image_precheck(
+        ctx, peer, image_id=IMAGE, content_length=len(body), location_id=loc_id,
+        **_creds(token))
+    result = interserver_api.receive_image(ctx, plan, [body])
+    assert result["id"] == IMAGE
+    assert (large_root / IMAGE / "manifest.json").is_file()
+    assert not (local / IMAGE).exists()
+
+    with pytest.raises(interserver_api.PairError) as exc:
+        interserver_api.receive_image_precheck(
+            ctx, peer, image_id="img_0ffe01", content_length=len(body),
+            location_id=storage_locations.LOCAL_ID, **_creds(token))
+    assert exc.value.status == 507
+
+
 def test_ingress_manifest_id_must_match_the_path(paired_ctx, tmp_path):
     """‏tar כשר של אימג' A שנשלח בנתיב של B — נכנס לרגע דרך import_tar
     (‏sha256 תקין), ומוסר מיד: לא נשאר בספרייה ולא בשם מטעה."""
@@ -385,3 +504,84 @@ def test_ingress_receive_via_fastapi_routes(paired_ctx, tmp_path):
                       headers={"ImageCtl-Protocol-Version": "2.1"}).status_code == 401
     assert hashlib.sha256(PARTITION_BYTES).hexdigest() == \
         ctx.library.get(IMAGE)["partitions"][0]["sha256"]
+
+
+# --- (ו) ‏#1697: 507 אומר כמה פנוי בכל מיקום, ולאן כן אפשר להעביר ---------------
+
+GB = 10 ** 9
+
+
+def _space_507(ctx, peer, token, monkeypatch, frees: dict, length: int,
+               location_id: str = storage_locations.LOCAL_ID) -> str:
+    """מריץ precheck כשהמקום הפנוי נקבע לפי נתיב (``frees``: נתיב → בייטים, או
+    ``OSError`` כשלא ניתן למדוד), ומחזיר את ה-detail של ה-507."""
+    def usage(path):
+        value = frees[Path(path)]
+        if isinstance(value, Exception):
+            raise value
+        return type("Usage", (), {"free": value, "total": value})()
+
+    monkeypatch.setattr(interserver_api.shutil, "disk_usage", usage)
+    with pytest.raises(interserver_api.PairError) as e:
+        interserver_api.receive_image_precheck(
+            ctx, peer, image_id=IMAGE, content_length=length,
+            location_id=location_id, **_creds(token))
+    assert e.value.status == 507
+    return e.value.detail
+
+
+@pytest.mark.system_reserve   # #1737: the real 10GiB (conftest _host_free_space)
+def test_ingress_507_names_the_free_space_of_every_secondary_location(
+        paired_ctx, tmp_path, monkeypatch):
+    """חיפה: ‏60GB מקומי (40 פנויים) ודיסק 200GB. אימג' של 50GB ל-loc_local —
+    507 שאומר כמה נדרש, כמה פנוי בכל מיקום, ושהדיסק הנוסף מספיק. מיקום
+    שאינו מחובר נקוב בשמו, לא נעלם מהרשימה."""
+    ctx, peer, token = paired_ctx
+    big = tmp_path / "big"
+    big.mkdir()
+    _add_location(ctx.conn, "loc_1234abcd", "דיסק 200GB", big)
+    _add_location(ctx.conn, "loc_0badcafe", "NAS ישן", tmp_path / "gone",
+                  state="unreachable")
+    local = Path(ctx.library.root)
+    length = 50 * GB
+    keep = disk_reserve.SYSTEM_RESERVE_BYTES
+    need = length + interserver_api.FREE_SPACE_MARGIN + keep
+    detail = _space_507(ctx, peer, token, monkeypatch,
+                        {local: 40 * GB, big: 200 * GB, big / "images": 200 * GB},
+                        length)
+    assert f'במיקום "מקומי" (loc_local): נדרשים {need} בייטים' in detail, detail
+    assert "נשמרים למערכת" in detail and str(40 * GB) in detail
+    missing = disk_reserve.gb(need - 40 * GB)
+    assert f'"מקומי" (loc_local) — פנויים 40.0 GB, חסרים {missing}' in detail, detail
+    assert '"דיסק 200GB" (loc_1234abcd) — פנויים 200.0 GB, מספיק' in detail, detail
+    assert '"NAS ישן" (loc_0badcafe) — לא מחובר' in detail, detail
+    assert 'אפשר להעביר אל: "דיסק 200GB" (loc_1234abcd)' in detail, detail
+
+
+def test_ingress_507_when_no_secondary_location_fits_says_so(
+        paired_ctx, tmp_path, monkeypatch):
+    ctx, peer, token = paired_ctx
+    big = tmp_path / "big"
+    big.mkdir()
+    _add_location(ctx.conn, "loc_1234abcd", "דיסק 200GB", big)
+    local = Path(ctx.library.root)
+    detail = _space_507(ctx, peer, token, monkeypatch,
+                        {local: 1 * GB, big: 2 * GB, big / "images": 2 * GB}, 50 * GB)
+    assert '"דיסק 200GB" (loc_1234abcd) — פנויים 2.0 GB, חסרים' in detail, detail
+    assert "אין בשרת המשנה מיקום שהאימג' נכנס אליו" in detail, detail
+    assert "אפשר להעביר אל" not in detail
+
+
+def test_ingress_507_an_unmeasured_location_is_named_not_offered(
+        paired_ctx, tmp_path, monkeypatch):
+    """עיקרון 5: מיקום שלא ניתן למדוד אינו "מספיק" ואינו מוצע כיעד."""
+    ctx, peer, token = paired_ctx
+    big = tmp_path / "big"
+    big.mkdir()
+    _add_location(ctx.conn, "loc_1234abcd", "דיסק 200GB", big)
+    local = Path(ctx.library.root)
+    detail = _space_507(ctx, peer, token, monkeypatch,
+                        {local: 1 * GB, big: OSError("EIO"),
+                         big / "images": OSError("EIO")}, 50 * GB)
+    assert '"דיסק 200GB" (loc_1234abcd) — לא נמדד: EIO' in detail, detail
+    assert "אין בשרת המשנה מיקום שהאימג' נכנס אליו" in detail, detail

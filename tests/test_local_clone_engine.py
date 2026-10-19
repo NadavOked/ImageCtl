@@ -38,6 +38,10 @@ REPO = Path(__file__).resolve().parent.parent
 LIB = REPO / "agent" / "lib"
 FIXTURE = REPO / "tests" / "localclone-fixture.sh"
 SBIN = "/usr/sbin:/sbin"
+#: #1594: the RAM view loads `brd`, a module of the whole machine: a second suite
+#: doing the same finds it "already loaded, not by the clone" and refuses (as it
+#: must). The Testrunner runs several suites at once, so the engine runs take turns.
+ENGINE_LOCK = "/tmp/imagectl-lc-engine.lock"
 
 
 def _sudo_ok() -> bool:
@@ -54,20 +58,25 @@ pytestmark = requires_native(
     ("sudo -n", _sudo_ok()),
     *[(t, _tool(t)) for t in ("losetup", "sgdisk", "partclone.ntfs", "partclone.fat", "partclone.ext4",
                               "partclone.dd", "ntfsresize", "mkntfs", "mkfs.vfat", "mkfs.ext4", "ntfs-3g",
-                              "pv", "gcc", "jq", "curl")],
+                              "pv", "gcc", "jq", "curl", "flock")],
     posix=True,
     why="loop devices and partclone as root: the Testrunner",
 )
 
 LIBS = ("common", "jsonq", "waits", "sysinfo", "progress", "restore", "diskfit", "expand", "grow", "drawers",
         "verdict", "failmark", "ntfsboot", "manifest", "hibernation", "shrinkplan", "shrink", "shrinkmem", "smart",
-        "lcinv", "lcplan", "lcsnap", "lccopy", "localclone")
+        "lcinv", "lcsize", "lcplan", "lcsnap", "lctune", "lccopy", "localclone")
 
 DRIVER = r'''
 set -u
 F=$1; TARGETS=$2; SHRINK=$3
 export RUN_DIR=$F/run LIB_DIR=%(lib)s IMAGECTL_TEST=1 MAC=aa:bb:cc:dd:ee:ff
 rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR"
+# #1594: a RAM view needs `brd` free. A suite that does not take the engine lock (an
+# older branch) holds it for a minute or two at a time; the engine refuses a brd it did
+# not load, rightly, so the copy that needs a view waits for it to go -- up to 6 minutes,
+# after which what the engine says is the true state of the machine.
+[ "$SHRINK" != 1 ] || { i=0; while [ -e /sys/module/brd ] && [ $i -lt 180 ]; do sleep 2; i=$((i + 1)); done; }
 # #1354: the fixture's disks are MiB-sized, so no target could keep 20 GB free.
 # 0 = the console's "rule off" -- the copy itself is what this file checks;
 # the rule has its own tests (test_min_free_1354.py, lc_verdict_for).
@@ -101,6 +110,11 @@ for n in $TARGETS; do d=$(dev "$n"); t=$RUN_DIR/targets/$d
   echo "target $n|$(cat "$t/state")|$(cat "$t/error" 2>/dev/null | tr '\n' ' ')|$(cat "$t/lc_ok" 2>/dev/null | tr '\n' ' ')|$(cat "$t/lc_table" 2>/dev/null)"; done
 echo "restore $(cat "$LC/run/source_restore" 2>/dev/null)"
 echo "report $(cat "$LC/run/report" 2>/dev/null)"
+# #1594: what the machine holds of a RAM view once this copy is over. The engine tears its own
+# down (#1466); a suite without the lock may still hold its own, which goes away -- ours would not.
+[ "$SHRINK" != 1 ] || { i=0; while { [ -e /sys/module/brd ] || dmsetup ls 2>/dev/null | grep -q '^lc-src-'; } && [ $i -lt 150 ]; do sleep 2; i=$((i + 1)); done; }
+echo "dmleft $(dmsetup ls 2>/dev/null | awk '$1 ~ /^lc-/ { printf "%%s,", $1 }')"
+echo "brd $([ -e /sys/module/brd ] && echo loaded || echo none)"
 '''
 
 
@@ -169,7 +183,8 @@ def _engine(tmp_path, fx: Path, fanout: Path, targets: str, shrink: int, server:
     script = tmp_path / "drive.sh"
     script.write_text(DRIVER % {"lib": LIB, "sources": sources}, newline="\n")
     run = _root(f"PATH={fanout}:{os.environ.get('PATH', '')}:{SBIN}", f"SERVER={server}", f"STOP_AT={stop_at}",
-                "LC_STALL_S=120", *env, "sh", str(script), str(fx), targets, str(shrink), timeout=1500)
+                "LC_STALL_S=120", *env, "flock", ENGINE_LOCK, "sh", str(script), str(fx), targets, str(shrink),
+                timeout=1500)
     out = {"raw": run.stdout + run.stderr, "verdict": {}, "target": {}}
     for line in run.stdout.splitlines():
         if line.startswith("verdict "):
@@ -177,7 +192,7 @@ def _engine(tmp_path, fx: Path, fanout: Path, targets: str, shrink: int, server:
         elif line.startswith("target "):
             name, state, error, ok, table = line[7:].split("|", 4)
             out["target"][name] = {"state": state, "error": error, "ok": ok.split(), "table": table}
-        elif line.startswith(("phase ", "restore ", "report ")):
+        elif line.startswith(("phase ", "restore ", "report ", "dmleft ", "brd ")):
             k, _, v = line.partition(" "); out[k] = v
     assert run.returncode == 0, out["raw"][-4000:]
     return out
@@ -310,8 +325,7 @@ def test_a_smaller_target_through_a_ram_view_leaves_the_source_bytes_identical(t
     assert report["shrink_path"] == "snapshot" and report["snapshot_teardown"] == "ok", report
     assert report["shrunk"] is False and isinstance(report["relocations_mb"], int), report
     assert "shrink-open" not in [k for k, _b in srv.posts]                         # nothing to put back
-    left = _root("dmsetup", "ls").stdout
-    assert "lc-src-" not in left and not Path("/sys/module/brd").exists(), left
+    assert res["dmleft"] == "" and res["brd"] == "none", (res["dmleft"], res["brd"])   # measured under the lock, #1594
 
 
 def test_without_the_confirmed_shrink_the_small_target_is_not_written(tmp_path, disks, fanout_bin):

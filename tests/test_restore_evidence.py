@@ -90,6 +90,7 @@ for a in "$@"; do
     case "$prev" in
         -d) rm -f "$B/uguid.$a" ;;
         -u) printf '%s\\n' "${{a#*:}}" > "$B/uguid.${{a%%:*}}" ;;
+        -U) printf '%s\\n' "$a" > "$B/disk_guid.requested" ;;   # #1714: anywhere in the one call
     esac
     [ "$a" = "--zap-all" ] && rm -f "$B"/uguid.[0-9]*
     prev="$a"
@@ -103,9 +104,6 @@ case "$1" in
         else
             echo "Partition unique GUID: 0BADC0DE-0000-4000-8000-000000000000"
         fi
-        ;;
-    -U)
-        printf '%s\\n' "$2" > "$B/disk_guid.requested"
         ;;
     -p)
         if [ -f "$B/disk_guid.lie" ]; then
@@ -167,7 +165,8 @@ def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
     # its own tests on real jq (test_min_free_1354.py).
     (run / "min_free_gb").write_text("0\n")
 
-    (box / "plan").write_text("\n".join(plan) + "\n" if plan else "")
+    # LF: a CRLF plan put a CR on the last field (attrs), which the one table call carries (#1714)
+    (box / "plan").write_text("\n".join(plan) + "\n" if plan else "", newline="\n")
     (box / "count").write_text(f"{len(plan) if count is None else count}\n")
     (box / "needs").write_text("1048576\n")
     (box / "disksize").write_text("500000000000\n")
@@ -205,7 +204,7 @@ def build_box(tmp_path, *, plan=PLAN, count=None, plan_cut=None, nodes=None,
         + f'export PATH="$(cd {posix(stubs)!r} && pwd):$PATH"; '
         # ‏SYSROOT הוא שורש הקופסה: הסוכן מוסיף בעצמו `/sys/block/...`.
         f'export RUN_DIR={posix(run)!r} DEVROOT={posix(box)}/dev '
-        f'SYSROOT={posix(box)} TABLE_SETTLE_S={settle} WAIT_POLL_S=1; '
+        f'SYSROOT={posix(box)} TABLE_SETTLE_S={settle} WAIT_POLL_S=1 REREAD_TRIES=1; '   # #1594: a refusal here is the test, not a busy disk to wait out
         f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/waits.sh; '
         f'. {posix(AGENT)}/lib/jsonq.sh; . {posix(AGENT)}/lib/progress.sh; '
         f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/expand.sh; . {posix(AGENT)}/lib/grow.sh; . {posix(AGENT)}/lib/failmark.sh; '
@@ -249,11 +248,28 @@ def target_error(run: Path) -> str:
 def test_a_failing_sgdisk_e_no_longer_looks_like_a_written_table(tmp_path):
     """הכשל שנתן לאיסיו את שמו: ‏`apply_gpt` נגמרה ב-`sleep 1`, ולכן קוד
     היציאה שהחזירה היה של ה-sleep. ‏`sgdisk -e` הוא לב ההרחבה (בדיקה
-    2.5): כשהוא נכשל, הטבלה על הכונן הגדול פשוט שגויה."""
-    _box, run, prelude = build_box(tmp_path, sgdisk_fail=["-e *"])
+    2.5): כשהוא נכשל, הטבלה על הכונן הגדול פשוט שגויה.
+    ‏#1714: ‏`-e` רץ באותה קריאה אחת עם כל הטבלה — הקריאה שנכשלה נקובה
+    בשמה ביומן, עם `-e` בתוכה."""
+    _box, run, prelude = build_box(tmp_path, sgdisk_fail=["* -e *"])
     out = sh(prelude + 'apply_gpt sda m.json; echo "rc=$?"')
     assert rc_of(out) == "rc=1", out
-    assert "could not move the GPT backup" in log_of(run)
+    assert _refused(run).endswith(" -e"), log_of(run)
+
+
+def test_a_zap_all_that_fails_twice_stops_the_restore(tmp_path):
+    """‏#1545: על טבלה ישנה פגומה ‏`--zap-all` מוחק ויוצא 2, ולכן הוא רץ
+    פעם שנייה — אבל רק השנייה שיצאה 0 היא ראיה לדיסק נקי. שתיים שנכשלו
+    אינן מתקפלות להצלחה (עיקרון 5). ההצלחה בפעם השנייה — עם sgdisk אמיתי
+    על GPT פגום, ב-test_damaged_gpt_1545.py."""
+    box, run, prelude = build_box(tmp_path, sgdisk_fail=["--zap-all *"])
+    out = sh(prelude + 'apply_gpt sda m.json; echo "rc=$?"')
+    assert rc_of(out) == "rc=1", out
+    zaps = [c for c in (box / "sgdisk.calls").read_text().splitlines() if c.startswith("--zap-all ")]
+    assert len(zaps) == 2, zaps
+    assert "again on the wiped disk" in log_of(run)
+    assert not [c for c in (box / "sgdisk.calls").read_text().splitlines()
+                if " -n " in f" {c}" and "--pretend" not in c], "נכתבה טבלה אחרי מחיקה שנכשלה"
 
 
 def test_a_kernel_that_refused_the_table_stops_the_restore(tmp_path):
@@ -293,9 +309,9 @@ def test_apply_gpt_restores_partition_attribute_bits(tmp_path):
     assert rc_of(out) == "rc=0", out
     calls = (box / "sgdisk.calls").read_text().splitlines()
     creates = [line for line in calls if line.startswith("-a 1 -n ")]
-    assert len(creates) == len(plan)
-    for index, call in enumerate(creates, 1):
-        assert f"-A {index}:=:0x{attrs}" in call, call
+    assert len(creates) == 1, creates  # #1714: the whole table is one call
+    for index in range(1, len(plan) + 1):
+        assert f"-A {index}:=:0x{attrs}" in creates[0], creates[0]
 
 
 def test_the_expansion_reads_its_own_table_back_too(tmp_path):
@@ -438,6 +454,12 @@ DISK_GUID = "047B3400-0000-0000-0000-0000003AEE00"
 LIE_GUID = "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"
 
 
+def _refused(run) -> str:
+    """#1714: the log line of the one table call that sgdisk refused ('' = none)."""
+    lines = [ln for ln in log_of(run).splitlines() if "sgdisk refused the table" in ln]
+    return lines[-1] if lines else ""
+
+
 def _sgdisk_called_with_U(box) -> str:
     path = box / "sgdisk.calls"
     return path.read_text(encoding="utf-8") if path.exists() else ""
@@ -448,12 +470,12 @@ def test_a_failing_disk_guid_no_longer_looks_like_a_written_table(tmp_path):
     כשהוא נכשל נרשמה WARNING והפונקציה החזירה 0 — טבלה בלי GUID הדיסק
     נראתה כמו טבלה שנכתבה."""
     box, run, prelude = build_box(
-        tmp_path, disk_guid=DISK_GUID, sgdisk_fail=["-U *"])
+        tmp_path, disk_guid=DISK_GUID, sgdisk_fail=["* -U *"])
     out = sh(prelude + 'apply_gpt sda m.json; echo "rc=$?"')
     assert f"-U {DISK_GUID}" in _sgdisk_called_with_U(box), (
         "‏-U לא רץ — הטסט לא בודק את מסלול ה-GUID")
     assert rc_of(out) == "rc=1", out
-    assert "could not set the disk GUID" in log_of(run)
+    assert f"-U {DISK_GUID}" in _refused(run), "#1714: the one table call, -U in it, named in the log"
 
 
 def test_a_disk_guid_that_could_not_be_set_does_not_reach_done(tmp_path):
@@ -464,7 +486,7 @@ def test_a_disk_guid_that_could_not_be_set_does_not_reach_done(tmp_path):
     הכישלון שנבדק הוא ההתנהגות — rc של השחזור ו-`done` — לא ייבוא
     ולא קובץ חסר. ‏`-U` חייב להופיע בקריאות, אחרת זה דילוג ולא כשל."""
     box, run, prelude = build_box(
-        tmp_path, disk_guid=DISK_GUID, sgdisk_fail=["-U *"])
+        tmp_path, disk_guid=DISK_GUID, sgdisk_fail=["* -U *"])
     out = sh(restore_run(prelude))
     assert f"-U {DISK_GUID}" in _sgdisk_called_with_U(box), (
         "‏-U לא רץ — הטסט לא בודק את מסלול ה-GUID")
@@ -472,7 +494,7 @@ def test_a_disk_guid_that_could_not_be_set_does_not_reach_done(tmp_path):
     assert state_of(run) == "failed"
     assert (run / "targets" / "sda" / "state").read_text().strip() == "failed"
     assert wrote(run) == [], "הזרם רץ אחרי GUID שלא נקבע"
-    assert "could not set the disk GUID" in log_of(run)
+    assert f"-U {DISK_GUID}" in _refused(run), "#1714: the one table call, -U in it, named in the log"
 
 
 def test_a_disk_guid_that_sgdisk_accepted_still_reaches_done(tmp_path):
@@ -502,7 +524,7 @@ def test_a_zero_from_sgdisk_U_is_not_proof_the_guid_landed(tmp_path):
     assert rc_of(out) == "rc=1", out
     log = log_of(run)
     assert f"disk GUID on the disk is {LIE_GUID}, not {DISK_GUID}" in log
-    assert "could not set the disk GUID" not in log, (
+    assert "sgdisk refused the table" not in log, (
         "זה אינו כשל של קוד היציאה — -U יצא 0")
 
 
