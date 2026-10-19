@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ImageSrv — קונסולה</title>
-<link rel="icon" type="image/svg+xml" href="favicon.svg?v=11.47">
-<link rel="icon" href="favicon.ico?v=11.47" sizes="any">
-<link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png?v=11.47">
-<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=11.47">
-<link rel="apple-touch-icon" href="apple-touch-icon.png?v=11.47">
-<link rel="stylesheet" href="design-tokens.css?v=11.47">
-<link rel="stylesheet" href="console.css?v=11.47">
-<link rel="stylesheet" href="progress.css?v=11.47">
-<link rel="stylesheet" href="nicsvc.css?v=11.47">
-<link rel="stylesheet" href="vmupdate.css?v=11.47">
+<link rel="icon" type="image/svg+xml" href="favicon.svg?v=11.82">
+<link rel="icon" href="favicon.ico?v=11.82" sizes="any">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png?v=11.82">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=11.82">
+<link rel="apple-touch-icon" href="apple-touch-icon.png?v=11.82">
+<link rel="stylesheet" href="design-tokens.css?v=11.82">
+<link rel="stylesheet" href="console.css?v=11.82">
+<link rel="stylesheet" href="progress.css?v=11.82">
+<link rel="stylesheet" href="nicsvc.css?v=11.82">
+<link rel="stylesheet" href="vmupdate.css?v=11.82">
 <script>
   /* לפני הציור הראשון, אחרת המסך מהבהב בלבן לפני שהכהה נטען.
      המטמון הוא בחירה מפורשת (light/dark) בלבד; בלי מטמון — בהיר
@@ -29,7 +29,7 @@
 
 <div id="login" class="login">
   <div class="pane">
-    <div class="brand"><img class="lockup lockup-light" src="logo-lockup.svg?v=11.47" height="52" alt="ImageSrv — שרת אימג'ים"><img class="lockup lockup-dark" src="logo-lockup-dark.svg?v=11.47" height="52" alt="ImageSrv — שרת אימג'ים"></div>
+    <div class="brand"><img class="lockup lockup-light" src="logo-lockup.svg?v=11.82" height="52" alt="ImageSrv — שרת אימג'ים"><img class="lockup lockup-dark" src="logo-lockup-dark.svg?v=11.82" height="52" alt="ImageSrv — שרת אימג'ים"></div>
     <div class="pane-body" id="login-body"></div>
     <div class="foot">
       <span id="login-foot-host"></span><span class="sep" id="login-foot-sep1" hidden>·</span>
@@ -81,7 +81,7 @@
 <div id="app" class="app hidden" data-nav="full">
 <header class="topbar">
   <button class="icon-btn nav-toggle" type="button" aria-label="כיווץ לפס אייקונים" title="כיווץ לפס אייקונים" aria-controls="sidebar" aria-expanded="true" onclick="navButton()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
-  <div class="brand"><img class="brand-lockup" src="logo-lockup-compact-dark.svg?v=11.47" height="24" alt="ImageSrv"></div>
+  <div class="brand"><img class="brand-lockup" src="logo-lockup-compact-dark.svg?v=11.82" height="24" alt="ImageSrv"></div>
   <div class="search"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/></svg></span><input id="globalSearch" type="search" placeholder="חיפוש במערכת" aria-label="חיפוש במערכת" role="combobox" aria-expanded="false" aria-controls="gsPanel" aria-autocomplete="list" autocomplete="off" /><div id="gsPanel" class="gs-panel" role="listbox" aria-label="תוצאות חיפוש" hidden></div></div>
   <div class="top-actions">
     <button class="icon-btn" title="רענן" onclick="refreshPage()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7a9 9 0 1 0 1 7M20 2v6h-6"/></svg></button>
@@ -96,12 +96,12 @@
   <aside class="sidebar" id="sidebar" aria-label="ניווט ראשי">
   <div class="nav-full" id="navFull">
   <div class="tree" role="tree" aria-label="עץ הניווט">
-    <div class="inventory-node server-node active" onclick="toggleInventoryGroup(this,'srvTA')" role="treeitem" tabindex="0" aria-expanded="true"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'srvTA')" data-open="true">▾</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01M11 7h6M11 17h6"/></svg></span><strong class="server-name" id="primaryServerName" ondblclick="event.stopPropagation();renameServer(this)">שרת אימג'ים</strong></div>
+    <div class="inventory-node server-node active" onclick="toggleInventoryGroup(this,'srvTA')" role="treeitem" tabindex="0" aria-expanded="true"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'srvTA')" data-open="true">▾</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01M11 7h6M11 17h6"/></svg></span><strong class="server-name" id="primaryServerName" ondblclick="event.stopPropagation();renameServer(this)">שרת אימג'ים</strong><span class="status unk" id="primaryServerStatus" title="מצב השירותים לא נבדק" aria-label="מצב השירותים לא נבדק"><i></i></span></div>
     <div id="srvTA" class="inventory-children" role="group">
       <div class="inventory-node" data-page="home" onclick="selectPageById('home')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="10" rx="1.5"/><rect x="13" y="3" width="8" height="6" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="15" width="8" height="6" rx="1.5"/></svg></span><span>סקירה כללית</span></div>
       <div class="inventory-node" data-page="deploy" onclick="selectPageById('deploy')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/></svg></span><span>סבב הפצה</span></div>
-      <div class="inventory-node group" onclick="toggleInventoryGroup(this,'invTA')" role="treeitem" tabindex="0" aria-expanded="true"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'invTA')" data-open="true">▾</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01"/></svg></span><span>מלאי</span></div>
-      <div id="invTA" class="inventory-children" role="group">
+      <div class="inventory-node group" onclick="toggleInventoryGroup(this,'invTA')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'invTA')" data-open="false">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01"/></svg></span><span>מלאי</span></div>
+      <div id="invTA" class="inventory-children" role="group" hidden>
         <div class="inventory-node" data-page="images" onclick="selectPageById('images')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></span><span>אימג'ים</span></div>
         <div class="inventory-node" data-page="machines" data-admin onclick="treeNavToggle(this,'machineTree',function(){MACHINES_FILTER=null;MACHINES_CLASS=null;MACHINES_ROLE=null;selectPageById('machines')})" role="treeitem" tabindex="0" aria-expanded="true"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'machineTree')" data-open="true">▾</span><span data-admin style="display:contents"><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="3" width="12" height="18" rx="2"/><path d="M9 7h6M9 11h6M12 17h.01"/></svg></span><span>מחשבים</span></span></div>
         <div id="machineTree" class="inventory-children" role="group" data-admin>
@@ -110,8 +110,8 @@
           <div class="inventory-node" data-role="cloner" onclick="selectMachinesRole('cloner',this)" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="1"/><path d="M16 8V3H3v13h5"/></svg></span><span>מחשבי שיכפול</span></div>
         </div>
       </div>
-      <div class="inventory-node group" onclick="toggleInventoryGroup(this,'infraTA')" role="treeitem" tabindex="0" aria-expanded="true"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'infraTA')" data-open="true">▾</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg></span><span>תשתית</span></div>
-        <div id="infraTA" class="inventory-children" role="group" data-admin>
+      <div class="inventory-node group" onclick="toggleInventoryGroup(this,'infraTA')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'infraTA')" data-open="false">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg></span><span>תשתית</span></div>
+        <div id="infraTA" class="inventory-children" role="group" data-admin hidden>
           <div class="inventory-node" data-page="health" onclick="selectPageById('health')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5S3.5 15.4 3.5 9.3A4.8 4.8 0 0 1 12 6.6a4.8 4.8 0 0 1 8.5 2.7c0 6.1-8.5 11.2-8.5 11.2Z"/><path d="M7 12h3l1.5-2.5 2 5 1.5-2.5h2"/></svg></span><span>בריאות ושירותים</span></div>
           <!-- #1066 שלב ב': מיקומי הספרייה — תיקייה / NFS / SMB / iSCSI (storage.js); admin בלבד -->
           <div class="inventory-node" data-page="storage" data-admin onclick="selectPageById('storage')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span><span>אחסון</span></div>
@@ -129,19 +129,18 @@
                המהדורה הראשונה יוצאת בלי ארגז הכלים (נדב 19/09): מתחיל מוסתר, ‏/me → capabilities.tools מדליק. -->
           <div class="inventory-node hidden" data-page="tools" data-admin data-cap="tools" onclick="selectPageById('tools')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.4 2.4-2.1-.6-.6-2.1Z"/></svg></span><span>ארגז כלים</span></div>
         </div>
-        <div class="inventory-node group" onclick="toggleInventoryGroup(this,'adminTA')" role="treeitem" tabindex="0" aria-expanded="true"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'adminTA')" data-open="true">▾</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6Z"/><path d="m9 12 2 2 4-4"/></svg></span><span>ניהול</span></div>
-        <div id="adminTA" class="inventory-children" role="group" data-admin>
+        <div class="inventory-node group" onclick="toggleInventoryGroup(this,'adminTA')" role="treeitem" tabindex="0" aria-expanded="false"><span class="tree-arrow" onclick="event.stopPropagation();toggleInventoryGroup(this.closest('.inventory-node'),'adminTA')" data-open="false">▸</span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6Z"/><path d="m9 12 2 2 4-4"/></svg></span><span>ניהול</span></div>
+        <div id="adminTA" class="inventory-children" role="group" data-admin hidden>
           <div class="inventory-node" data-page="permissions" onclick="selectPageById('permissions')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20v-1a6.5 6.5 0 0 1 13 0v1M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 3.5 5.5V20"/></svg></span><span>משתמשים והרשאות</span></div>
           <div class="inventory-node" data-page="logs" onclick="selectPageById('logs')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6Z"/><path d="M14 3v5h5M9 13h7M9 17h5"/></svg></span><span>יומן</span></div>
           <div class="inventory-node" data-page="settings" data-admin onclick="selectPageById('settings')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></span><span>הגדרות</span></div>
-          <div class="inventory-node hidden" data-page="branches" data-cap="interbranch_transfer" onclick="selectPageById('branches')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span>סניפים</span></div>
+          <div class="inventory-node hidden" data-page="branches" data-cap="interbranch_transfer|enroll_secondary" onclick="selectPageById('branches')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01M11 7h6M11 17h6"/></svg></span><span>שרתי משנה</span></div>
           <div class="inventory-node" data-page="account" onclick="selectPageById('account')" role="treeitem" tabindex="0"><span class="tree-arrow-sp"></span><span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/></svg></span><span>החשבון שלי</span></div>
         </div>
     </div>
-    <!-- #936: צמתי השרתים המשניים נבנים מ-GET /api/console/storage-nodes (populateSidebarSecondaries) -->
+    <!-- #936: צמתי שרתי המשנה נבנים מ-GET /api/console/storage-nodes (populateSidebarSecondaries) -->
     <div id="secondaryServers" style="display:contents"></div>
   </div>
-  <div class="tree-foot"><span id="treeFootName">שרת אימג'ים</span><br><span class="status unk" id="treeFootStatus"><i></i>מצב השירותים לא נבדק</span></div>
   </div>
   <!-- ‏#1300: פס האייקונים — נבנה מהעץ שלמעלה (drawRail); גלוי כש-#app[data-nav=rail] -->
   <div class="rail" id="rail" aria-label="ניווט מצומצם"></div>
@@ -159,18 +158,18 @@
 <div class="toast" id="toast"></div>
 </div>
 
-<script src="progress.js?v=11.47"></script>
-<script src="console.js?v=11.47"></script>
-<script src="update_screen.js?v=11.47"></script>
-<script src="capture_detail.js?v=11.47"></script>
-<script src="reorder.js?v=11.47"></script>
-<script src="net.js?v=11.47"></script>
-<script src="netcfg.js?v=11.47"></script>
-<script src="nicsvc.js?v=11.47"></script>
-<script src="storage_nodes.js?v=11.47"></script>
-<script src="drivers.js?v=11.47"></script>
-<script src="storage.js?v=11.47"></script>
-<script src="branches.js?v=11.47"></script>
-<script src="vmupdate.js?v=11.47"></script>
+<script src="progress.js?v=11.82"></script>
+<script src="console.js?v=11.82"></script>
+<script src="update_screen.js?v=11.82"></script>
+<script src="capture_detail.js?v=11.82"></script>
+<script src="reorder.js?v=11.82"></script>
+<script src="net.js?v=11.82"></script>
+<script src="netcfg.js?v=11.82"></script>
+<script src="nicsvc.js?v=11.82"></script>
+<script src="storage_nodes.js?v=11.82"></script>
+<script src="drivers.js?v=11.82"></script>
+<script src="storage.js?v=11.82"></script>
+<script src="branches.js?v=11.82"></script>
+<script src="vmupdate.js?v=11.82"></script>
 </body>
 </html>

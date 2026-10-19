@@ -58,7 +58,12 @@ int lc_state_line(State *s, const char *key, char *val) {
                         drawer >= 1 && drawer <= MAX_DRAWERS ? (int)drawer : -1;
         }
         if (nf >= 15) cpy(d->conn, sizeof d->conn, f[14]);
-    } else if (!strcmp(key, "lc_src")) { lc_split(val, f, 2); cpy(l->src, sizeof l->src, f[0]); cpy(l->src_measure, sizeof l->src_measure, f[1]); }
+    } else if (!strcmp(key, "lc_src")) {
+        int nf = lc_split(val, f, 4); cpy(l->src, sizeof l->src, f[0]); cpy(l->src_measure, sizeof l->src_measure, f[1]);
+        l->src_copy = nf >= 3 && f[2][0] ? ll(f[2]) : -2;   /* #1443: empty, or an agent without it = not yet */
+        if (l->src_copy < -2) l->src_copy = -1;
+        cpy(l->src_copy_why, sizeof l->src_copy_why, f[3]);
+    }
     else if (!strcmp(key, "lc_fit") && l->nfits < LC_MAX_DISKS) {
         lc_split(val, f, 4);
         LcFit *x = &l->fits[l->nfits++];
@@ -128,6 +133,7 @@ const LcFit *lc_fit_of(const App *a, const char *dev) {
 }
 
 int lc_target_ok(const App *a, int i) {
+    if (smart_level(a->st.lc.disks[i].smart) == 2) return 0;   /* #1732: red (SMART fail) is never a target */
     const LcFit *f = lc_fit_of(a, a->st.lc.disks[i].dev);
     return !f || f->verdict == LCV_FITS || f->verdict == LCV_SHRINK || f->verdict == LCV_MEASURING;
 }
@@ -195,14 +201,40 @@ static void smart_ask(App *a, int kind, int i) {
     sdlg_open(a, kind, i, d->dev, label, d->smart, d->smart_reason, d->model, d->serial);
 }
 
+/* #1722: a source is proposed only with a system on it -- a partition table
+ * and a filesystem the inventory read (os) -- never on "usable" alone. */
+static int proposable(const LcDisk *d) { return d->usable && d->os[0]; }
+
+/* #1722: the person's last lc-start, all of it or nothing: every disk of it
+ * still here with the serial it had, and the source still a source. */
+static void restore_last(App *a) {
+    const LcUi *u = &a->lcu; const LcDisk *s = u->last_src[0] ? lc_disk_by_dev(a, u->last_src) : NULL;
+    if (!s || !s->usable || strcmp(s->serial, u->last_src_serial)) return;
+    for (int k = 0; k < u->nlast; k++) {
+        const LcDisk *t = lc_disk_by_dev(a, u->last_tgt[k]);
+        if (!t || strcmp(t->serial, u->last_tgt_serial[k])) return;
+    }
+    set_stored(a, s->dev, LCR_SOURCE);
+    for (int k = 0; k < u->nlast; k++) set_stored(a, u->last_tgt[k], LCR_TARGET);
+}
+
 static void default_roles(App *a) {
     const LcState *l = &a->st.lc; int src = -1;
     a->lcu.nroles = 0; a->lcu.measured[0] = 0; a->lcu.src_ack[0] = 0;
-    for (int i = 0; i < l->ndisks; i++) if (eff_drawer(l->disks[i].drawer, l->disks[i].port) == 3 && l->disks[i].usable) src = i;    /* drawer 3 */
-    for (int i = 0; src < 0 && i < l->ndisks; i++) if (l->disks[i].usable && l->disks[i].os[0]) src = i;
-    for (int i = 0; src < 0 && i < l->ndisks; i++) if (l->disks[i].usable) src = i;
-    for (int i = 0; i < l->ndisks; i++)
-        set_stored(a, l->disks[i].dev, i == src ? LCR_SOURCE : smart_skip(&l->disks[i]) ? LCR_SKIP : LCR_TARGET);
+    if (a->lcu.ran) {
+        /* #1722: after a run the drawers are not what was read before it -- a
+         * target may be empty, or half a copy. Nothing is proposed: after a
+         * stop the person's own last choice, exactly; else no choice at all. */
+        if (a->lcu.keep) restore_last(a);
+        for (int i = 0; i < l->ndisks; i++)
+            if (stored_role(a, l->disks[i].dev) == LCR_SKIP) set_stored(a, l->disks[i].dev, LCR_SKIP);
+        src = lc_source_index(a);
+    } else {
+        for (int i = 0; i < l->ndisks; i++) if (eff_drawer(l->disks[i].drawer, l->disks[i].port) == 3 && proposable(&l->disks[i])) src = i;    /* drawer 3 */
+        for (int i = 0; src < 0 && i < l->ndisks; i++) if (proposable(&l->disks[i])) src = i;
+        for (int i = 0; i < l->ndisks; i++)
+            set_stored(a, l->disks[i].dev, i == src ? LCR_SOURCE : smart_skip(&l->disks[i]) ? LCR_SKIP : LCR_TARGET);
+    }
     a->lcu.bay = src >= 0 ? src : 0; a->lcu.focus = LCF_BAY; a->lcu.confirm = a->lcu.stop = 0;
 }
 
@@ -215,12 +247,21 @@ void lc_after_reload(App *a) {
     if ((a->sdlg.kind == SDLG_LC_TARGET || a->sdlg.kind == SDLG_LC_SOURCE) &&
         (l->screen != LC_SCREEN_LOCAL || strcmp(l->phase, "idle") || a->sdlg.ref >= l->ndisks ||
          strcmp(l->disks[a->sdlg.ref].dev, a->sdlg.dev))) a->sdlg.kind = SDLG_NONE;
-    if (l->screen != LC_SCREEN_LOCAL) { a->lcu.nroles = 0; a->lcu.last_phase[0] = 0; a->lcu.start_sent = 0; return; }
-    if (!strcmp(a->lcu.last_phase, "done") && !strcmp(l->phase, "idle")) a->lcu.nroles = 0;   /* "שכפול נוסף" */
-    if (strcmp(l->phase, "idle")) a->lcu.start_sent = 0;
+    if (l->screen != LC_SCREEN_LOCAL) { a->lcu.nroles = 0; a->lcu.last_phase[0] = 0; a->lcu.start_sent = 0; a->lcu.keep = 0; return; }
+    int idle = !strcmp(l->phase, "idle");
+    if (l->phase[0] && !idle) a->lcu.ran = 1;     /* #1722: also a run this screen did not start */
+    /* #1722: back to choosing after a run -- "שכפול נוסף" after done, or a stop
+     * (the agent goes stopped -> idle in a breath: any phase but done). */
+    if (idle && a->lcu.last_phase[0] && strcmp(a->lcu.last_phase, "idle")) {
+        a->lcu.nroles = 0; a->lcu.keep = strcmp(a->lcu.last_phase, "done") != 0;
+    }
+    if (!idle) a->lcu.start_sent = 0;
     snprintf(a->lcu.last_phase, sizeof a->lcu.last_phase, "%s", l->phase);
     if (!l->inv_done) return;
     if (!a->lcu.nroles) default_roles(a);
+    /* #1722: a source the drawers no longer allow (no table, the layout not read) is not one */
+    int s = lc_source_index(a);
+    if (s >= 0 && !l->disks[s].usable) set_stored(a, l->disks[s].dev, LCR_SKIP);
     /* a disk that appeared since the roles were set has none stored: "דלג", never a target by surprise */
     if (a->lcu.bay >= l->ndisks) a->lcu.bay = 0;
     if (!strcmp(l->phase, "idle")) measure_source(a);
@@ -236,6 +277,14 @@ static void start(App *a) {
         k += snprintf(line + k, sizeof line - k, "%s%s", i ? "," : "", a->st.lc.disks[idx[i]].dev);
     if (k <= 0 || (size_t)k + 3 >= sizeof line) return;   /* cut = no order */
     snprintf(line + k, sizeof line - k, "|%d", lc_any_shrink(a));
+    LcUi *u = &a->lcu; const LcDisk *sd = &a->st.lc.disks[s];   /* #1722: what the person chose, to draw again after a stop */
+    snprintf(u->last_src, sizeof u->last_src, "%s", sd->dev); snprintf(u->last_src_serial, sizeof u->last_src_serial, "%s", sd->serial);
+    u->nlast = 0;
+    for (int i = 0; i < n && u->nlast < LC_MAX_DISKS; i++, u->nlast++) {
+        const LcDisk *td = &a->st.lc.disks[idx[i]];
+        snprintf(u->last_tgt[u->nlast], sizeof u->last_tgt[0], "%s", td->dev);
+        snprintf(u->last_tgt_serial[u->nlast], sizeof u->last_tgt_serial[0], "%s", td->serial);
+    }
     a->lcu.confirm = 0; a->lcu.start_sent = mono_now(); a->lcu.focus = LCF_STOP;
     emit_line(line);
 }

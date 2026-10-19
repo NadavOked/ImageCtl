@@ -110,7 +110,8 @@ def _open(client, target=2, slots=None):
 
 def test_an_open_wave_warns_on_a_slow_drawer_and_not_on_the_others(room_server):
     deploy, anon = room_server["deploy"], room_server["anon"]
-    _open(deploy, target=4, slots=room_slots(room_server["ctx"].conn, {CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4"]}))
+    # #1703: target 5 -- four drawers do not cover it, the wave stays open
+    _open(deploy, target=5, slots=room_slots(room_server["ctx"].conn, {CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4"]}))
     drawers_hello(anon, CLONER1, [disk("S1", 1), disk("S2", 2, link=1.5)])
     drawers_hello(anon, CLONER2, [disk("S3", 1, link=None), disk("S4", 2, link=3.0, top=3.0)])
     warn = room(deploy)["round"]["precheck"]

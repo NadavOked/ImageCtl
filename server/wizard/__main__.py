@@ -11,7 +11,7 @@ from .httpd import serve
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="ImageCtl first-boot HTTPS wizard")
+    p = argparse.ArgumentParser(description="ImageSrv first-boot HTTPS wizard")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8081)
     p.add_argument("--data-dir", type=Path, default=Path("/var/lib/imagectl"))
@@ -33,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     stamp = args.stamp_file or args.data_dir / ".firstboot-done"
     if stamp.exists() and not args.rerun:
-        print(f"imagectl-wizard: ImageCtl כבר הותקן ({stamp}); להרצה חוזרת נדרש --rerun", file=sys.stderr)
+        print(f"imagectl-wizard: ImageSrv כבר הותקן ({stamp}); להרצה חוזרת נדרש --rerun", file=sys.stderr)
         return 2
     args.data_dir.mkdir(parents=True, exist_ok=True)
     status_file = args.status_file or (args.data_dir / "firstboot.status" if args.dev else Path("/etc/imagectl/firstboot.status"))

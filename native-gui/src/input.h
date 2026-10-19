@@ -18,7 +18,8 @@ enum { KEYSYM_TAB = 1, KEYSYM_BACKTAB, KEYSYM_ENTER, KEYSYM_BACKSPACE, KEYSYM_ES
        KEYSYM_F1, KEYSYM_F2, KEYSYM_F3, KEYSYM_F4, KEYSYM_F5, KEYSYM_F6,   /* #1203: the */
        KEYSYM_F7, KEYSYM_F8, KEYSYM_F9, KEYSYM_F10, KEYSYM_F11, KEYSYM_F12, /* server screen */
        KEYSYM_VT     /* #1362: Alt+Fn / Ctrl+Alt+Fn -- switch to VT Event.vt; the
-                      * grab hides the chord from the kernel, so it is asked for here */ };
+                      * grab hides the chord from the kernel, so it is asked for here */,
+       KEYSYM_DELETE /* #1386: "בטל את דיסק N" -- Del, never Enter */ };
 
 typedef struct {
     EvType type;

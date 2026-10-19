@@ -422,10 +422,10 @@ def render_proxy(configs: list[InterfaceConfig],
         subnet = cfg.server_ip or "0.0.0.0"
         lines.append(f"dhcp-range=set:{tag},{subnet},proxy")
         lines.append(
-            f'pxe-service=tag:{tag},tag:bios,x86PC,"ImageCtl",grub/i386-pc/core.0'
+            f'pxe-service=tag:{tag},tag:bios,x86PC,"ImageSrv",grub/i386-pc/core.0'
         )
         lines.append(
-            f'pxe-service=tag:{tag},tag:efi-x86_64,x86-64_EFI,"ImageCtl",bootx64.efi'
+            f'pxe-service=tag:{tag},tag:efi-x86_64,x86-64_EFI,"ImageSrv",bootx64.efi'
         )
         lines.append("")
     return "\n".join(lines) + "\n"

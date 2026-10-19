@@ -79,5 +79,5 @@ test('verifying: a moving bar and the elapsed time from the server; without the 
 test('pull is verified by the primary, push by the secondary', () => {
   const {call} = setup();
   assert.equal(call('transferStateLabel', row({state: 'verifying', direction: 'pull'}))[0], 'הראשי מאמת sha256');
-  assert.equal(call('transferStateLabel', row({state: 'verifying', direction: 'push'}))[0], 'המשני מאמת sha256');
+  assert.equal(call('transferStateLabel', row({state: 'verifying', direction: 'push'}))[0], 'שרת המשנה מאמת sha256');
 });

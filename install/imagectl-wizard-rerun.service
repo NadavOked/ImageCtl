@@ -1,6 +1,6 @@
 # ImageCtl — explicit post-install rerun of the first-boot wizard (#1163).
 [Unit]
-Description=ImageCtl first-boot web wizard (explicit rerun)
+Description=ImageSrv first-boot web wizard (explicit rerun)
 After=network-online.target
 Wants=network-online.target
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -148,8 +149,10 @@ def capture_with(tmp_path, guest):
     (work / "disk.raw").write_bytes(b"")
     (work / "source-manifest.json").write_text(json.dumps(SOURCE), encoding="utf-8")
     with pytest.raises(vmdisk.DiskError) as caught:
+        # ‏#1535: ‏capture_disk מוסר את אזור העבודה לקבוצה של משתמש ה-VM (‏chown) —
+        # בלי root, רק לקבוצה שלנו. ה-uid אינו נוגע בדיסק לפני האימות.
         vmdisk.capture_disk(NoHost(), work, work / "out", lambda n: None,
-                            user=vmdisk.VmUser(999, 989),
+                            user=vmdisk.VmUser(999, os.getgid() if hasattr(os, "getgid") else 989),
                             appliance=lambda disk: vmdisk.Appliance(disk, factory=lambda: guest))
     return caught.value
 
@@ -210,6 +213,21 @@ def test_hibernation_codes_from_the_appliance(tmp_path, rc, reason):
     guest = FakeGuest()
     guest.ntfs_3g_probe = lambda *_a: rc
     assert capture_with(tmp_path, guest).reason == reason
+
+
+def test_a_hibernated_vm_disk_gives_the_fix_that_works_not_a_full_shutdown(tmp_path):
+    """#1504 (המשך #1502, ברזל 16/10): עם Fast Startup דלוק כיבוי רגיל **הוא**
+    שינה, ו"כיבוי מלא" לא משחרר את הדיסק. ההודעה אומרת זאת ונותנת את התיקון
+    שעובד — ‏`powercfg /h off` — כמו `capture_hibernated_message` של הסוכן.
+    עברית קודם: שורה שנפתחת באסימון LTR נפרסת הפוך."""
+    guest = FakeGuest()
+    guest.ntfs_3g_probe = lambda *_a: 14
+    exc = capture_with(tmp_path, guest)
+    assert exc.reason == "hibernated"
+    assert "powercfg /h off" in exc.message
+    assert "כיבוי רגיל" in exc.message and "Fast Startup" in exc.message
+    assert "כיבוי מלא" not in exc.message and "shutdown /s" not in exc.message
+    assert re.match("[\u0590-\u05FF]", exc.message), exc.message
 
 
 def test_the_unprivileged_wrapper_drops_everything():
@@ -303,7 +321,7 @@ def test_boot_files_never_land_through_a_stale_planted_symlink(tmp_path):
     (run_dir / "u-old").symlink_to(outside)
     vmdisk._clear_stale(work, run_dir)
     assert not (work / "unpriv").exists() and not (run_dir / "esp-old").exists()
-    target = vmdisk.boot_files(FakeBox(), 1, ["/EFI/BOOT/bootx64.efi"], run_dir)
+    target = vmdisk.boot_files(FakeBox(), 1, ["/EFI/BOOT/bootx64.efi"], run_dir, os.getuid())
     assert target.parent == run_dir and not target.is_symlink()
     assert (target / "EFI" / "BOOT" / "bootx64.efi").read_bytes() == b"MZ"
     assert os.lstat(target).st_uid == os.geteuid()

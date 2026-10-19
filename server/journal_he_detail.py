@@ -83,7 +83,10 @@ RULES: dict[str, list[tuple[str, str]]] = {
     "net_config_unverified": [(r" live state mismatch$", " · המצב החי שונה מהמבוקש")],
     "dcui_management_network_restart": [
         (r" ok=false no saved configuration$", " · אין הגדרה שמורה"),
-        (r" ok=false invalid saved configuration$", " · ההגדרה השמורה אינה תקינה")],
+        (r" ok=false invalid saved configuration$", " · ההגדרה השמורה אינה תקינה"),
+        (r" ok=false pending change$", " · יש שינוי ממתין לאישור"),        # #1537
+        (r" ok=false apply failed$", " · ההפעלה מחדש נכשלה"),
+        (r" ok=false live state mismatch$", " · הכתובת לא נקראה בחזרה")],
     "dcui_net_confirm_refused": [
         (r"^no pending change$", "אין שינוי ממתין"),
         (_NET_NAME + r"expired$", r"\1 · פג תוקף האישור"),

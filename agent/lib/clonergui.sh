@@ -92,7 +92,7 @@ cloner_gui_state() {
         [ -d "$_cg_dir" ] || continue
         _cg_any=1
         _cg_dev=$(basename "$_cg_dir")
-        _cg_port=$(disk_port "$_cg_dev")
+        _cg_port=$(disk_port "$_cg_dev"); [ -n "$_cg_port" ] || _cg_port=$(cut -d'|' -f2 "$_cg_dir/seen" 2>/dev/null)   # #1602: a pulled drawer keeps its slot
         _cg_state=$(cat "$_cg_dir/state" 2>/dev/null)
         _cg_total=$(cat "$_cg_dir/total" 2>/dev/null)
         _cg_bytes=$(target_bytes "$_cg_dev")
@@ -106,12 +106,15 @@ cloner_gui_state() {
         # A field separator or newline inside the error would corrupt the
         # record; fold them to spaces before the value reaches the parser.
         _cg_error=$(printf '%s' "$_cg_error" | tr '\r\n|' '   ')
-        # #410: fields 7-8 are rate (bytes/s) and ETA (s); -1 = not measured.
+        # #410: fields 7-8 are rate (bytes/s) and ETA (s); -1 = not measured. #1386: 11-12 = who
+        # asked to cancel ("" = nobody) and when it was done (epoch; "" = not yet).
         cloner_gui_pace "$_cg_dev" "$_cg_state" "$_cg_bytes" "$_cg_total"
-        printf 'drawer=%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+        _cg_drv=''; [ ! -e "$_cg_dir/drivers.json" ] || _cg_drv=$(drivers_gui_fields "$_cg_dir/drivers.json") || return 1   # #1331: fields 13-17 (+18-20 for Linux)
+        printf 'drawer=%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s%s\n' \
             "$_cg_port" "$_cg_dev" "$_cg_state" \
             "$_cg_bytes" "$_cg_total" "$_cg_error" \
-            "$_cg_rate" "$_cg_eta" "$(disk_drawer "$_cg_dev" "$_cg_port")" >> "$_cg_next" ||
+            "$_cg_rate" "$_cg_eta" "$(disk_drawer "$_cg_dev" "$_cg_port")" \
+            "$(cat "$_cg_dir/cancel" 2>/dev/null | tr -d '\r\n|')" "$(cat "$_cg_dir/cancelled_at" 2>/dev/null)" "$_cg_drv" >> "$_cg_next" ||
             return 1
     done
 
@@ -162,7 +165,7 @@ cloner_cdisks() {
         # ‏#867/#874: זיכרון השרת גובר על SMART -- דיסק שכשל בכתיבה (לפי סידורי
         # או חריץ) עובר SMART. השדה השישי הוא הסיבה שהשרת סיווג (cable/disk),
         # ריק כשירוק. ‏disk_failure_cause יושב ב-failmark.sh: גם השער קורא אותו.
-        _cg_dcause=$(disk_failure_cause "$_cg_d") && _cg_dsmart=failed_last
+        [ "$_cg_dsmart" != fail ] && _cg_dcause=$(disk_failure_cause "$_cg_d") && _cg_dsmart=failed_last   # #1580: red SMART wins
         [ "$_cg_dsmart" = fail ] && _cg_dcause=$(smart_field "$_cg_d" 2)   # #1366: why F1 -- field 6
         # #1366: 199 only when smartctl read it (disk_link_json's rule), over the hello's threshold
         _cg_crc=$(disk_link_json "$_cg_d" | sed -n 's/.*"crc":\([0-9][0-9]*\).*/\1/p')
@@ -208,14 +211,14 @@ gui_smart_choice() {
     case "$_gsc_seq" in ''|*[!0-9]*) _gsc_seq=0 ;; esac
     _gsc_seq=$((_gsc_seq + 1))
     echo "$_gsc_seq" > "$GUI_DIR/smart-seq" || return 1
-    _gsc_nonce="$_gsc_seq-$_gsc_port"
+    _gsc_nonce="$_gsc_seq-$_gsc_port"; _gsc_t=0
 
     rm -f "$GUI_DIR/smart-decision"
     printf '%s|%s|%s|%s|%s|%s\n' "$_gsc_nonce" "$_gsc_port" "$2" "$3" "$(trim "$(cat "$SYSROOT/sys/block/$1/device/model" 2>/dev/null)" | tr '|\n' '  ')" \
         "$(disk_serial "$1" | tr '|\n' '  ')" > "$GUI_DIR/smart-request.next" || return 1   # 16/10: model, serial -- the SMART window's details
     mv "$GUI_DIR/smart-request.next" "$GUI_DIR/smart-request" || return 1
 
-    while kill -0 "$_gui_pid" 2>/dev/null; do
+    while kill -0 "$_gui_pid" 2>/dev/null && [ -e "$GUI_DIR/smart-request" ] && [ "$_gsc_t" -lt "${WAIT_SMART_GUI_S:-1800}" ] && [ ! -e "$RUN_DIR/session-closed" ]; do   # rc2 17/10: a closed round ends the question
         attended_power_check
         if [ -s "$GUI_DIR/smart-decision" ]; then
             IFS='|' read -r _gsc_dnonce _gsc_dec < "$GUI_DIR/smart-decision" || {
@@ -241,11 +244,11 @@ gui_smart_choice() {
             fi
             rm -f "$GUI_DIR/smart-decision"
         fi
-        sleep 1
+        sleep 1; _gsc_t=$((_gsc_t + 1))
     done
 
-    # The GUI died with no decision: clear the handshake and fail. The caller
-    # writes the disk only after a positive choice, never on this path.
+    # The GUI died (its bridge took the request, #1726), or no answer in WAIT_SMART_GUI_S (17/10): clear the handshake; smart_ask takes the no-answer default
+    [ "$_gsc_t" -lt "${WAIT_SMART_GUI_S:-1800}" ] || printf 'native GUI: no SMART answer in %ss\n' "$_gsc_t" >&2
     rm -f "$GUI_DIR/smart-request" "$GUI_DIR/smart-decision"
     return 1
 }

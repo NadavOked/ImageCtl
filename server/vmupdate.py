@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import vmdisk, vmnet
+from . import disk_reserve, vmdisk, vmnet
 from .capture import validate_manifest_files
 from .db import get_setting, journal, now_iso, set_setting, set_settings
 from .images import (
@@ -445,6 +445,22 @@ class VmUpdate:
             self._save_state(state)
         return state
 
+    def clear_leftovers(self) -> None:
+        """‏#1649: בעליית השרת — שאריות של שמירה שנקטעה באמצע כיווץ (העותק
+        `imagectl-vmsave`, ה-loop-ים, ‏`shrink.cow`) מנוקות ונקראות בחזרה, כדי
+        שביטול או שמירה לא ייתקלו ב-loop שנשאר מחובר. כשל = אזהרה במצב, שורה
+        ביומן ובלוג — לא נבלע, וגם לא מפיל את עליית השרת. כשיש VM בפעולה בתהליך
+        הזה (‏BUSY) — לא נוגעים: העותק שלו חי."""
+        with self._lock:
+            if self._state.get("state") in BUSY or not self.workdir.exists():
+                return
+            try:
+                vmdisk.clear_leftovers(self.host, self.workdir)
+            except vmdisk.DiskError as exc:
+                log.error("vmsave leftovers not cleared: %s", exc.message)
+                journal(self.conn, "vmupdate_leftover_failed", exc.message)
+                self._set(warnings=list(self._state.get("warnings") or []) + [exc.message])
+
     def _save_state(self, state: dict) -> None:
         if not self.workdir.exists():
             return
@@ -694,7 +710,8 @@ class VmUpdate:
 
     def _tools(self, manifest: dict | None, secure_boot: bool) -> None:
         need = ["qemu-system-x86_64", "losetup", "sgdisk", "blockdev", "blkid", "zstd", "jq",
-                "ntfsresize", "ntfsfix", "partclone.dd", "sh", "ip", "nft", "setpriv", "chown"]
+                "ntfsresize", "ntfsfix", "partclone.dd", "sh", "ip", "nft", "setpriv", "chown",
+                "dmsetup"]
         if manifest is not None:
             need += sorted({vmdisk.partclone_for_fs(p.get("fs") or "")
                             for p in streamed_partitions(manifest)})
@@ -894,7 +911,9 @@ class VmUpdate:
                 used += int(part.get("size_bytes") or 0)
                 unmeasured.append(f"p{part.get('index', '?')}")
         compressed = int(manifest.get("total_compressed_bytes") or 0)
-        need = used + self.growth_reserve_bytes + compressed
+        # ‏#1737: הרזרבה למערכת נוספת על מרווח הגדילה — הוא לדיסק של ה-VM, היא לשרת.
+        keep = disk_reserve.reserve()
+        need = used + self.growth_reserve_bytes + compressed + keep
         if free < need:
             label = "גודל המחיצות" if unmeasured else "תפוס במחיצות"
             note = (f" · ב-{', '.join(unmeasured)} לא נמדד כמה תפוס — נספר גודל המחיצה המלא "
@@ -902,7 +921,8 @@ class VmUpdate:
             raise Refusal(
                 507, "disk_space",
                 f"אין מקום בשרת: נדרשים {_gb(need)} ({label} {_gb(used)} + מרווח לעדכונים "
-                f"{_gb(self.growth_reserve_bytes)} + גרסה חדשה {_gb(compressed)}), "
+                f"{_gb(self.growth_reserve_bytes)} + גרסה חדשה {_gb(compressed)} + "
+                f"רזרבה למערכת {_gb(keep)}), "
                 f"פנויים {_gb(free)}{note}", need_bytes=need, free_bytes=free,
                 **({"unmeasured_partitions": unmeasured} if unmeasured else {}))
 
@@ -1196,15 +1216,12 @@ class VmUpdate:
         self._spawn(self._save, user, name, description, user_ids)
         return self.status(user)
 
-    #: כשל שמירה לפני שהדיסק שונה — הדיסק שלם, אפשר להדליק שוב ולתקן.
-    _BEFORE_CHANGE = ("hibernated", "unchecked", "bitlocker", "table", "loop", "layout",
-                      "fs_changed", "appliance", "missing_tool", "verify", "disk_space")
-
     def _save(self, user: str, name: str, description: str, ids: vmdisk.VmUser) -> None:
         out = self.workdir / "out"
         shutil.rmtree(out, ignore_errors=True)
         try:
             source = json.loads((self.workdir / "source-manifest.json").read_text(encoding="utf-8"))
+            self._check_save_space(source)
 
             def on_partition(count: int, total: int) -> None:
                 with self._lock:
@@ -1243,12 +1260,26 @@ class VmUpdate:
                                "error": None}
         except vmdisk.DiskError as exc:
             shutil.rmtree(out, ignore_errors=True)
-            self._fail(exc.reason, exc.message, disk_ready=exc.reason in self._BEFORE_CHANGE,
-                       user=user)
+            # ‏#1491: השמירה אינה כותבת לדיסק (הכיווץ על עותק) — כל כשל בשמו משאיר
+            # אותו שלם: מדליקים שוב, מתקנים ושומרים.
+            self._fail(exc.reason, exc.message, disk_ready=True, user=user)
         except Exception as exc:   # noqa: BLE001
             log.exception("vmupdate save failed")
             shutil.rmtree(out, ignore_errors=True)
             self._fail("internal", f"השמירה נכשלה: {exc}", disk_ready=False, user=user)
+
+    def _check_save_space(self, source: dict) -> None:
+        """‏#1737: בין הפתיחה לשמירה עוברים ימים — דיסק העבודה גדל, קליטות נכנסו.
+        הגרסה החדשה נכתבת לספרייה רק אם אחריה נשארת הרזרבה למערכת. הגודל שלה
+        מוערך כגודל המקור הדחוס, כמו בפתיחה (`_check_space`). כשל = ‏`disk_ready`
+        נשאר: מפנים מקום ושומרים שוב."""
+        free = self.machine.free_bytes(self.library.root)
+        if free is None:
+            raise vmdisk.DiskError("disk_space", "לא ניתן לקרוא כמה מקום פנוי בספרייה")
+        compressed = int(source.get("total_compressed_bytes") or 0)
+        refused = disk_reserve.refusal(free, compressed, "שמירת הגרסה החדשה")
+        if refused is not None:
+            raise vmdisk.DiskError("disk_space", refused)
 
     def _new_id(self) -> str:
         existing = set(self.library.scan())

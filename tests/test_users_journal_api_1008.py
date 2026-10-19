@@ -70,6 +70,10 @@ def test_password_alone_does_not_count_until_the_second_factor(server):
     # בנפרד, כמו ב-test_login_mfa.
     conn = server["ctx"].conn
     runtime = server["app"].state.runtime
+    # נדב 18/10: החיוב כבוי כברירת מחדל — כאן הוא דלוק, כדי ש-mfa2 יירשם ב-MFA בכניסה הראשונה
+    from server import console_mfa
+    from server.db import set_setting
+    set_setting(conn, console_mfa.SETTING, "true")
     users.create(conn, "mfa2", "Aa12345!-x", "admin", by="test", check_policy=False)
     enrol = TestClient(create_console_app(runtime), client=("10.44.10.66", 50000))
     complete_console_login(enrol, conn, "mfa2", "Aa12345!-x")
@@ -159,7 +163,7 @@ def test_journal_csv_has_the_same_rows_as_the_screen(server):
     r = admin.get("/api/console/journal.csv", params=params)
     assert r.status_code == 200, r.text
     assert r.headers["content-type"].startswith("text/csv")
-    assert "attachment" in r.headers["content-disposition"]
+    assert r.headers["content-disposition"] == 'attachment; filename="imagesrv-journal.csv"'
     assert r.headers["X-Journal-Total"] == "3"
     text = r.content.decode("utf-8-sig")
     rows = list(csv.DictReader(io.StringIO(text)))

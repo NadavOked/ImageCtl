@@ -40,17 +40,7 @@ static void label_dev(const App *a, const char *dev, char *out, size_t n) {
     const LcDisk *d = disk_of(a, dev); if (d) lc_disk_label(d, out, n); else snprintf(out, n, "%s", dev);
 }
 
-/* .met: a metric box -- label, value, the small line under it */
-static void met(App *a, cairo_t *cr, Rect r, const char *l, const char *v, const char *h, Rgb hc) {
-    const Theme *t = a->theme;
-    draw_fill_rrect(cr, r, 4, t->surface); draw_border_rrect(cr, r, 4, t->hair, 1);
-    int latin = (unsigned char)v[0] < 0x80;   /* "163 MB/s", "118 / 149 GB": one left-to-right value */
-    Text tl = text_make(cr, FONT_SANS, 12, 400, l, 0, DIR_RTL), tv = latin ? text_make_ltr(cr, FONT_SANS, 20, 600, v, 0) : text_make(cr, FONT_SANS, 20, 600, v, 0, DIR_RTL);
-    double right = r.x + r.w - 14;
-    text_draw_r(cr, &tl, right, r.y + 11, t->muted); text_draw_r(cr, &tv, right, r.y + 11 + tl.h + 1, t->ink);
-    if (h && h[0]) { Text th = text_make(cr, FONT_SANS, 11, 400, h, (int)(r.w - 28), DIR_RTL); text_draw_r(cr, &th, right, r.y + 11 + tl.h + 1 + tv.h + 1, hc); text_free(&th); }
-    text_free(&tl); text_free(&tv);
-}
+#define met lc_met   /* lcbay.c: shared with the room screens (17/10) */
 
 /* a partition's weight in the row: its used bytes, or its size when they were not measured (#1440) */
 static long long layout_bytes(const LcPart *p) { return p->bytes >= 0 ? p->bytes : p->size; }
@@ -84,54 +74,31 @@ static void part_box(App *a, cairo_t *cr, Rect r, const LcPart *p) {
     text_free(&th); text_free(&ts); text_free(&td);
 }
 
-/* .tg .bay: one target while it is written */
+/* .tg .bay: one target while it is written -- drawn by lcbay.c, the row
+ * the room screens share since 17/10 */
 static void tbay(App *a, cairo_t *cr, Rect b, const LcTgt *g) {
-    const Theme *t = a->theme; const LcDisk *d = disk_of(a, g->dev);
+    const LcDisk *d = disk_of(a, g->dev);
     int bad = tfailed(g), ok = !strcmp(g->state, "done");
-    double cy = b.y + b.h / 2;
-    cairo_save(cr); draw_rrect_path(cr, b, 4); cairo_clip(cr); draw_set(cr, t->surface); cairo_paint(cr);
-    cairo_rectangle(cr, b.x + b.w - 96, b.y, 1, b.h); cairo_rectangle(cr, b.x + 48, b.y, 1, b.h); draw_set(cr, t->hair); cairo_fill(cr);
-    if (bad) { cairo_rectangle(cr, b.x + b.w - 4, b.y, 4, b.h); draw_set(cr, t->danger); cairo_fill(cr); }
-    cairo_restore(cr); draw_border_rrect(cr, b, 4, bad ? t->danger : t->hair, 1);
-    int drawer = d ? eff_drawer(d->drawer, d->port) : 0;
-    char num[16]; if (drawer > 0) snprintf(num, sizeof num, "%d", drawer); else snprintf(num, sizeof num, "%s", "—");
-    Text nb = text_make(cr, FONT_MONO, 40, 600, num, 0, DIR_LTR), nl = text_make(cr, FONT_SANS, 11, 400, "מגירה", 0, DIR_RTL);
-    double nr = b.x + b.w - 18, ny = cy - (46 + nl.h) / 2;
-    text_draw_r(cr, &nb, nr, ny + (40 - nb.h) / 2, t->ink); text_draw_r(cr, &nl, nr, ny + 46, t->muted); text_free(&nb); text_free(&nl);
-    double fr = b.x + b.w - 96 - 1 - 22, fl = b.x + 48 + 1 + 22;
-    char name[48], sub[160], sz[32]; label_dev(a, g->dev, name, sizeof name);
-    if (d) { disk_size(d->size, sz, sizeof sz); char mi[96]; bidi_isolate(d->model[0] ? d->model : d->dev, mi, sizeof mi); snprintf(sub, sizeof sub, "%s · %s", sz, mi); }
-    else snprintf(sub, sizeof sub, "%s", g->dev);
-    Text tn = text_make(cr, FONT_SANS, 18, 600, name, 0, DIR_RTL), tsb = text_make(cr, FONT_SANS, 12, 400, sub, 220, DIR_RTL);
-    double bh = tn.h + 3 + tsb.h;
-    text_draw_r(cr, &tn, fr, cy - bh / 2, t->ink); text_draw_r(cr, &tsb, fr, cy - bh / 2 + tn.h + 3, t->muted);
-    if (bad || ok) sb_pill(cr, fr - tn.w - 10, cy - bh / 2 + tn.h / 2, bad ? "נכשל" : "זהה למקור", bad ? t->danger : t->led_ok, bad ? t->danger_soft : t->success_soft);
-    text_free(&tn); text_free(&tsb);
-    /* .prog */
-    double px = fl, pw = fr - 220 - 16 - fl;
+    LcBay y; memset(&y, 0, sizeof y);
+    y.kind = bad ? BAY_FAILED : ok ? BAY_DONE : BAY_WRITING;
+    y.drawer = d ? eff_drawer(d->drawer, d->port) : 0;
+    label_dev(a, g->dev, y.name, sizeof y.name);
+    char sz[32];
+    if (d) { disk_size(d->size, sz, sizeof sz); char mi[96]; bidi_isolate(d->model[0] ? d->model : d->dev, mi, sizeof mi); snprintf(y.sub, sizeof y.sub, "%s · %s", sz, mi); }
+    else snprintf(y.sub, sizeof y.sub, "%s", g->dev);
+    y.pill = bad ? "נכשל" : ok ? "זהה למקור" : NULL;
     double share = g->total > 0 ? fmin(1, (double)g->bytes / (double)g->total) : 0;
     if (ok) share = 1;
-    char line[460], pct[24];
-    if (ok || g->total > 0) lc_pct(pct, sizeof pct, share);
-    else snprintf(pct, sizeof pct, "%.1f GB", (double)g->bytes / 1e9);   /* #1440: the total was not measured */
+    y.share = share;
+    if (ok || g->total > 0) lc_pct(y.pct, sizeof y.pct, share);
+    else snprintf(y.pct, sizeof y.pct, "%.1f GB", (double)g->bytes / 1e9);   /* #1440: the total was not measured */
     const LcPart *cp = NULL; for (int i = 0; i < a->st.lc.nparts; i++) if (a->st.lc.parts[i].idx == g->part) cp = &a->st.lc.parts[i];
-    if (bad) snprintf(line, sizeof line, "נכשל: %s", g->error);
-    else if (ok) snprintf(line, sizeof line, "הושלם · נבדק");
-    else if (!strcmp(g->state, "verifying")) snprintf(line, sizeof line, "בודק את טבלת המחיצות שנכתבה…");
-    else if (cp) snprintf(line, sizeof line, "כותב מחיצה %d · %s · xxh64 תואם ב-%d מתוך %d", cp->idx, cp->label, g->ok, a->st.lc.nparts);
-    else snprintf(line, sizeof line, "מכין את טבלת המחיצות…");
-    Text tp = text_make(cr, FONT_MONO, 14, 600, pct, 0, DIR_LTR);
-    Text tl = text_make(cr, FONT_SANS, 12, bad ? 600 : 400, line, (int)(pw - tp.w - 10), DIR_RTL);
-    pango_layout_set_ellipsize(tl.layout, PANGO_ELLIPSIZE_END); pango_layout_set_height(tl.layout, 0);
-    double ry = cy - (fmax(tl.h, tp.h) + 6 + 8) / 2;
-    text_draw_r(cr, &tl, px + pw, ry, bad ? t->danger_fg : t->muted); text_draw(cr, &tp, px, ry, t->ink);
-    Rect bar = { px, ry + fmax(tl.h, tp.h) + 6, pw, 8 };
-    draw_fill_rrect(cr, bar, 4, t->track);
-    if (share > 0) draw_fill_rrect(cr, (Rect){ bar.x + bar.w * (1 - share), bar.y, bar.w * share, 8 }, 4, bad ? t->danger : ok ? t->led_ok : t->led_write);
-    text_free(&tp); text_free(&tl);
-    double gx = b.x + 24;
-    sb_led(cr, gx, cy - 15, 10, bad ? t->danger : ok ? t->led_ok : t->led_write, bad ? t->danger_soft : ok ? t->success_soft : t->indigo_soft, 1, 1);
-    for (int k = 0; k < 2; k++) draw_fill_rrect(cr, (Rect){ gx - 10, cy + 2 + k * 14, 20, 3 }, 1.5, t->mark_line);
+    if (bad) snprintf(y.line, sizeof y.line, "נכשל: %s", g->error);
+    else if (ok) snprintf(y.line, sizeof y.line, "הושלם · נבדק");
+    else if (!strcmp(g->state, "verifying")) snprintf(y.line, sizeof y.line, "בודק את טבלת המחיצות שנכתבה…");
+    else if (cp) snprintf(y.line, sizeof y.line, "כותב מחיצה %d · %s · xxh64 תואם ב-%d מתוך %d", cp->idx, cp->label, g->ok, a->st.lc.nparts);
+    else snprintf(y.line, sizeof y.line, "מכין את טבלת המחיצות…");
+    lc_bay_draw(a, cr, b, &y);
 }
 
 void lc_draw_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
@@ -162,15 +129,7 @@ void lc_draw_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
     char big[24], lt[96];
     if (whole) lc_pct(big, sizeof big, (double)l->copied / l->total); else snprintf(big, sizeof big, "—");
     left_text(l, um, rate, span, lt, sizeof lt);
-    Text tlb = text_make(cr, FONT_SANS, 12, 500, lb, 0, DIR_RTL), th1 = text_make(cr, FONT_SANS, 26, 600, h1, (int)(cw - 260), DIR_RTL);
-    Text ts2 = text_make(cr, FONT_SANS, 13, 400, s2, (int)(cw - 260), DIR_RTL);
-    Text tb = text_make(cr, FONT_MONO, 64, 400, big, 0, DIR_LTR), tlt = text_make(cr, FONT_SANS, 13, 400, lt, 0, DIR_RTL);
-    double hh = fmax(tlb.h + 2 + th1.h + 3 + ts2.h, tb.h + tlt.h);
-    double ty = y + hh - (tlb.h + 2 + th1.h + 3 + ts2.h);
-    text_draw_r(cr, &tlb, xr, ty, t->muted); ty += tlb.h + 2; text_draw_r(cr, &th1, xr, ty, t->ink); ty += th1.h + 3; text_draw_r(cr, &ts2, xr, ty, t->muted);
-    text_draw(cr, &tb, x0, y + hh - tlt.h - tb.h, t->ink); text_draw(cr, &tlt, x0 + tb.w - tlt.w, y + hh - tlt.h, t->muted);
-    text_free(&tlb); text_free(&th1); text_free(&ts2); text_free(&tb); text_free(&tlt);
-    y += hh + 16;
+    y += lc_hero(a, cr, x0, xr, y, lb, h1, s2, big, lt, 0) + 16;   /* lcbay.c */
     /* .mets -- speed (right), copied, time passed (left) */
     double mw = (cw - 24) / 3, mh = 80;
     char v1[48], v2[160], v3[32], c1[48], c2[48], hint[160] = "", ch[96] = "בלוקים בשימוש בלבד";
@@ -200,11 +159,8 @@ void lc_draw_progress(App *a, cairo_t *cr, double W, double H, double head_h) {
     int n = l->ntgts; double bh = 96, room = H - N_STATUS_H - 16 - 40 - 12 - y - (10 + 16 + 8 + 10) - (n > 1 ? (n - 1) * 10 : 0);
     if (n && n * bh > room) bh = fmax(64, floor(room / n));
     Rect cage = { x0, y, cw, 10 + 16 + 8 + n * bh + (n > 1 ? (n - 1) * 10 : 0) + 10 };
-    draw_fill_rrect(cr, cage, 6, t->surface); draw_border_rrect(cr, cage, 6, t->hair, 1);
     char cnt[64]; snprintf(cnt, sizeof cnt, "%d מתוך %d כותבים", !strcmp(l->phase, "done") ? 0 : alive, n);
-    Text a1 = text_make(cr, FONT_SANS, 12, 400, "יעדים", 0, DIR_RTL), a2 = text_make(cr, FONT_SANS, 12, 400, cnt, 0, DIR_RTL);
-    text_draw_r(cr, &a1, xr - 14, y + 10, t->muted); text_draw(cr, &a2, x0 + 14, y + 10, t->muted); text_free(&a1); text_free(&a2);
-    double by = y + 10 + 16 + 8;
+    double by = lc_cage(a, cr, cage, "יעדים", cnt);   /* lcbay.c */
     for (int i = 0; i < n; i++) { tbay(a, cr, (Rect){ x0 + 10, by, cw - 20, bh }, &l->tgts[i]); by += bh + 10; }
     y = cage.y + cage.h + 12;
     int live = !strcmp(l->phase, "copying") || !strcmp(l->phase, "shrinking");

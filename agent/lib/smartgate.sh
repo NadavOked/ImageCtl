@@ -28,12 +28,11 @@ smart_ask() {
     # בלי מסך, או מסך שנעלם/לא ענה -- "המשך" של אותו צבע, בדיוק מה שתפריט
     # הטקסט עשה על EOF (נדב 16/09): כתום כותב, אדום מדלג; הברירה מגיעה מהקורא
     # (‏$6), וריק = skip.
-    # ‏#872: לדיסק **אדום** (‏failed_last) אין "כתוב בכל זאת" -- מסך ישן
-    # שהציע אותו לא מתקבל, מדלגים.
-    _sc_red=0; [ "${4:-}" = failed_last ] && _sc_red=1
+    # תשובה מפורשת מבוצעת כמות שהיא (#1580): עד 17/10 ‏rescue על failed_last
+    # הונמך כאן בשקט ל-skip. רק כתום נשאל ("נסה שוב"; בלי תשובה כותב) --
+    # אדום (SMART תקול) אינו נשאל בכלל (#1732, smart_preflight).
     if [ "$#" -ge 5 ] &&
             _sc_gui=$(gui_smart_choice "$3" "$4" "$5"); then
-        [ "$_sc_red" = 1 ] && [ "$_sc_gui" = rescue ] && _sc_gui=skip
         printf '%s\n' "$_sc_gui"
         return 0
     fi
@@ -71,7 +70,7 @@ smart_send_event() {
 
 smart_preflight() {
     # $1 = session id, $2.. = disks. השער לפני כתיבה: probe לכל דיסק,
-    # disk_event לכל דיסק, ותפריט בחירה על fail/failed_last (בתור, אחד-אחד).
+    # disk_event לכל דיסק, שאלה על warn/failed_last (בתור, אחד-אחד); fail מדולג.
     # מדפיס את רשימת הדיסקים שייכתבו בפועל (skipped ו-replace מוסרים).
     # ‏ok/unchecked לא נשאלים — unchecked נכתב, זה קריטי (עיקרון 5).
     _pf_ses="$1"; shift
@@ -84,20 +83,29 @@ smart_preflight() {
         mkdir -p "$RUN_DIR/targets/$_pf_d"
         _pf_v=$(smart_probe "$_pf_d")
         _pf_r=$(smart_field "$_pf_d" 2)
-        # ‏#872/#874: זיכרון השרת גובר על SMART -- דיסק שנכשל בכתיבה הקודמת
-        # (לפי סידורי או חריץ) הוא אדום גם כשהבריאות שלו PASSED, וה-reason הוא
-        # הסיבה שהשרת סיווג (cable/disk). בלי תשובה: אדום מדלג, כתום כותב.
-        _pf_def=rescue
-        if _pf_c=$(disk_failure_cause "$_pf_d"); then _pf_v=failed_last; _pf_r="$_pf_c"; _pf_def=skip; fi
+        # SMART תקול (‏fail) = **אדום**. נכשל בשיכפול הקודם (זיכרון השרת, ‏#874)
+        # כש-SMART אינו fail = **כתום**, "נסה שוב". עצירה באמצע (הזרם לא הגיע, הסבב נעצר)
+        # אינה צובעת -- השרת אינו מחזיר אותה (‏disk_failures.py).
+        # ‏#1732 (נדב 18/10, אחרי התייעצות עם איש מקצוע) מחליף את ה"כתוב בכל
+        # זאת" של #1580: אדום **לעולם אינו יעד** -- לא נשאל, לא ממתינים לו,
+        # מדולג בגלוי. מותר רק כמקור (העתקה ממנו, קליטה, חילוץ).
+        if [ "$_pf_v" != fail ] && _pf_c=$(disk_failure_cause "$_pf_d"); then
+            _pf_v=failed_last; _pf_r="$_pf_c"
+        fi
         case "$_pf_v" in
             ok|unchecked)
                 smart_send_event "$_pf_ses" "$_pf_d" "$_pf_v" "$_pf_r" pending ""
                 _pf_write="$_pf_write $_pf_d"
                 ;;
-            warn|fail|failed_last)
+            fail)
+                target_set "$_pf_d" "skipped" "$(smart_red_he "$_pf_d")$([ "$_pf_r" = readonly ] || printf ' (%s)' "$_pf_r")"   # #1742
+                smart_send_event "$_pf_ses" "$_pf_d" "$_pf_v" "$_pf_r" skipped skip
+                log "$(smart_disk_label "$_pf_d"): SMART failed ($_pf_r) -- never written (#1732), skipped" >&2
+                ;;
+            warn|failed_last)
                 _pf_dec=$(smart_choice "$(smart_disk_label "$_pf_d" דיסק)" \
                     "$([ "$_pf_v" = failed_last ] && echo 'נכשל בשיכפול הקודם' || echo "SMART $_pf_v ($_pf_r)")" \
-                    "$_pf_d" "$_pf_v" "$_pf_r" "$_pf_def")
+                    "$_pf_d" "$_pf_v" "$_pf_r" rescue)
                 case "$_pf_dec" in
                     rescue)
                         smart_send_event "$_pf_ses" "$_pf_d" "$_pf_v" "$_pf_r" rescue rescue

@@ -3,16 +3,40 @@
  * from widgets.c. */
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "screens_rounds.h"
 #include "lcui.h"   /* #1322 */
 #include "smartdlg.h"   /* 16/10 */
+#include "canceldlg.h"  /* #1386 */
 
 /* #1252: a value the state file did not carry is said as unknown -- the
  * header once showed the mockup's server, address and version
  * on a server that was TA, 10.44.0.1, v0.59.2 (principle 5). */
 static const char *known(const char *v) { return v[0] ? v : "לא ידוע"; }
+
+/* #1453: "X.Y.Z" or git describe's "X.Y.Z-N-gSHA" (N commits after the tag). */
+static int version_parse(const char *v,long o[4]){
+    char *e; o[3]=0;
+    for(int i=0;i<3;i++){
+        if(*v<'0'||*v>'9')return 0;
+        o[i]=strtol(v,&e,10); v=e;
+        if(i<2){if(*v!='.')return 0;v++;}
+    }
+    if(!*v)return 1;
+    if(*v!='-'||v[1]<'0'||v[1]>'9')return 0;
+    o[3]=strtol(v+1,&e,10);
+    return e[0]=='-'&&e[1]=='g';
+}
+/* -1 the agent is older than the server, 1 newer, 0 they differ but cannot be ordered
+ * (the same position with another hash, or a version this does not parse). */
+static int version_order(const char *av,const char *sv){
+    long a[4],s[4];
+    if(!version_parse(av,a)||!version_parse(sv,s))return 0;
+    for(int i=0;i<4;i++)if(a[i]!=s[i])return a[i]<s[i]?-1:1;
+    return 0;
+}
 
 /* "name · address" when both are known, the one that is known, or unknown. */
 static void server_label(const State *s, char *out, size_t n) {
@@ -66,7 +90,8 @@ static double draw_header(App *a, cairo_t *cr, double W) {
      * themes -- always: an uploaded college logo is no longer drawn (Nadav 12/10) */
     right=draw_brand_lockup_r(cr,right,(N_HEADER_H-brand_symbol_height(5))/2,5,1,0)-22;
 
-    const int clone=a->force_cloner||a->force_standby||a->screen==SCREEN_CLONER||a->screen==SCREEN_STANDBY||a->screen==SCREEN_LCBOOT||a->screen==SCREEN_LOCAL;
+    const int clone=a->force_cloner||a->force_standby||a->screen==SCREEN_CLONER||a->screen==SCREEN_STANDBY||a->screen==SCREEN_LCBOOT||a->screen==SCREEN_LOCAL
+        ||(a->screen==SCREEN_FAILURE&&a->st.fail_cloner);   /* #1569: the failure record says whose failure it is */
     const char *role=clone?"מחשב שיכפול":"מחשב בנייה";   /* #1252: the "2" was the mockup's */
     Text rt=text_make(cr,FONT_SANS,12,400,role,0,DIR_RTL);
     Rect pill={right-rt.w-18,(N_HEADER_H-20)/2,rt.w+18,20};
@@ -112,7 +137,8 @@ static double draw_header(App *a, cairo_t *cr, double W) {
     text_draw_r(cr,&vt,right,mismatch?5:(N_HEADER_H-vt.h)/2,t->header_text);
     text_free(&vt);
     if(mismatch){
-        Text hint=text_make(cr,FONT_SANS,11,600,"ה-initrd ישן מהשרת",vw,DIR_RTL);
+        int ord=version_order(av,sv);   /* #1453: say what was compared, not "old" for every difference */
+        Text hint=text_make(cr,FONT_SANS,11,600,ord<0?"ה-initrd ישן מהשרת":ord>0?"ה-initrd חדש מהשרת":"ה-initrd לא תואם לשרת",vw,DIR_RTL);
         text_draw_r(cr,&hint,right,N_HEADER_H-hint.h-4,(Rgb){1,.78,.35});
         text_free(&hint);
     }
@@ -141,16 +167,21 @@ static const char *status_word(const App *a,char *buf,size_t n,Rgb *dot){
         if(standby_conn(s)==STANDBY_UNKNOWN)*dot=a->theme->led_idle;
         return "ממתין לסבב";
     case SCREEN_MESSAGE:*dot=a->theme->warn;return s->msg_title;
+    case SCREEN_FAILURE:return failure_status_word(a,dot);   /* #1569 */
     case SCREEN_PICK:return "בחירת דיסק";
     case SCREEN_PROGRESS:return s->task==TASK_PENDING?"ממתין לסוכן":"משימה פעילה";
     case SCREEN_DONE:if(s->task==TASK_FAILED){*dot=a->theme->danger;return "נכשל";}return "הושלם";
     case SCREEN_CLASS:return s->has_session?(s->sess_open?"ממתין להצטרפות":"משדר"):"בחירת כיתה";
     case SCREEN_ROOM:
-        if(s->has_round){snprintf(buf,n,"גל %d %s",s->wave_number,s->wave_open?"ממתין":"משדר");return buf;}
+        if(s->has_round){snprintf(buf,n,"גל %d %s",s->wave_number,s->wave_open?"ממתין":   /* #1331 mockup v2: an ended wave says so */
+            s->wave_state[0]&&strcmp(s->wave_state,"running")&&strcmp(s->wave_state,"failed")?"הסתיים":"משדר");return buf;}
         {int awake=0;for(int i=0;i<s->nmachines;i++)awake+=s->machines[i].awake;snprintf(buf,n,"%d יעדים מחוברים",awake);return buf;}
     case SCREEN_CLONER:
         if(s->smart_pending){*dot=a->theme->warn;return "ממתין להכרעת SMART";}
-        {int w=0;for(int i=0;i<s->ndrawers;i++)w+=!strcmp(s->drawers[i].state,"writing");snprintf(buf,n,"כותב %d דיסקים במקביל",w);return buf;}
+        {int w=0,e=0;for(int i=0;i<s->ndrawers;i++){w+=!strcmp(s->drawers[i].state,"writing");
+            e+=!strcmp(s->drawers[i].state,"done")||!strcmp(s->drawers[i].state,"failed")||!strcmp(s->drawers[i].state,"skipped");}
+         if(s->ndrawers&&e==s->ndrawers)return "שיכפול במקביל · הסתיים";   /* #1331 mockup v2 */
+         snprintf(buf,n,"כותב %d דיסקים במקביל",w);return buf;}
     case SCREEN_RESTORE:*dot=a->theme->warn;return "בחירת אימג' לשחזור";
     case SCREEN_TOOLS:return a->tool_running?"מריץ כלי":"ארגז הכלים";
     case SCREEN_INSTALL:return "אשף התקנה";
@@ -163,10 +194,13 @@ static const char *status_word(const App *a,char *buf,size_t n,Rgb *dot){
  * there -- nothing it ignores. */
 static const char *status_keys(const App *a,char *buf,size_t n){
     if(a->sdlg.kind)return "Tab / ← →  מעבר    Enter  הכפתור המסומן    Esc  דלג";   /* 16/10: the SMART window */
-    if(a->st.shrink_pending)return "1  כווץ וקלוט    2  קלוט בלי כיווץ    3 / Esc  בטל קליטה";   /* #928 */
+    if(a->st.shrink_pending)return a->st.shrink_direct?"1  כווץ ושלח    2  שלח בלי כיווץ"   /* #1171 */
+                                                      :"1  כווץ וקלוט    2  קלוט בלי כיווץ    3 / Esc  בטל קליטה";   /* #928 */
     if(a->st.ask_pending)return a->st.ask_kind==ASK_GROWBACK?"1  החזר לגודל    2 / Esc  השאר":"1 / Esc  כבה    2  חזרה לתפריט";   /* 11/10 */
     if(a->confirm)return "Enter  אישור    Esc  ביטול";   /* #1270: the confirm dialog */
     if(a->screen==SCREEN_LCBOOT||a->screen==SCREEN_LOCAL)return lc_status_keys(a);   /* #1322 */
+    if(a->cdlg.open)return a->cdlg.picker?"↑ ↓  בחירת דיסק    Del  בטל את הדיסק    Esc  המשך לכתוב"
+                                         :"Del  בטל את הדיסק    Esc  המשך לכתוב";   /* #1386 */
     switch(a->screen){
     case SCREEN_LOGIN:return "Tab  מעבר    Enter  כניסה";
     case SCREEN_MENU:
@@ -177,13 +211,21 @@ static const char *status_keys(const App *a,char *buf,size_t n){
     case SCREEN_ROOM:
         if(!a->st.has_round&&a->dd_open==HIT_ROOM_IMAGE)
             return a->pick_in_folder?"1–9  בחירת אימג'    Esc / Backspace  לתיקיות":"1–9  בחירת תיקייה    Esc  סגירה";
-        if(!a->st.has_round)return a->mode==MODE_DIRECT?"Esc  חזרה":"Tab  מעבר    Esc  חזרה";   /* W, N: status_keys_off */
-        return a->st.wave_open?"W  העֵר שוב    N  התחל עכשיו    Esc  עצור סבב…":"W  העֵר שוב    Esc  עצור סבב…";
+        if(!a->st.has_round)return a->mode==MODE_DIRECT?"W  העֵר את המחשבים שנבחרו    Esc  חזרה":"Tab  מעבר    W  העֵר את המחשבים שנבחרו    Esc  חזרה";   /* 17/10: W wakes the pick; N: status_keys_off */
+        if(a->st.wave_open)return "W  העֵר שוב    N  התחל עכשיו    Esc  עצור סבב…";
+        { CancelPick p[MAX_CANCEL_PICKS];   /* #1386 */
+          return room_cancel_picks(a,p,MAX_CANCEL_PICKS)?"X  בטל דיסק…    W  העֵר שוב    Esc  עצור סבב…":"W  העֵר שוב    Esc  עצור סבב…"; }
     case SCREEN_CLONER:   /* mockup 10/10: the SMART keys only while a question is open */
         if(a->st.server_restarted_wave)return "השרת אותחל באמצע הגל — המחשב יצטרף לבד לגל הבא";
-        if(!a->st.smart_pending)return "אין פעולה במסך הזה";
-        return !strcmp(a->st.smart_verdict,"failed_last")
-        ? "R  החלף דיסק    Enter / S  המשך בלי הדיסק"
+        if(!a->st.smart_pending){   /* #1386: the drawers' own numbers cancel them */
+            CancelPick p[MAX_CANCEL_PICKS]; int k=cloner_cancel_picks(a,p,MAX_CANCEL_PICKS); size_t u=0; buf[0]=0;
+            for(int i=0;i<k&&u+8<n;i++)if(p[i].drawer>0&&p[i].drawer<10)u+=snprintf(buf+u,n-u,"%s%d",u?" / ":"",p[i].drawer);
+            if(!u)return "אין פעולה במסך הזה";
+            snprintf(buf+u,n-u,"  בטל דיסק…");
+            return buf;
+        }
+        return !strcmp(a->st.smart_verdict,"failed_last")   /* #1580: orange, retry */
+        ? "R  החלף דיסק    S  דלג על הדיסק    Enter  נסה שוב…"
         : "R  החלף דיסק    S  דלג על הדיסק    Enter  כתוב בכל זאת…";   /* 16/10: "…" -- the SMART window asks first */
     case SCREEN_RESTORE:
         if(lc_pull_active(a)){   /* 16/10: the drawers by keyboard too */
@@ -202,6 +244,7 @@ static const char *status_keys(const App *a,char *buf,size_t n){
     case SCREEN_PROGRESS:return "אין פעולה במסך הזה";   /* mockup 10/10: it said "Esc חזרה" and Esc did nothing */
     case SCREEN_TOOLS:return a->tools_view==TOOLS_CONFIRM?"Tab / Shift-Tab  מעבר    Esc  חזרה":"Esc  חזרה";
     case SCREEN_INSTALL:return "Tab / Shift-Tab  מעבר    Enter  אישור    Esc  חזרה";
+    case SCREEN_FAILURE:return a->fail_open?"Enter  סגירת הפרטים הטכניים":"Enter  פרטים טכניים";   /* #1569 */
     default:return "אין פעולה במסך הזה";   /* message: there is no way out to offer */
     }
 }
@@ -231,7 +274,7 @@ static double draw_lang_chip(App *a,cairo_t *cr,double x,Rect bar){
  * the rest, so they are seen and known to be off (main.c sends nothing). */
 static const char *status_keys_off(const App *a){
     if(a->sdlg.kind||a->confirm||a->st.shrink_pending||a->st.ask_pending)return NULL;
-    if(a->screen==SCREEN_ROOM&&!a->st.has_round&&a->dd_open!=HIT_ROOM_IMAGE)return "W  העֵר    N  התחל עכשיו";
+    if(a->screen==SCREEN_ROOM&&!a->st.has_round&&a->dd_open!=HIT_ROOM_IMAGE)return "N  התחל עכשיו";
     return NULL;
 }
 
@@ -246,6 +289,10 @@ static void draw_status(App *a,cairo_t *cr,double W,double H){
     if(a->screen==SCREEN_STANDBY){standby_status_info(a,cr,N_STATUS_PAD,bar.y+bar.h/2);return;}   /* #1304: IP · MAC · hello */
     double kx=N_STATUS_PAD+draw_lang_chip(a,cr,N_STATUS_PAD,bar);   /* #1245 */
     char kb[200];const char *on=status_keys(a,kb,sizeof kb),*off=status_keys_off(a);Text keys;
+    if(a->screen==SCREEN_FAILURE){   /* #1569: the key, then IP · MAC · the last hello -- the evidence the server hears the hold */
+        keys=text_make(cr,FONT_SANS,12,400,on,0,DIR_RTL);text_draw(cr,&keys,kx,bar.y+(bar.h-keys.h)/2,t->muted);
+        standby_status_info(a,cr,kx+keys.w+3*N_STATUS_GAP,bar.y+bar.h/2);text_free(&keys);return;
+    }
     if(off){                                       /* the off keys at the end of the line, in the paused grey */
         char e1[600],e2[200],m[1000],col[8];Rgb g=t->mark_line;
         snprintf(col,sizeof col,"#%02X%02X%02X",(int)lround(g.r*255),(int)lround(g.g*255),(int)lround(g.b*255));
@@ -480,6 +527,7 @@ static void draw_cursor(cairo_t *cr,double x,double y){
 void app_route(App *a){
     const State *s=&a->st;
     if(a->install.active){a->screen=SCREEN_INSTALL;return;}
+    if(s->fail_title[0]){a->screen=SCREEN_FAILURE;return;}   /* #1569: the agent's own failure, before everything */
     /* #1322: the boot choice and the local clone own a cloner's screen while the agent says so */
     /* 16/10: lc_screen=pull is the build machine's restore screen, its targets the drawers (lc_pull.c) */
     if((a->force_cloner||a->force_standby)&&s->lc.screen==LC_SCREEN_PULL){a->mode=MODE_RESTORE;a->screen=SCREEN_RESTORE;return;}
@@ -585,6 +633,11 @@ void draw_confirm_dialog(App *a,cairo_t *cr,double W,double H){
         snprintf(what,sizeof what,"כל התוכן של %s במחשב %s יימחק, והאימג' \"%s\" ייכתב עליו. אי־אפשר לבטל אחרי שהתחיל.",
                  disk_i,mach_i,img_i);
         snprintf(ok,sizeof ok,"מחק ושחזר");
+    }else if(a->confirm==CONFIRM_RESTORE_CANCEL){
+        /* #1561 (Nadav 17/10): the write stops and the table goes -- an empty disk, not a half one */
+        snprintf(title,sizeof title,"לבטל את השחזור?");
+        snprintf(what,sizeof what,"הכתיבה תיעצר וטבלת המחיצות תימחק (הראשית והגיבוי): הדיסק יישאר ריק ולא יעלה ממנו דבר. אחר כך המחשב יכבה.");
+        snprintf(ok,sizeof ok,"בטל את השחזור");
     }else if(a->confirm==CONFIRM_ROOM_STOP||a->confirm==CONFIRM_CLASS_STOP){
         snprintf(title,sizeof title,"לעצור את הסבב?");
         snprintf(what,sizeof what,"השידור של \"%s\" ייעצר באמצע. מגירות שלא סיימו לא יהיו שמישות ויש לכתוב אותן מחדש.",
@@ -644,6 +697,7 @@ static void app_draw_logical(App *a,cairo_t *cr,double W,double H){
     case SCREEN_TOOLS:    screen_tools(a, cr, W, H, head_h); break;     /* #649 */
     case SCREEN_LCBOOT:   screen_lcboot(a, cr, W, H, head_h); break;   /* #1322 */
     case SCREEN_LOCAL:    screen_local(a, cr, W, H, head_h); break;
+    case SCREEN_FAILURE:  screen_failure(a, cr, W, H, head_h); break;   /* #1569 */
     case SCREEN_INSTALL:  break;
     }
     draw_state_warning(a,cr,W,H);draw_idle_countdown(a,cr,W,H);
@@ -651,6 +705,8 @@ static void app_draw_logical(App *a,cairo_t *cr,double W,double H){
     draw_ask_dialog(a,cr,W,H);      /* 11/10: the agent's question, the same way */
     draw_confirm_dialog(a,cr,W,H);  /* #1270 */
     sdlg_draw(a,cr,W,H);            /* 16/10: the SMART warning window -- over all of them */
+    cdlg_draw(a,cr,W,H);            /* #1386: "בטל דיסק זה" */
+    draw_end_dialog(a,cr,W,H);      /* #1560: the end-of-task count to power-off -- the last word */
     draw_status(a,cr,W,H);draw_toast(a,cr,W,H);
     draw_theme_toggle(a,cr,W,head_h);   /* #1499: last -- over every screen and dialog, and its hit wins */
 }

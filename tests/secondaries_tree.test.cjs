@@ -1,7 +1,7 @@
-// #936 — השרתים המשניים בעץ הניווט נבנים מ-GET /storage-nodes (כמו vCenter):
-// צומת שרת לכל משני עם נקודת מצב (ירוק מחובר / אדום לא ענה / אפור מושבת),
+// #936 — שרתי המשנה בעץ הניווט נבנים מ-GET /storage-nodes (כמו vCenter):
+// צומת שרת לכל שרת משנה עם נקודת מצב (ירוק מחובר / אדום לא ענה / אפור מושבת),
 // ומתחתיו אותו עץ כמו הראשי (#1179) — סקירה כללית · סבב הפצה · מלאי ▸ · תשתית ▸ · ניהול ▸ —
-// שכל עלה בו הוא העמוד של הראשי בהקשר המשני (secondary_context.test.cjs), ו"העברות"
+// שכל עלה בו הוא העמוד של הראשי בהקשר שרת המשנה (secondary_context.test.cjs), ו"העברות"
 // הוא דף `branch` (branches.js).
 // קליק = מציג, דאבל-קליק = פותח/סוגר (#931).
 // console.js + branches.js רצים ב-vm עם fetch מזויף, כמו branches_page.test.cjs.
@@ -22,7 +22,7 @@ function setup(fixtures, me = {}, slow = null) {
   const toasts = [];
   const registry = new Map();
   // getElementById("x") ו-querySelector("#x") הם אותו אלמנט.
-  // אלמנט בתוך הדף של המשני קיים רק אם ה-HTML הנוכחי של #branch-view מכיל
+  // אלמנט בתוך הדף של שרת המשנה קיים רק אם ה-HTML הנוכחי של #branch-view מכיל
   // אותו — כמו בדפדפן, שם querySelector על id מלשונית שכבר הוחלפה מחזיר null.
   const node = (sel) => {
     sel = sel.replace(/^#/, '');
@@ -81,6 +81,10 @@ const base = {
     {id: 't3', node_id: NODE, image_id: 'img_2c8e04', image_name: 'Old', state: 'failed', bytes_sent: 0, bytes_total: 5, error: 'sha256 לא תואם', created_at: '2026-09-14T10:00:00+00:00'},
   ],
   '/images': [{id: 'img_7f3a91', name: 'Office 365', folder: 'Windows', total_compressed_bytes: 12 * 1024 ** 3}],
+  [`/storage-nodes/${NODE}/console/storage-locations`]: {locations: [
+    {id: 'loc_local', name: 'דיסק השרת', state: 'connected'},
+    {id: 'loc_1234abcd', name: 'דיסק 200GB', state: 'connected'},
+  ]},
   [`/storage-nodes/${NODE}/images`]: {connected: true, error: null, images: [
     {id: 'img_c0ffee', name: 'Haifa Local', size_bytes: 40, created_at: '2026-09-18T08:00:00+00:00', sha256: {}},
     {id: 'img_7f3a91', name: 'Office 365', size_bytes: 40, created_at: '2026-09-16T10:00:00+00:00', sha256: {}},
@@ -108,12 +112,16 @@ test('a server node per secondary from /storage-nodes, with the tree under it; c
   assert.match(html, /role="treeitem" tabindex="0" aria-expanded="false" onclick="treeNavToggle\(this,'srv-n0de',function\(\)\{openSecondaryPage\('n0de'/, 'server node is a focusable treeitem');
 });
 
-test('the status dot is measured against the secondary: green when it answered, red with the reason when not, grey when disabled', async () => {
+test('the status dot is measured against the secondary: green only when it answered and its health is clean, red with the reason when not, grey when disabled', async () => {
   const {run, node, calls} = setup(base);
   await run('populateSidebarSecondaries()');
   const dot = node('[data-secondary-status="n0de"]');
+  // נדב 18/10: "מחובר" לבדו אינו ירוק — הבריאות שלו לא נקראה עדיין (tree_server_dot.test.cjs)
+  assert.equal(dot.className, 'status unk');
+  assert.equal(dot.attrs.title, 'מצב השירותים לא נבדק');
+  run('noteServerHealth("n0de", [{id: "server", label: "שרת", state: "ok"}], null)');
   assert.equal(dot.className, 'status ok');
-  assert.equal(dot.attrs.title, 'מחובר');
+  assert.equal(dot.attrs.title, 'מחובר · כל השירותים פעילים');
   assert.ok(!calls.some((c) => c.url.includes('/storage-nodes/off1/machines')), 'a disabled secondary is not asked');
   assert.match(node('#secondaryServers').innerHTML, /data-secondary-status="off1" title="מושבת"/);
 
@@ -125,6 +133,26 @@ test('the status dot is measured against the secondary: green when it answered, 
   assert.equal(redDot.attrs.title, 'לא מחובר: החיבור נסגר לפני סוף הכותרות');
   assert.equal(redDot.attrs['aria-label'], redDot.attrs.title);
   assert.equal(down.toasts.length, 0, 'not a red error toast');
+});
+
+// TA 18/10 (d8763e5b): Haifa (v0.75.0) stayed grey "לא נבדק" while TA's log had the relay's /health 200.
+// /health as v0.75.0 answers it (server/health.py at the tag: check() = {id,label,state,detail}).
+const HEALTH_V075 = [
+  {id: 'time_sync', label: 'סנכרון שעון', state: 'ok', detail: 'NTP פעיל והשעון מסונכרן'},
+  {id: 'deploy_net', label: 'הגדר את רשת ההפצה', state: 'warn', detail: 'רשת ההפצה לא הוגדרה — בחר כרטיס בלשונית רשת הפצה והגדר את הרשת שלו; כתובת השרת נגזרת ממנה (#1263)'},
+  {id: 'tftp_port', label: 'פורט 69 (TFTP)', state: 'not_applicable', detail: 'לא רלוונטי עדיין'},
+];
+test('TA 18/10: the login flow (tree, then the dots) paints a v0.75 secondary orange from its /health through the relay -- also when the poll was already measuring TA', async () => {
+  const fx = {...base, '/health': [{id: 'server', label: 'שרת', state: 'ok', detail: ''}], [`/storage-nodes/${NODE}/console/health`]: HEALTH_V075};
+  const {run, node, calls} = setup(fx, {}, '/health');   // /health answers late, like a real relay
+  const poll = run('refreshServerDots()');   // the 2s poll ticks while the tree is still being built: TA only
+  await run('populateSidebarSecondaries().then(() => refreshServerDots())');   // showApp
+  await poll;
+  await new Promise((r) => setTimeout(r, 80));
+  assert.ok(calls.some((c) => c.url === `/api/console/storage-nodes/${NODE}/console/health`), 'the relay was asked');
+  const dot = node('[data-secondary-status="n0de"]');
+  assert.equal(dot.className, 'status warn', 'orange, as its overview says');
+  assert.match(dot.attrs.title, /רשת ההפצה לא הוגדרה/);
 });
 
 test('without the capability (deploy, or a secondary server) no node is built and /storage-nodes is not called; a 403 is not a red error', async () => {
@@ -143,18 +171,20 @@ test('without the capability (deploy, or a secondary server) no node is built an
   await assert.rejects(broken.run('populateSidebarSecondaries()'), /אסור/, 'a real failure still surfaces');
 });
 
-test('the primary server node takes its name from /me (server_name), and renameServer saves it via POST /settings', async () => {
+test('the primary server node takes its name from /me (server_name); a double click opens the one rename window (POST /hostname)', async () => {
   const {run, node, calls} = setup(base);
   run('applyServerName()');
   assert.equal(node('#primaryServerName').textContent, 'imagectl-main');
-  run('openModalContent=(t,h,ok,fn)=>{__save=fn;}; closeModal=()=>{}; renameServer(document.getElementById("primaryServerName"))');
-  node('#serverNameInput').value = '  שרת ראשי — קמפוס  ';
-  await run('__save()');
-  const save = calls.find((c) => c.method === 'POST' && c.url.endsWith('/settings'));
-  assert.ok(save, 'the name was saved on the server via POST /settings, not only in the DOM');
-  assert.equal(JSON.stringify(save.body), JSON.stringify({server_name: 'שרת ראשי — קמפוס'}));
-  assert.equal(node('#primaryServerName').textContent, 'שרת ראשי — קמפוס');
-  assert.equal(run('ME.server_name'), 'שרת ראשי — קמפוס');
+  // נדב 17/10: שם אחד = שם המארח, ומקום אחד לשנות אותו — אותו חלון כמו "שינוי שם…" בהגדרות.
+  run('globalThis.__sheets=[]; sheet=(o)=>__sheets.push(o); renameServer(document.getElementById("primaryServerName"))');
+  const s = run('__sheets.at(-1)');
+  assert.equal(s.title, 'שינוי שם השרת');
+  assert.equal(s.danger, true, 'the rename restarts the server — a red button');
+  await s.onSubmit({hostname: 'imagesrv-ta'});
+  const save = calls.find((c) => c.method === 'POST' && c.url.endsWith('/hostname'));
+  assert.ok(save, 'the name is the host name — POST /hostname, not a separate display setting');
+  assert.ok(!calls.some((c) => c.method === 'POST' && c.url.endsWith('/settings')), 'no POST /settings server_name any more');
+  assert.equal(JSON.stringify(save.body), JSON.stringify({hostname: 'imagesrv-ta'}));
   assert.doesNotMatch(fs.readFileSync(path.join(root, 'console.js'), 'utf8'), /imagectl-server-names/, 'no localStorage-only rename');
 });
 
@@ -175,7 +205,7 @@ test('the transfers page: the secondary library with "העבר לראשי", "ה�
   await run('loadBranchView()');
   const html = node('#branch-view').innerHTML;
   assert.match(html, /id="branch-view-transfer"/);
-  assert.match(html, /ספריית האימג'ים של המשני/);
+  assert.match(html, /ספריית האימג'ים של שרת המשנה/);
   assert.match(html, /Haifa Local/);
   assert.match(html, /העבר לראשי/);
   assert.match(html, /class="status ok"><i><\/i>מחובר/);
@@ -216,10 +246,11 @@ test('"התחל העברה" and "העבר לראשי" start the transfer and sta
   const {run, node, calls} = setup(base);
   run('BRANCH_NODE="n0de"; current="branch"; closeSidebar=()=>{}; __submit=null; sheet=(o)=>{ __submit=o.onSubmit; }');
   await run('loadBranchView()');
-  run('document.querySelector("#branch-view-transfer").onclick()');
-  await run('__submit({image_id: "img_7f3a91"})');
+  await run('document.querySelector("#branch-view-transfer").onclick()');
+  await run('__submit({image_id: "img_7f3a91", location_id: "loc_1234abcd"})');
   const push = calls.find((c) => c.method === 'POST' && c.url.endsWith('/storage-nodes/n0de/transfer'));
-  assert.ok(push && push.body.image_id === 'img_7f3a91', 'the transfer was started');
+  assert.ok(push && push.body.image_id === 'img_7f3a91' && push.body.location_id === 'loc_1234abcd',
+    'the transfer was started with the selected secondary location');
   await run('startPullFromSecondary("n0de","img_c0ffee")');
   const pull = calls.find((c) => c.method === 'POST' && c.url.endsWith('/storage-nodes/n0de/pull'));
   assert.ok(pull && pull.body.image_id === 'img_c0ffee', 'the pull was started');
@@ -285,8 +316,8 @@ test('the secondary\'s tree is the primary\'s tree — same groups, pages and su
     : x[0] === 'ניהול' ? [x[0], x[1].filter((k) => k !== 'סניפים' && k !== 'החשבון שלי')] : x);
   assert.equal(JSON.stringify(skeleton(haifa.kids, 3)), JSON.stringify(expected));
   assert.equal(JSON.stringify(skeleton(beersheva.kids, 3)), JSON.stringify(expected), 'a disabled secondary has the same tree');
-  // like the primary: מלאי starts open, תשתית and ניהול closed.
-  assert.match(node('#secondaryServers').innerHTML, /<div id="srv-n0de-inv" class="inventory-children" role="group">/);
+  // like the primary (Nadav 18/10, the first login): מלאי, תשתית and ניהול all start closed.
+  assert.match(node('#secondaryServers').innerHTML, /<div id="srv-n0de-inv" class="inventory-children" role="group" hidden>/);
   assert.match(node('#secondaryServers').innerHTML, /<div id="srv-n0de-infra" class="inventory-children" role="group" hidden>/);
   assert.match(node('#secondaryServers').innerHTML, /<div id="srv-n0de-admin" class="inventory-children" role="group" hidden>/);
 });

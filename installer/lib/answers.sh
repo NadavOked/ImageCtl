@@ -12,7 +12,7 @@ answer_set() {
         servers_addr) ANSWER_SERVERS_ADDR=$_as_value ;; servers_mask) ANSWER_SERVERS_MASK=$_as_value ;;
         servers_gw) ANSWER_SERVERS_GW=$_as_value ;; servers_dns) ANSWER_SERVERS_DNS=$_as_value ;;
         hostname) ANSWER_HOSTNAME=$_as_value ;; admin_pass) ANSWER_ADMIN_PASS=$_as_value ;;
-        admin_user) ANSWER_ADMIN_USER=$_as_value ;;
+        admin_user) ANSWER_ADMIN_USER=$_as_value ;; timezone) ANSWER_TIMEZONE=$_as_value ;;
         primary_fingerprint) ANSWER_PRIMARY_FINGERPRINT=$_as_value ;;
         *) fail unknown-key "unknown answer: $_as_key" ;;
     esac
@@ -28,7 +28,7 @@ parse_answers() {
         answer_set "$_pa_key" "$_pa_value"
     done < "$_pa_file"
     for _pa_key in disk role primary_url primary_fingerprint servers_if servers_mac servers_mode \
-        servers_addr servers_mask servers_gw servers_dns hostname admin_user admin_pass; do
+        servers_addr servers_mask servers_gw servers_dns hostname timezone admin_user admin_pass; do
         case " $ANSWER_KEYS " in *" $_pa_key "*) ;; *) fail missing-key "missing answer: $_pa_key" ;; esac
     done
 }
@@ -108,6 +108,14 @@ validate_answers() {
             ;;
         *) fail invalid-network-mode "servers_mode must be dhcp or static" ;;
     esac
+    # #1447: one of tzdata's zones (zones.txt), checked here -- a typo is a
+    # field error on the hostname step, not a failed install after partitioning.
+    # grep: 1 = not in the list (the answer), 2 = the list itself is missing.
+    case "$ANSWER_TIMEZONE" in ''|*[!A-Za-z0-9_/+-]*) fail invalid-timezone "timezone must be a tzdata zone name (Asia/Jerusalem)" ;; esac
+    _va_zones=${ZONES_FILE:-$INSTALLER_DIR/lib/zones.txt}
+    grep -qxF -- "$ANSWER_TIMEZONE" "$_va_zones"; _va_rc=$?
+    case "$_va_rc" in 0) ;; 1) fail invalid-timezone "unknown timezone: $ANSWER_TIMEZONE" ;;
+        *) fail zones-list-missing "cannot read the zone list $_va_zones (grep $_va_rc)" ;; esac
     # The admin's name is the operator's choice (21/09) -- same rules as a
     # console user name; `admin` is only the GUI's default.
     case "$ANSWER_ADMIN_USER" in ''|*[!a-z0-9._-]*|-*) fail invalid-admin-user "admin_user must be lowercase letters, digits, . _ - and not start with -" ;; esac
@@ -115,5 +123,5 @@ validate_answers() {
     [ -n "$ANSWER_ADMIN_PASS" ] || fail invalid-admin-password "admin_pass must not be empty"
     export DISK_NAME ANSWER_DISK ANSWER_ROLE ANSWER_PRIMARY_URL ANSWER_PRIMARY_FINGERPRINT ANSWER_SERVERS_IF
     export ANSWER_SERVERS_MAC ANSWER_SERVERS_MODE ANSWER_SERVERS_ADDR ANSWER_SERVERS_MASK
-    export ANSWER_SERVERS_GW ANSWER_SERVERS_DNS ANSWER_HOSTNAME ANSWER_ADMIN_USER ANSWER_ADMIN_PASS
+    export ANSWER_SERVERS_GW ANSWER_SERVERS_DNS ANSWER_HOSTNAME ANSWER_TIMEZONE ANSWER_ADMIN_USER ANSWER_ADMIN_PASS
 }

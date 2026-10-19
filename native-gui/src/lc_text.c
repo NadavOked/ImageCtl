@@ -17,7 +17,7 @@ void lc_pct(char *out, size_t n, double share) {
 
 /* #1437: one (elapsed, copied) sample per reload. Time going back is a new
  * run: the window starts over. Bytes going back is a reading between two of
- * the agent's writes (src.base, bytes.raw): skipped, the window is kept.
+ * the agent's counter files (bytes.<idx>): skipped, the window is kept.
  * Nothing before the first byte is a sample -- the preparation (measure,
  * shrink, the tables) is not copying, and averaging it in made the first
  * minutes say 444 minutes. One sample at least LC_RATE_WIN s old is kept. */
@@ -57,6 +57,19 @@ void lc_gb(char *out, size_t n, double b) {
     else if (g >= 10) snprintf(out, n, "\xE2\x81\xA8%.1f GB\xE2\x81\xA9", g);
     else if (g >= 1) snprintf(out, n, "\xE2\x81\xA8%.2f GB\xE2\x81\xA9", g);
     else snprintf(out, n, "\xE2\x81\xA8%.0f MB\xE2\x81\xA9", b / 1e6);
+}
+
+/* #1443 (Nadav 17/10: "לפני העתקה אני רוצה מספר מדויק"): the bytes the copy
+ * moves, as the agent measured them before it starts -- partclone's used
+ * blocks (lcsize.sh), one decimal like partclone's own "203.1 GB". Only for
+ * the source the agent measured; not measured says so, with why -- never the
+ * inventory's df number under "יועתקו". */
+void lc_copy_text(const LcState *l, const LcDisk *src, char *out, size_t n) {
+    if (!src || strcmp(l->src, src->dev) || l->src_copy < -1) { snprintf(out, n, "מודד כמה יועתק…"); return; }
+    if (l->src_copy < 0) { snprintf(out, n, "כמה יועתק: לא נמדד%s%s", l->src_copy_why[0] ? " — " : "", l->src_copy_why); return; }
+    double g = (double)l->src_copy / 1e9;
+    if (g >= 1) snprintf(out, n, RLM "\xE2\x81\xA8%.1f GB\xE2\x81\xA9 יועתקו", g);
+    else { char u[48]; lc_gb(u, sizeof u, (double)l->src_copy); snprintf(out, n, RLM "%s יועתקו", u); }
 }
 
 void lc_disk_label(const LcDisk *d, char *out, size_t n) {
@@ -196,12 +209,18 @@ void lc_sample(State *s, const char *card) {
     }
     l->screen = LC_SCREEN_LOCAL; l->inv_done = 1; snprintf(l->phase, sizeof l->phase, "idle");
     disk(l, 1, "sda", "Samsung SSD 870 EVO", 500107862016ULL, "ok", "ok", "Windows 10", 3, 212400000000LL);
-    disk(l, 2, "sdb", "WDC WD5000AAKX", 500107862016ULL, "fail", "health_failed", "Ubuntu 22.04", 2, 38000000000LL);
+    /* #1732 (owner 18/10): a red disk is never a target. The approved mockup's confirm
+     * (lcconfirm) writes disk 2 with its SMART alert row and "הוצא את דיסק 2"; the target
+     * that still carries that row is orange (a SMART warning), so on that card disk 2 is
+     * orange -- the same dialog, the same height; elsewhere it stays red. */
+    int keep2 = !strcmp(card, "lcconfirm");
+    disk(l, 2, "sdb", "WDC WD5000AAKX", 500107862016ULL, keep2 ? "warn" : "fail", "health_failed", "Ubuntu 22.04", 2, 38000000000LL);
     disk(l, 3, "sdc", "Crucial MX500", 480103981056ULL, "ok", "ok", "Windows 11 Pro", 4, 148600000000LL);
     int blocked = !strcmp(card, "lcsource-blocked"), shrink = !strcmp(card, "lcsource-shrink") || !strcmp(card, "lcconfirm-shrink");
     snprintf(l->src, sizeof l->src, "%s", blocked || shrink ? "sda" : "sdc");
     snprintf(l->src_measure, sizeof l->src_measure, "%s", blocked || shrink ? "done" : "none");
-    if (!strcmp(card, "lcsource-measuring")) { snprintf(l->src, sizeof l->src, "sda"); snprintf(l->src_measure, sizeof l->src_measure, "measuring"); }
+    l->src_copy = blocked || shrink ? 212400000000LL : 148600000000LL;   /* #1443: measured by the agent */
+    if (!strcmp(card, "lcsource-measuring")) { snprintf(l->src, sizeof l->src, "sda"); snprintf(l->src_measure, sizeof l->src_measure, "measuring"); l->src_copy = -2; }
     if (blocked) { fit(l, "sdb", LCV_FITS, 500107862016LL, ""); fit(l, "sdc", LCV_SHORT, 490103981056LL, ""); }
     else if (shrink) { fit(l, "sdb", LCV_FITS, 500107862016LL, ""); fit(l, "sdc", LCV_SHRINK, 262400000000LL, ""); }
     else if (!strcmp(card, "lcsource-measuring")) { fit(l, "sdb", LCV_FITS, 500107862016LL, ""); fit(l, "sdc", LCV_MEASURING, 500107862016LL, ""); }

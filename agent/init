@@ -62,16 +62,11 @@ platform_module_expected() {
     esac
     return 1
 }
-if [ -f "$MOD_DIR/modules" ]; then
-    while read -r _m; do
-        [ -n "$_m" ] || continue
-        modprobe "$_m" 2>/dev/null && continue
-        case "$_required" in
-            *" $_m "*) _req_fail="$_req_fail$_m " ;;
-            *) platform_module_expected "$_m" && _opt_fail="$_opt_fail$_m " ;;
-        esac
-    done < "$MOD_DIR/modules"
-fi
+# The loading itself is lib/initmods.sh (#1702): NIC first so the link negotiates
+# while the rest loads, and only the NIC/GPU drivers this hardware asks for.
+[ -f "$LIB_DIR/initmods.sh" ] || fail "initramfs without initmods.sh"
+. "$LIB_DIR/initmods.sh"
+[ -f "$MOD_DIR/modules" ] && mods_load_all
 [ -n "$_opt_fail" ] && \
     echo "ImageSrv: platform modules absent, expected on this hardware: $_opt_fail"
 if [ -n "$_req_fail" ]; then

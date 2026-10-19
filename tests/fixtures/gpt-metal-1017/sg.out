@@ -1,0 +1,18 @@
+Caution: invalid main GPT header, but valid backup; regenerating main header
+from backup!
+
+Warning: Invalid CRC on main header data; loaded backup partition table.
+Warning! Main and backup partition tables differ! Use the 'c' and 'e' options
+on the recovery & transformation menu to examine the two tables.
+
+Warning! Main partition table CRC mismatch! Loaded backup partition table
+instead of main partition table!
+
+Warning! One or more CRCs don't match. You should repair the disk!
+Main header: ERROR
+Backup header: OK
+Main partition table: ERROR
+Backup partition table: OK
+
+Invalid partition data!
+Information: Creating fresh partition table; will override earlier problems!

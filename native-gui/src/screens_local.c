@@ -95,15 +95,19 @@ static void sata_of(const LcDisk *d, char *out, size_t n) {
 static const char *smart_reason_he(const LcDisk *d) {
     if (!strcmp(d->smart, "failed_last"))
         return !strcmp(d->smart_reason, "cable") ? "נכשל בשיכפול הקודם — סיבה: כבל/חריץ"
-             : !strcmp(d->smart_reason, "disk") ? "נכשל בשיכפול הקודם — סיבה: הדיסק" : "נכשל בשיכפול הקודם";
+             : !strcmp(d->smart_reason, "disk") ? "נכשל בשיכפול הקודם — סיבה: הדיסק"
+             : !strcmp(d->smart_reason, "readonly") ? "נכשל בשיכפול הקודם — סיבה: הדיסק במצב קריאה בלבד"   /* #1742 */
+             : "נכשל בשיכפול הקודם";
+    if (!strcmp(d->smart_reason, "readonly")) return smart_reason_text(d->smart_reason);   /* #1742 */
     if (smart_level(d->smart)) return "בדיקת הבריאות של הדיסק (SMART) נכשלה";
     return "";
 }
 
 static const char *smart_chip(const LcDisk *d, Rgb *fg, Rgb *bg, const Theme *t) {
     int lvl = smart_level(d->smart);
-    if (lvl == 2) { *fg = t->danger; *bg = t->danger_soft; return "נכשל בשיכפול הקודם"; }
-    if (lvl == 1) { *fg = t->warn; *bg = t->warning_soft; return "אזהרת SMART"; }
+    if (lvl == 2) { *fg = t->danger; *bg = t->danger_soft;   /* #1580; #1742: read-only says so */
+                    return !strcmp(d->smart_reason, "readonly") ? "קריאה בלבד" : "SMART תקול"; }
+    if (lvl == 1) { *fg = t->warn; *bg = t->warning_soft; return strcmp(d->smart, "failed_last") ? "אזהרת SMART" : "נכשל בשיכפול הקודם"; }
     if (!strcmp(d->smart, "ok") || !strcmp(d->smart, "passed")) { *fg = t->led_ok; *bg = t->success_soft; return RLM "SMART תקין"; }
     *fg = t->muted; *bg = t->hover; return RLM "SMART לא נבדק";
 }
@@ -113,6 +117,8 @@ static void verdict_text(App *a, const LcDisk *d, const LcDisk *src, char *out, 
     const Theme *t = a->theme; const LcFit *f = lc_fit_of(a, d->dev);
     char need[48], have[48], miss[48];
     *c = t->muted;
+    /* #1732 (Nadav 18/10): a red disk is a source or nothing -- "יעד" is grey (lc_target_ok) */
+    if (smart_level(d->smart) == 2) { *c = t->danger; snprintf(out, n, "%s", red_refusal_he(d->smart_reason)); return; }   /* #1742: by the reason */
     if (!f || f->verdict == LCV_MEASURING) { snprintf(out, n, "בודק אם נכנס…"); return; }
     lc_gb(need, sizeof need, (double)f->need); lc_gb(have, sizeof have, (double)d->size);
     switch (f->verdict) {
@@ -262,18 +268,17 @@ void lc_draw_source(App *a, cairo_t *cr, double W, double H, double head_h) {
     Text h1 = text_make(cr, FONT_SANS, 26, 600, "שיכפול מקומי", 0, DIR_RTL);
     const char *rnote = lc_round_note(a);   /* #1367: a round opened on the server -- said in the lead's place */
     Text p = text_make(cr, FONT_SANS, 14, rnote ? 600 : 400, rnote ? rnote : "בחרו איזה דיסק הוא המקור. היעדים יקבלו עותק זהה שלו — כל מה שעליהם יימחק.", (int)(cw - 330), DIR_RTL);
-    char s1[200] = "", s2[160], sl[48];
+    char s1[200] = "", s2[400], sl[48];
     if (src && nt) {
         lc_disk_label(src, sl, sizeof sl); int k = snprintf(s1, sizeof s1, "מ%s אל ", sl);
         for (int i = 0; i < nt && k > 0 && (size_t)k < sizeof s1; i++) {
             char tl[48]; lc_disk_label(&l->disks[idx[i]], tl, sizeof tl);
             k += snprintf(s1 + k, sizeof s1 - k, "%s%s", i ? (i == nt - 1 ? " ו" : ", ") : "", tl);
         }
-        char u[48]; lc_gb(u, sizeof u, (double)src->used);
-        snprintf(s2, sizeof s2, src->used < 0 ? "כמה בשימוש: לא נמדד%s" : RLM "%s להעתקה%s", src->used < 0 ? "" : u,
-                 lc_any_shrink(a) ? " · כיווץ על עותק בזיכרון" : "");
-        if (src->used < 0) snprintf(s2, sizeof s2, "כמה בשימוש: לא נמדד%s", lc_any_shrink(a) ? " · כיווץ על עותק בזיכרון" : "");
-    } else { snprintf(s1, sizeof s1, "אין יעד"); snprintf(s2, sizeof s2, "בחרו לפחות יעד אחד"); }
+        char c[300]; lc_copy_text(l, src, c, sizeof c);   /* #1443: measured before the start, not df */
+        snprintf(s2, sizeof s2, "%s%s", c, lc_any_shrink(a) ? " · כיווץ על עותק בזיכרון" : "");
+    } else if (!src) { snprintf(s1, sizeof s1, "אין מקור"); snprintf(s2, sizeof s2, "בחרו את דיסק המקור"); }   /* #1722: nothing chosen for you */
+    else { snprintf(s1, sizeof s1, "אין יעד"); snprintf(s2, sizeof s2, "בחרו לפחות יעד אחד"); }
     Text m1 = text_make(cr, FONT_SANS, 12, 400, s1, 0, DIR_RTL), m2 = text_make(cr, FONT_SANS, 16, 600, s2, 0, DIR_RTL);
     double hh = fmax(h1.h + 4 + p.h, m1.h + m2.h);
     text_draw_r(cr, &h1, xr, y + hh - (h1.h + 4 + p.h), t->ink); text_draw_r(cr, &p, xr, y + hh - p.h, rnote ? t->warn : t->muted);
@@ -357,7 +362,7 @@ static double wrow(App *a, cairo_t *cr, double x, double y, double w, int i, con
         tl = text_make(cr, FONT_SANS, 13, 600, lk, 0, DIR_RTL);
         text_escape(smart_reason_he(d), r1, sizeof r1); hexc(lvl == 2 ? t->danger : t->warn, col);
         snprintf(am, sizeof am, "<span foreground='%s' weight='bold'>%s:</span> %s. הדיסק עלול להיכשל באמצע או אחרי ההתקנה בכיתה.",
-                 col, lvl == 2 ? "נכשל בשיכפול הקודם" : "אזהרת SMART", r1);
+                 col, lvl == 2 ? "SMART תקול" : strcmp(d->smart, "failed_last") ? "אזהרת SMART" : "נכשל בשיכפול הקודם", r1);
         tw = text_make_markup(cr, FONT_SANS, 13, 400, am, (int)(inner - tl.w - 30), DIR_RTL);
         ah = 8 + fmax(tw.h, tl.h) + 20; h += ah;
     }
@@ -410,9 +415,8 @@ void lc_draw_confirm(App *a, cairo_t *cr, double W, double H) {
     Text sr = text_make(cr, FONT_SANS, 13, 400, srow, (int)(inner - 28 - ss.w - 80), DIR_RTL);
     Text shr = shrink ? text_make(cr, FONT_SANS, 13, 400, "כדי שהנתונים ייכנסו ליעד הקטן, מחיצות ה-NTFS יכווצו בעותק בזיכרון לפני ההעתקה — המקור נקרא בלבד ולא נכתב. אם אין מספיק זיכרון לעותק, היעד הקטן לא ייכתב, והסיבה תוצג.", (int)(inner - 40), DIR_RTL)
                       : (Text){ NULL, 0, 0 };
-    char u[48], meta[300]; lc_gb(u, sizeof u, (double)src->used);
-    snprintf(meta, sizeof meta, src->used < 0 ? "כמה בשימוש במקור: לא נמדד · כל יעד ייבדק בסוף מול המקור (xxh64 לכל מחיצה, וטבלת המחיצות נקראת בחזרה)."
-                                              : RLM "%s יועתקו · כל יעד ייבדק בסוף מול המקור (xxh64 לכל מחיצה, וטבלת המחיצות נקראת בחזרה).", u);
+    char c[300], meta[600]; lc_copy_text(&a->st.lc, src, c, sizeof c);   /* #1443 */
+    snprintf(meta, sizeof meta, "%s · כל יעד ייבדק בסוף מול המקור (xxh64 לכל מחיצה, וטבלת המחיצות נקראת בחזרה).", c);
     Text tm = text_make(cr, FONT_SANS, 12, 400, meta, (int)inner, DIR_RTL);
     double srh = fmax(sr.h, ss.h) + 20, shh = shrink ? shr.h + 20 + 10 : 0;
     double h = 26 + fmax(30, th.h) + 6 + tlh.h + 16 + srh + 10 + shh + rows + 2 + 12 + tm.h + 20 + 44 + 24;

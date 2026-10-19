@@ -169,9 +169,10 @@ test('home "needs attention": every verdict is a note with the machine name and 
   const {run}=setup();
   run('HOME.net=[]; HOME.nodes=[]; HOME.err={};');
   const html=run('homeAttention()'); balanced(html);
-  assert.equal((html.match(/class="attn-i (err|warn)"/g)||[]).length,6,'six verdicts of מחשב 2, none for מחשב 1/3');
+  assert.equal((html.match(/class="attn-i (err|warn)"/g)||[]).length,5,'five verdicts of מחשב 2, none for מחשב 1/3');
+  assert.doesNotMatch(html,/NVMe/,'Nadav 18/10: a disk SMART verdict is in the machine drawer, not on the overview');
   assert.match(html,/attn-i err"[^]*<b>מחשב 2<\/b> — המחשב על סוללה — שיכפול\/קליטה עלולים להיקטע\.<\/div><button class="btn sm flat" onclick="openMachineDetail\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">פרטי המכונה</,'#1300: the action is a button in its own column');
   assert.match(html,/attn-i warn"[^]*<b>מחשב 2<\/b> — 7 שגיאות CRC על eth0/);
   assert.doesNotMatch(html,/מחשב 1|מחשב 3/);
-  assert.match(html,/<span class="cnt">6<\/span>/);
+  assert.match(html,/<span class="cnt">5<\/span>/);
 });

@@ -7,9 +7,11 @@
 
 1. תוכן סטטי — אין בעץ צומת משני קשיח, אין "יוגדר בהמשך", ושם הראשי
    אינו "תל אביב" מהעיצוב. הצמתים באים מ-`populateSidebarSecondaries`.
-2. ‏`/me` נושא `server_name` לכל משתמש מחובר: ההגדרה אם נקבעה, אחרת שם
-   המארח — ולעולם לא ריק (הצומת העליון חייב שם ממקור).
-3. ‏`server_name` נשמר דרך `POST /settings` הקיים (admin בלבד; deploy 403).
+2. ‏`/me` נושא `server_name` לכל משתמש מחובר: שם המארח — ולעולם לא ריק
+   (הצומת העליון חייב שם ממקור).
+3. נדב 17/10: שם אחד — שם השרת **הוא** שם המארח. ‏`POST /settings` עם
+   `server_name` נדחה (400) ומפנה ל-`/hostname`; לחיצה כפולה בעץ פותחת את
+   חלון "שינוי שם השרת" (‏`hostnameSheet`).
 """
 
 from __future__ import annotations
@@ -43,11 +45,10 @@ def test_console_js_builds_secondaries_from_the_api_and_names_from_me():
     assert 'api("/storage-nodes")' in js
     assert "ME.server_name" in js
     assert "imagectl-server-names" not in js, "שם השרת נשמר בשרת, לא ב-localStorage"
-    # ‏#1179: שינוי שם הראשי נשלח תמיד לראשי (`primary: true`) — גם כשהקונסולה
-    # בהקשר של משני; בלי הדגל `consoleUrl` היה מנתב אותו להגדרות **המשני**.
-    # ה-API עצמו לא השתנה: ‏POST /settings עם `server_name`.
-    assert ('api("/settings", { method: "POST", body: JSON.stringify({ server_name: name }), '
-            'primary: true })') in js
+    # נדב 17/10: הלחיצה הכפולה בעץ פותחת את אותו חלון כמו "שינוי שם…" בהגדרות — ‏POST /hostname.
+    assert "hostnameSheet(true)" in js
+    assert 'post("/hostname", { hostname: v.hostname })' in js
+    assert "server_name: name" not in js, "no separate display-name setting is written any more"
 
 
 def test_me_reports_a_server_name_for_every_user(server):
@@ -69,12 +70,18 @@ def test_me_reports_a_server_name_for_every_user(server):
     assert server["deploy"].get("/api/console/me").status_code == 403
 
 
-def test_server_name_is_saved_through_settings_and_read_back_from_me(server):
+def test_server_name_is_the_host_name_and_is_not_a_separate_setting(server):
+    """נדב 17/10: שם אחד לתצוגה ולרשת. ‏`POST /settings` עם `server_name` נדחה
+    בשם (לא נבלע ב-200), ‏`/me` ממשיך להחזיר את שם המארח — גם כשבמסד יש
+    ערך ישן מ-#936."""
+    from server.db import set_setting
+
     admin, deploy = server["admin"], server["deploy"]
-    assert admin.post("/api/console/settings",
-                      json={"server_name": "שרת ראשי — קמפוס"}).status_code == 200
-    assert admin.get("/api/console/me").json()["server_name"] == "שרת ראשי — קמפוס"
-    assert admin.get("/api/console/settings").json()["server_name"] == "שרת ראשי — קמפוס"
+    resp = admin.post("/api/console/settings", json={"server_name": "שרת ראשי — קמפוס"})
+    assert resp.status_code == 400 and "/hostname" in resp.json()["detail"]
+    set_setting(server["app"].state.ctx.conn, "server_name", "ערך ישן מ-#936")
+    assert admin.get("/api/console/me").json()["server_name"] == socket.gethostname()
+    assert admin.get("/api/console/settings").json()["server_name"] == socket.gethostname()
     # ‏#1073: deploy אינו רואה את העץ (אין לו קונסולה) ואינו משנה את השם.
     assert deploy.get("/api/console/me").status_code == 403
     assert deploy.post("/api/console/settings",

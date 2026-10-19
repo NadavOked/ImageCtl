@@ -47,11 +47,13 @@ def run(tmp_path: Path, body: str, require_login: str = "true",
     script = (
         f"export RUN_DIR={shlex.quote(posix(rd))} RESP={shlex.quote(posix(resp))} "
         f"LOG_FILE={shlex.quote(posix(rd / 'agent.log'))} SERVER=http://x MAC=aa:bb "
-        "IMAGECTL_TEST=1 HTTP_TIMEOUT=1 HTTP_RETRIES=0; "
+        "IMAGECTL_TEST=1 HTTP_TIMEOUT=1 HTTP_RETRIES=0 SR_GUI_TICK_S=0.1 "
+        "AFTER_TASK_FILE=/nonexistent/after-task D_ROLE=build; "   # #1561: the power-off after a success
         f". {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; "
         f". {posix(AGENT)}/lib/waits.sh; . {posix(AGENT)}/lib/ui.sh; "
-        f". {posix(AGENT)}/lib/guiparent.sh; "
-        'sleep() { :; }; '
+        f". {posix(AGENT)}/lib/guiparent.sh; . {posix(AGENT)}/lib/srgui.sh; "   # #1561: sr_refused
+        f"SR_GUI_BIN={shlex.quote(posix(rd / 'no-gui'))}; "   # no GUI here: the refusal ends at die_local
+        'sleep() { case "$1" in 0.*) command sleep "$1" ;; esac; }; '   # whole seconds are skipped; the GUI's tick is not
         f'curl() {{ echo "CURL $*" >> "$RUN_DIR/curl.log"; printf {code}; }}; '
         + body
     )
@@ -123,6 +125,79 @@ def test_the_handoff_with_an_expired_session_erases_nothing(tmp_path):
     assert rc == 86
 
 
+#: #1561: a GUI that lives like the real one -- it records how it was started
+#: and every state it read (when the file changed), and leaves on a message.
+LIVE_GUI = r'''#!/bin/sh
+printf '%s\n' "$*" >> "$RUN_DIR/gui.calls"
+st=; for a in "$@"; do [ "$p" = --state ] && st=$a; p=$a; done
+n=0
+while [ "$n" -lt 600 ]; do
+    if [ -f "$st" ] && cat "$st" > "$RUN_DIR/gui.now" && ! cmp -s "$RUN_DIR/gui.now" "$RUN_DIR/gui.last"; then
+        { cat "$RUN_DIR/gui.now"; echo "--"; } >> "$RUN_DIR/gui.seen"; cp "$RUN_DIR/gui.now" "$RUN_DIR/gui.last"
+        LC_ALL=C grep -q '^message=' "$RUN_DIR/gui.now" && exit 0
+    fi
+    sleep 0.05; n=$((n + 1))
+done
+'''
+
+
+def live_gui(rd: Path) -> None:
+    rd.mkdir(exist_ok=True)
+    gui = rd / "no-gui"   # the harness's SR_GUI_BIN; here it exists
+    gui.write_text(LIVE_GUI, encoding="utf-8", newline="\n")
+    gui.chmod(0o755)
+
+
+def cards(rd: Path) -> list[str]:
+    seen = rd / "gui.seen"
+    return [c for c in seen.read_text(encoding="utf-8").split("--\n") if c.strip()] if seen.exists() else []
+
+
+def test_a_refused_handoff_says_why_in_hebrew_on_the_gui(tmp_path):
+    """#1561: the operator pressed "שחזר" and the screen went -- an English FATAL
+    line and a reboot. Now the GUI is back at the handoff, before the checks,
+    and the refusal is its last card; the reboot (and nothing written) is
+    unchanged. One GUI process from the handoff on. Negative control: on main
+    no GUI starts."""
+    rd = tmp_path / "run"
+    live_gui(rd)
+    out, rc, _ = run(tmp_path, f'. {posix(AGENT)}/lib/guibridge.sh; ' + HANDOFF, code="401")
+    assert "ERASED" not in out and rc == 86, out
+    assert "TEST-REBOOT: restore: not authorized -- nothing was written" in out
+    calls = (rd / "gui.calls").read_text(encoding="utf-8").splitlines() if (rd / "gui.calls").exists() else []
+    assert len(calls) == 1 and "--screen progress" in calls[0], (calls, out)
+    seen = cards(rd)
+    assert "בודק את האימג׳ ואת ההרשאה מול השרת — הדיסק עוד לא שונה" in seen[0], seen
+    assert seen[-1] == ("message=השחזור לא התחיל — לא נכתב דבר|\u200f"
+                        "הכניסה לקונסולה פגה או לא אומתה — היכנסו שוב ונסו שוב · המחשב יופעל מחדש\n"), seen
+    # the GUI that owns the display, for log() (#1569 reads gui.pid)
+    assert (rd / "gui.pid").read_text().strip().isdigit()
+
+
+def test_an_image_no_longer_allowed_is_refused_on_the_same_gui(tmp_path):
+    """guiparent.sh's third refusal (the fresh allowed_images), the same way."""
+    rd = tmp_path / "run"
+    live_gui(rd)
+    body = HANDOFF.replace('{"allowed_images":[{"id":"img_1"}]}', '{"allowed_images":[]}')
+    out, rc, _ = run(tmp_path, f'. {posix(AGENT)}/lib/guibridge.sh; ' + body)
+    assert "ERASED" not in out and rc == 86, out
+    seen = cards(rd)
+    assert seen and seen[-1] == ("message=השחזור לא התחיל — לא נכתב דבר|\u200f"
+                                 "האימג׳ כבר אינו מותר למחשב הזה · המחשב יופעל מחדש\n"), (seen, out)
+    assert len((rd / "gui.calls").read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_a_restore_that_succeeded_powers_off_and_never_reboots(tmp_path):
+    """Nadav 17/10: after "שחזור לדיסק הזה" the machine powers off (20 s on
+    the screen, or "כבה עכשיו") -- it rebooted until then. Negative control:
+    on main the success returns before any power step (and reboots outside
+    tests) -- no TEST-POWEROFF."""
+    out, rc, rd = run(tmp_path, 'arm_wol() { return 0; }; ' + HANDOFF)
+    assert "ERASED img_1" in out and "PARENT rc=0" in out, out
+    assert "TEST-POWEROFF" in out and "TEST-REBOOT" not in out, out
+    assert "restore: ended -- powering off in 20s" in (rd / "agent.log").read_text(encoding="utf-8")
+
+
 def test_the_handoff_with_a_live_session_erases(tmp_path):
     out, _, _ = run(tmp_path, HANDOFF)
     assert "ERASED img_1" in out, out
@@ -163,6 +238,18 @@ def test_the_bridge_hands_the_session_over_with_the_restore(tmp_path):
     out, rd = bridge(tmp_path, 'printf "jar\\n" > "$CONSOLE_JAR"; ' + RESTORE_RECORD)
     assert (rd / "gui" / "handoff").exists(), out
     assert (rd / "gui" / "handoff.jar").read_text() == "jar\n"
+
+
+def test_the_handoff_clears_the_tty_before_the_gui_lets_go(tmp_path):
+    """#1561: the GUI's exit gives the VT back, with everything written to it
+    since boot. While the GUI still holds it, the bridge resets it (RIS, the
+    cursor off) -- so nothing English flashes before the restore's GUI.
+    Negative control: on main the tty is not written."""
+    tty = tmp_path / "tty0"
+    out, rd = bridge(tmp_path, f'IMAGECTL_TTY={shlex.quote(posix(tty))}; '
+                     'printf "jar\\n" > "$CONSOLE_JAR"; ' + RESTORE_RECORD)
+    assert (rd / "gui" / "handoff").exists(), out
+    assert tty.exists() and tty.read_bytes() == b"\x1bc\x1b[?25l", out
 
 
 def test_no_session_in_the_bridge_means_no_handoff(tmp_path):

@@ -496,13 +496,44 @@ def test_ingress_pair_then_ping_happy(tmp_path):
     primary, _ = interserver_auth.generate_self_signed("primary", ip_sans=["127.0.0.1"])
     _begin, comp, _ = _do_pair(conn, ident, primary)
     assert len(bytes.fromhex(comp["token"])) == 32
+    assert storage_nodes.parent_last_contact(conn) is None      # #1564: pairing alone is not contact
     res = interserver_api.ping(conn, _peer(primary), token=comp["token"],
                                protocol_version="2.1")
     assert res["ok"] is True and res["role"] == "secondary"
+    stamp = storage_nodes.parent_last_contact(conn)
+    assert stamp is not None
+    assert abs((datetime.now(timezone.utc) - datetime.fromisoformat(stamp)).total_seconds()) < 60
+    # ...and the DCUI reads that same stamp from the DB (#1564)
+    from server.dcui import view
+    assert view.collect_extras(conn).parent_last_contact == stamp
     # הטוקן והקוד אינם ב-DB בטקסט גלוי.
     dump = "".join(str(r) for r in conn.execute(
         "SELECT * FROM parent_credentials").fetchall())
     assert comp["token"] not in dump
+
+
+def test_a_secondary_paired_before_1564_is_upgraded_to_unknown_contact(tmp_path):
+    """#1564 migration: a parent_credentials row from before the column existed.
+    Read as-is it is still paired (contact unknown, not "not paired yet");
+    after db.connect the column exists and is NULL -- unknown, never green --
+    and the next authenticated request stamps it."""
+    from server.dcui import view
+    conn, ident = _secondary(tmp_path)
+    primary, _ = interserver_auth.generate_self_signed("primary", ip_sans=["127.0.0.1"])
+    _begin, comp, _ = _do_pair(conn, ident, primary)
+    conn.execute("ALTER TABLE parent_credentials DROP COLUMN last_contact_at")
+    conn.commit()
+    old = view.collect_extras(conn)
+    assert old.has_parent is True and old.parent_last_contact is None
+    conn.close()
+
+    conn = db.connect(tmp_path / "sec.db")
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(parent_credentials)")}
+    assert "last_contact_at" in cols
+    assert storage_nodes.has_parent(conn) is True
+    assert storage_nodes.parent_last_contact(conn) is None
+    interserver_api.ping(conn, _peer(primary), token=comp["token"], protocol_version="2.1")
+    assert storage_nodes.parent_last_contact(conn) is not None
 
 
 def test_ingress_requires_tls13(tmp_path):
@@ -558,6 +589,7 @@ def test_ingress_window_required(tmp_path):
         interserver_api.pair_complete(conn, handles, peer, {
             "handle": begin["handle"], "code": "ABC-DEF-GHJ", "protocol_version": "2.1"})
     assert e.value.status == 401
+    assert storage_nodes.parent_last_contact(conn) is None
 
 
 def test_ingress_wrong_code_rejected(tmp_path):
@@ -608,6 +640,7 @@ def test_ingress_ping_wrong_token_rejected(tmp_path):
                              token=interserver_auth.generate_token(),
                              protocol_version="2.1")
     assert e.value.status == 401
+    assert storage_nodes.parent_last_contact(conn) is None
 
 
 def test_ingress_ping_console_cookie_rejected(tmp_path):
@@ -632,6 +665,7 @@ def test_ingress_ping_post_pin_spki_mismatch_hard_fail(tmp_path):
         interserver_api.ping(conn, _peer(primary), token=comp["token"],
                              protocol_version="2.1")
     assert e.value.status == 401
+    assert storage_nodes.parent_last_contact(conn) is None
 
 
 # --- (ז*) הבקרה השלילית המכריעה: RFC 8705 sender-constraint -----------------
@@ -650,6 +684,7 @@ def test_ingress_ping_sender_constraint_decisive(tmp_path, monkeypatch):
         interserver_api.ping(conn, _peer(attacker), token=comp["token"],
                              protocol_version="2.1")
     assert e.value.status == 401
+    assert storage_nodes.parent_last_contact(conn) is None
 
     # מנטרלים את הכריכה בלבד (אימות הטוקן נשאר) → הטוקן הגנוב עובר.
     monkeypatch.setattr(interserver_api, "_peer_bound", lambda *a: True)
@@ -967,3 +1002,23 @@ def test_enroll_node_rejects_malformed_node_id(server, bad):
             server["ctx"].conn, ("noc", "admin"), label="x",
             base_url="https://s:8443/api", node_id=bad, pinned_spki="aa" * 32,
             client_cert_ref="bb" * 32, credential_ref="/x", protocol_version="2.1")
+
+
+def test_a_primary_with_secondaries_can_enroll_another_one(conn):
+    """נדב 18/10 (לשונית "שרתי משנה" בהגדרות): `enroll_secondary` תלוי בתפקיד ולא במספר המשניים —
+    ראשי שכבר יש לו משני (פעיל או מושבת) ממשיך להוסיף עוד; משני וממשתמש deploy — לא."""
+    from server import storage_nodes
+    admin = ("noc", "admin")
+    assert storage_nodes.can_enroll_secondary(conn, "admin") is True        # הראשון: אין משני עדיין
+    for i in range(2):
+        storage_nodes.enroll_node(conn, admin, label=f"סניף {i}", base_url=f"https://10.0.0.{i + 2}:8443",
+                                  node_id=f"sn_{i:016x}", pinned_spki="aa" * 32, client_cert_ref="c",
+                                  credential_ref="r", protocol_version="2.1")
+    assert storage_nodes.enabled_node_count(conn) == 2
+    assert storage_nodes.can_enroll_secondary(conn, "admin") is True        # ראשי עם משניים
+    assert storage_nodes.can_enroll_secondary(conn, "deploy") is False
+    conn.execute("UPDATE storage_nodes SET disabled_at = 'now'")
+    conn.commit()
+    assert storage_nodes.can_enroll_secondary(conn, "admin") is True        # גם כשכולם מושבתים
+    db.set_setting(conn, storage_nodes.ROLE_KEY, storage_nodes.ROLE_SECONDARY)
+    assert storage_nodes.can_enroll_secondary(conn, "admin") is False       # משני אינו מוסיף ילדים

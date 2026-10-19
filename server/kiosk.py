@@ -17,7 +17,7 @@ roomflow.sh/הגואי נכנסים ל-`/api/console/login`, קולטים וני
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.routing import APIRoute
 
 from . import capabilities
@@ -27,6 +27,7 @@ from .console_api import create_console_router
 from .console_library import create_library_router
 from .room import create_room_router
 from .station import create_station_router
+from .tasks import ORIGIN_BUILD_GUI
 
 #: רשימת-ההיתר הקשיחה לנתיבי ``/api/console`` שמחשב הבנייה צורך — (method, path).
 #: נמדדה (#738) מקוד ה-JS של מסך התחנה בדפדפן, שהוסר (#1247). הצרכנים
@@ -87,6 +88,15 @@ def _allowlisted(source: APIRouter, allow: frozenset[tuple[str, str]]) -> list[A
     return picked
 
 
+def mark_build_gui(request: Request) -> None:
+    """‏#1576: בקשה שנכנסה בראוטר הזה על פורט הסוכן באה מהגואי של מחשב הבנייה.
+    אותם אובייקטי route משרתים גם את הקונסולה (‎:8081), ולכן הסימון הוא
+    dependency של **ההכללה** ב-`app._add_agent_routes`, לא של ה-route: משימה
+    שהוזמנה כאן נרשמת `origin=build_gui` (`tasks.request_origin`) בלי קשר
+    למה שהגוף אומר."""
+    request.state.task_origin = ORIGIN_BUILD_GUI
+
+
 def create_kiosk_router(ctx: ServerContext, *, room_wake, version=None) -> APIRouter:
     """הראוטר של הקיוסק: תת-קבוצת ``/api/console`` המסוננת + חדר + תחנה.
 
@@ -101,6 +111,6 @@ def create_kiosk_router(ctx: ServerContext, *, room_wake, version=None) -> APIRo
     for source in (create_console_router(ctx, kiosk=True), create_library_router(ctx),
                    create_console_capture_router(ctx)):
         router.routes.extend(_allowlisted(source, allow))
-    router.include_router(create_room_router(ctx, wake=room_wake))
+    router.include_router(create_room_router(ctx, wake=room_wake, origin="build"))   # #1386
     router.include_router(create_station_router(ctx, version=version))   # #1252
     return router

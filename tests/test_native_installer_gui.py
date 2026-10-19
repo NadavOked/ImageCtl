@@ -114,6 +114,79 @@ def test_every_installer_screen_renders_with_visible_ink_at_both_target_sizes(tm
                 assert colors >= 20, f"{path.name} is visually blank ({colors} colors)"
 
 
+# #1566: the disk-contents column, through the C function itself. A driver
+# includes screens_install_setup.c (display_disk_contents is static) and links
+# the rest of the GUI; main.c is renamed so the driver's main() is the one.
+DISK_CONTENTS_DRIVER = r'''
+#include "%(setup_c)s"
+int main(int argc, char **argv) {
+    char out[256];
+    for (int i = 1; i < argc; i++) { display_disk_contents(argv[i], out, sizeof out); puts(out); }
+    return 0;
+}
+'''
+FSI, PDI = "⁨", "⁩"
+
+
+def _disk_contents(tmp_path: Path, *raw: str) -> list[str]:
+    driver = tmp_path / "disk_contents.c"
+    driver.write_text(DISK_CONTENTS_DRIVER % {"setup_c": (GUI / "src" / "screens_install_setup.c").as_posix()},
+                      encoding="utf-8", newline="\n")
+    binary = tmp_path / "disk-contents"
+    command = (
+        'set -e; cd "$1"; flags="-O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE $(pkg-config --cflags pangocairo cairo libdrm)"; '
+        'srcs=$(make -s -f Makefile print-gui-src | tr " " "\\n" | grep -v -x -e src/main.c -e src/screens_install_setup.c); '
+        'cc $flags -Dmain=imagectl_gui_main -c src/main.c -o "$3/gui-main.o"; '
+        'cc $flags -o "$2" "$4" "$3/gui-main.o" $srcs $(pkg-config --libs pangocairo cairo libdrm) -lm'
+    )
+    proc = subprocess.run(["bash", "-c", command, "_", str(GUI), str(binary), str(tmp_path), str(driver)],
+                          capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+    assert proc.returncode == 0, proc.stderr
+    run = subprocess.run([str(binary), *raw], capture_output=True, text=True, encoding="utf-8",
+                         timeout=60, stdin=subprocess.DEVNULL)
+    assert run.returncode == 0, run.stderr
+    return run.stdout.splitlines()
+
+
+@NATIVE
+def test_disk_contents_reach_the_screen_in_hebrew(tmp_path) -> None:
+    """disks.sh keeps its English machine values (they are data, #1566 forbids
+    translating them there); the screen translates them at the boundary."""
+    got = _disk_contents(tmp_path, "empty", "unknown", "gpt:2 partitions (ext4, vfat)",
+                         "mbr:3 partitions (ntfs, unknown, unknown)", "gpt:0 partitions",
+                         "filesystem ext4")
+    assert got == [
+        "ריק",
+        "לא ידוע",
+        f"{FSI}gpt{PDI}:2 מחיצות ({FSI}ext4, vfat{PDI})",
+        # every unknown partition, not only the first
+        f"{FSI}mbr{PDI}:3 מחיצות ({FSI}ntfs, לא ידוע, לא ידוע{PDI})",
+        f"{FSI}gpt{PDI}:0 מחיצות",
+        f"מערכת קבצים {FSI}ext4{PDI}",
+    ]
+
+
+@NATIVE
+def test_network_rows_reserve_an_untruncated_line_for_the_mac_at_1024(tmp_path) -> None:
+    draw = (GUI / "src" / "screens_install_setup.c").read_text(encoding="utf-8")
+    assert 'install_text_ltr(cr,n->mac,11,400,r.x+r.w-210,r.y+31,180' in draw
+    assert 'snprintf(model,sizeof model,"%s · %s"' not in draw
+
+    binary = _build(tmp_path)
+    prefix = tmp_path / "mac"
+    env = dict(os.environ)
+    if (GUI / "fonts.conf").exists():
+        env["FONTCONFIG_FILE"] = str(GUI / "fonts.conf")
+    proc = subprocess.run([str(binary), "--screen", "install", "--demo", "--png",
+                           str(prefix), "--size", "1024x768"], capture_output=True,
+                          text=True, timeout=120, env=env, stdin=subprocess.DEVNULL)
+    assert proc.returncode == 0, proc.stderr
+    path = tmp_path / "mac-install-2-servers-net-light.png"
+    width, height, colors = _size_and_ink(path)
+    assert (width, height) == (1024, 768)
+    assert colors >= 20, "network screen, including its dedicated MAC lines, did not render"
+
+
 @NATIVE
 def test_progress_has_no_primary_button_ink_in_the_footer_action_area(tmp_path) -> None:
     binary = _build(tmp_path)

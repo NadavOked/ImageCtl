@@ -13,15 +13,15 @@ import json
 import re
 import sqlite3
 import shutil
-import socket
 from typing import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
 from . import (auth, capabilities, console_login, console_mfa, console_presence, crcwarn, minfree,
-               dhcp, disk_failures, drawer_slots, drive_rates, identity, inventory, nic_speed, probe,
-               registry, room,
+               dhcp, disk_failures, disk_reserve, drawer_slots, drive_rates, identity, inventory,
+               nic_speed, probe,
+               ports, registry, room,
                shrink_records, slot_names,
                storage_locations, storage_nodes, transfer_cap, users)
 from .api import ServerContext
@@ -35,12 +35,34 @@ from .sessions import SessionError
 from .station import ROUND_OPENER_ROLES
 from . import auto_reboot
 
+#: נדב 18/10: ניתוק אוטומטי בחוסר פעילות. השדה נשאר בשניות (‏#1243, ברירת מחדל 600);
+#: ‏0 = כבוי (אין ניתוק — העוגייה עדיין פגה ב-auth.TTL_SECONDS, ו-logout עובד), אחרת
+#: דקות שלמות 1–1440. הקונסולה מציגה ושולחת דקות × 60 — בשום מקום בממשק לא שניות.
+IDLE_SETTING = "console_idle_seconds"
+IDLE_MAX_MINUTES = 1440
+IDLE_REFUSAL_HE = (f"ניתוק בחוסר פעילות: 0 (כבוי) או מספר שלם של דקות 1–{IDLE_MAX_MINUTES}"
+                   f" (בשניות: 60–{IDLE_MAX_MINUTES * 60}, כפולה של 60)")
+
+
+def _idle_seconds(raw) -> int | None:
+    """הערך שנשמר, או None לסירוב: 0, או כפולה של 60 בין 60 ל-1440×60."""
+    if isinstance(raw, bool):
+        return None
+    try:
+        n = int(str(raw).strip())
+    except ValueError:
+        return None
+    if n == 0 or (60 <= n <= IDLE_MAX_MINUTES * 60 and n % 60 == 0):
+        return n
+    return None
+
+
 WRITE_SETTINGS = {"recovery_require_login", "session_wait_seconds",
+                  # נדב 18/10: חיוב MFA למנהלים — כבוי כברירת מחדל.
+                  console_mfa.SETTING,
                   "console_idle_seconds", "class_deploy_enabled",
                   # ‏#748: כפתור "עדכן" — כבוי כברירת מחדל (נדב, 16/09).
                   "update_enabled",
-                  # ‏#936: שם השרת הראשי בעץ הניווט — נשמר בשרת, לא ב-DOM.
-                  "server_name",
                   # ‏#855: שומר הזהות (MAC + חכירת DHCP). חסר = דלוק; "false"
                   # מפורש בלבד מכבה, ו-`setting_change` רושם מי.
                   identity.SETTING,
@@ -197,6 +219,8 @@ def create_console_router(
     @router.post("/logout")
     def logout(request: Request, response: Response, user=Depends(current_user)):
         token = request.cookies.get(auth.COOKIE_NAME)
+        # ‏#1633: גם בשרת, לא רק בדפדפן — עותק של העוגייה נדחה מכאן והלאה.
+        auth.revoke(ctx.conn, token)
         console_presence.forget(ctx.conn, token)
         from . import viewer_sessions
         viewer_sessions.revoke(token)
@@ -238,10 +262,9 @@ def create_console_router(
             # של התעודה, כמו בדפדפן) לשורת הסטטוס — כדי שהאישור החד-פעמי
             # של התעודה יהיה השוואה, לא לחיצה. ‏null = בלי TLS (loopback).
             "tls": tls.public_info() if tls is not None else None,
-            # ‏#936: שם השרת הראשי לצומת העליון בעץ — מההגדרה `server_name`
-            # אם המנהל קבע אחת, אחרת שם המארח כפי שהמערכת מדווחת אותו.
-            # לכל משתמש מחובר: גם deploy רואה את העץ.
-            "server_name": get_setting(ctx.conn, "server_name") or socket.gethostname(),
+            # ‏#936: שם השרת הראשי לצומת העליון בעץ — שם המארח (‏ports.server_name:
+            # שם אחד לתצוגה ולרשת, נדב 17/10). לכל משתמש מחובר.
+            "server_name": ports.server_name(ctx.conn),
             # ‏#968: שורת-המשנה בסקירה — "פעיל 6 ימים 3 שעות" ו-"10.44.12.1".
             # ‏uptime של המכונה (‏/proc/uptime); ‏null = לא נקרא → "לא נבדק".
             # ‏deploy_ip = הכתובת שב-GRUB ובקרנל של התחנות (‏server_base);
@@ -303,7 +326,10 @@ def create_console_router(
         machines = ctx.conn.execute("SELECT COUNT(*) AS n FROM machines").fetchone()["n"]
         try:
             usage = shutil.disk_usage(ctx.library.root)
-            storage = {"total_bytes": usage.total, "free_bytes": usage.free}
+            # ‏#1737: ‏reserve_bytes — מה שהשרת לא ייתן לאף כתיבה של אימג'
+            # (`disk_reserve`); הקונסולה מתריעה כשהפנוי מתקרב אליו.
+            storage = {"total_bytes": usage.total, "free_bytes": usage.free,
+                       "reserve_bytes": disk_reserve.reserve()}
         except OSError:
             storage = None
         return {
@@ -852,6 +878,7 @@ def create_console_router(
             users.create(
                 ctx.conn, body.get("username", ""), body.get("password", ""),
                 body.get("role", ""), by=user[0],
+                mfa_required=body.get("mfa_required") is True,   # נדב 18/10
             )
         except users.UsernameTaken as exc:
             raise HTTPException(409, str(exc))
@@ -887,7 +914,7 @@ def create_console_router(
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         info = users.flags(ctx.conn, user[0])
-        if user[1] == "admin" and not info["is_builtin"] and not info["mfa_enabled"]:
+        if console_mfa.enrollment_required(ctx.conn, user[1], info):   # נדב 18/10
             auth.attach_cookie(response, ctx.conn, user[0], user[1], tls,
                                purpose=auth.PURPOSE_MFAENROLL)
             return {"ok": True, "mfa_enrollment_required": True}
@@ -906,8 +933,12 @@ def create_console_router(
             # את החסימה בכל בקשה (#186), כולל בזו ששחררה אותה.
             raise HTTPException(400, "אי אפשר לחסום את המשתמש המחובר")
         try:
+            mfa_req = body.get("mfa_required")
+            if mfa_req is not None and not isinstance(mfa_req, bool):
+                raise ValueError("mfa_required: true או false")
             users.update(ctx.conn, username, by=user[0],
-                         password=body.get("password") or None, role=role)
+                         password=body.get("password") or None, role=role,
+                         mfa_required=mfa_req)
             if disabled is not None:
                 users.set_disabled(ctx.conn, username, bool(disabled), by=user[0])
         except users.BuiltinProtected as exc:
@@ -1071,7 +1102,7 @@ def create_console_router(
             writer.writerow([_csv_cell(row[f]) for f in fields])
         headers = {k: v for k, v in meta.headers.items()
                    if k.lower().startswith("x-journal-")}
-        headers["Content-Disposition"] = 'attachment; filename="imagectl-journal.csv"'
+        headers["Content-Disposition"] = 'attachment; filename="imagesrv-journal.csv"'
         # BOM: אקסל פותח UTF-8 בלעדיו כ-ANSI, והעברית (label/text) נשברת.
         return Response(("﻿" + out.getvalue()).encode("utf-8"),
                         media_type="text/csv; charset=utf-8", headers=headers)
@@ -1079,9 +1110,8 @@ def create_console_router(
     @router.get("/settings")
     def read_settings(user=Depends(admin_only)):
         values = {key: get_setting(ctx.conn, key) for key in sorted(WRITE_SETTINGS)}
-        # ‏#1300: בלי הגדרה השרת משתמש בשם המארח (‏/me, ‏ports.server_name) — השדה
-        # בהגדרות מציג את אותו שם, לא ריק.
-        values["server_name"] = values["server_name"] or socket.gethostname()
+        # ‏#1300: אותו שם כמו ‏/me — לקריאה בלבד; משנים אותו ב-POST /hostname (נדב 17/10).
+        values["server_name"] = ports.server_name(ctx.conn)
         # ‏#1366: הערך שבתוקף — ברירת המחדל כשלא נקבע, לא "לא נקבע".
         values[crcwarn.SETTING] = str(crcwarn.threshold(ctx.conn))
         # ‏#1354: הערך שבתוקף — ברירת המחדל כשלא נקבע, לא "לא נקבע".
@@ -1098,6 +1128,9 @@ def create_console_router(
         body = await request.json()
         if not isinstance(body, dict):
             raise HTTPException(400, "ההגדרות חייבות להיות אובייקט JSON")
+        if "server_name" in body:
+            # נדב 17/10: שם השרת הוא שם המארח — שם אחד, משתנה במקום אחד.
+            raise HTTPException(400, "שם השרת הוא שם המארח — משנים אותו ב-POST /hostname")
         unknown = next((key for key in body if key not in WRITE_SETTINGS), None)
         if unknown is not None:
             raise HTTPException(400, f"הגדרה לא מוכרת: {unknown}")
@@ -1126,6 +1159,13 @@ def create_console_router(
                 raise HTTPException(
                     400, f"מינימום מקום פנוי: מספר שלם 0–{minfree.MIN_FREE_GB_MAX}")
             body[minfree.SETTING] = str(gb)
+        # נדב 18/10: ניתוק בחוסר פעילות — 0 = כבוי, אחרת 1–1440 דקות (ה-API בשניות;
+        # הקונסולה מציגה ושולחת דקות × 60). נבדק לפני שנכתב דבר.
+        if IDLE_SETTING in body:
+            idle = _idle_seconds(body[IDLE_SETTING])
+            if idle is None:
+                raise HTTPException(400, IDLE_REFUSAL_HE)
+            body[IDLE_SETTING] = str(idle)
         # ‏#1473: אותו דפוס — נבדק לפני שנכתב דבר.
         if transfer_cap.SETTING in body:
             mbps = transfer_cap.parse(body[transfer_cap.SETTING])

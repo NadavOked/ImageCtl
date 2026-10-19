@@ -527,6 +527,25 @@ test('deploy network: stored ≠ live (dhcp_diverged) is orange, live not read i
   assert.match(t.run('networkPage(0)'),/class="pill ">DHCP כבוי</,'the diagram shares the header');
 });
 
+test('#1556: management NIC unknown → "הגדר כרשת הפצה" never defaults to the NIC the console came through; both unknown → a picker with nothing chosen',async()=>{
+  const none=NICS.map(n=>({...n,enabled:false,proxy:false,dhcp_live:{state:'off',checked:true,detail:''},dhcp_live_label:'כבוי'}));
+  // שרת חיפה: אין firstboot.status, הקונסולה מחוברת דרך הכרטיס הראשון
+  let t=await loaded({'/net/interfaces':none,'/net/config':{...NETCFG,management_interface:null,console_interface:'ens18'}});
+  let html=card(t.run('networkPage(2)'),'רשת ההפצה');
+  assert.match(html,/<button class="btn primary" onclick="netEditDeploy\('ens19'\)">הגדר כרשת הפצה</,'skips ens18 — the console is on it');
+  // לא ידוע דרך מה הקונסולה מחוברת, ולא ידוע מי הניהול — לא מנחשים: בוחרים
+  t=await loaded({'/net/interfaces':none,'/net/config':{...NETCFG,management_interface:null,console_interface:null}});
+  html=card(t.run('networkPage(2)'),'רשת ההפצה');
+  assert.match(html,/<button class="btn primary" onclick="netPickDeploy\(\)">הגדר כרשת הפצה</);
+  t.run('netPickDeploy()');
+  const pick=t.run('sheets[sheets.length-1]'), field=pick.fields.find(f=>f.id==='nic');
+  assert.equal(field.value,'','nothing is chosen for the operator');
+  assert.equal(JSON.stringify(field.options.map(o=>o.value)),JSON.stringify(['','ens18','ens19','ens21']),'present, not trunk, not management');
+  await assert.rejects(pick.onSubmit({nic:''}),/בחרו כרטיס/);
+  const next=await pick.onSubmit({nic:'ens19'}); next();
+  assert.equal(t.run('sheets[sheets.length-1]').title,'רשת הפצה — ens19');
+});
+
 /* ‏#1039: חכירות dnsmasq — מכונה שקיבלה כתובת ולא הגיעה ל-hello נראית רק שם; "לא נקרא" בשם, לא טבלה ריקה. */
 test('deploy network: leases unread are named, never an empty table (principle 5)',async()=>{
   let t=await loaded({'/net/interfaces/ens19/leases':{interface:'ens19',checked:false,reason:'/var/lib/misc/dnsmasq.leases: Permission denied',path:'/var/lib/misc/dnsmasq.leases',leases:null}});
@@ -560,7 +579,7 @@ test('probe ("מי עוד עונה"): checked=false is "the check did not run", 
 });
 
 /* 18/09 — מודל האתרים (הכרעת נדב, interfaces.md §18 "חוקי חומת האש בין האתרים"): לכל אתר שלושה וילנים — שרתים / הפצה / כיתות,
-   ואין וילן "ניהול" נפרד. המשני יושב מאחורי FW משלו, הראשי יוזם ורק 8443 פתוח ביניהם — ולכן הוא לא לקוח על הוילן אלא "מעבר ל-FW". */
+   ואין וילן "ניהול" נפרד. שרת המשנה יושב מאחורי FW משלו, הראשי יוזם ורק 8443 פתוח ביניהם — ולכן הוא לא לקוח על הוילן אלא "מעבר ל-FW". */
 test('site model: the console/8443 VLAN is "שרתים", and a secondary is "דרך FW · 8443 בלבד" on a dashed line even when its box is red/green',async()=>{
   const {run}=await loaded();
   const model=JSON.parse(plain(run('JSON.stringify(netDiagramModel())')));
@@ -572,15 +591,15 @@ test('site model: the console/8443 VLAN is "שרתים", and a secondary is "ד�
   const [console_,haifa,old]=lane('ens18').clients;
   assert.equal(console_.kind,'console'); assert.ok(!console_.viaFw,'the console is a client on the VLAN, not behind a FW');
   assert.equal(haifa.sub,'דרך FW · 8443 בלבד · https://10.44.13.5:8443 · לא ענה: timeout');
-  assert.equal(haifa.tip,'המשני מאחורי FW משלו; הראשי יוזם, רק 8443 · https://10.44.13.5:8443 · לא ענה: timeout');
+  assert.equal(haifa.tip,'שרת המשנה מאחורי FW משלו; הראשי יוזם, רק 8443 · https://10.44.13.5:8443 · לא ענה: timeout');
   assert.equal(old.sub,'דרך FW · 8443 בלבד · https://10.44.10.77:8443 · מושבת');
   assert.equal(haifa.viaFw,true); assert.equal(old.viaFw,true); assert.equal(haifa.dashed,false,'the box stays solid — connected is measured; the line is what marks the FW');
   const html=plain(run('networkPage(0)')); balanced(html);
   assert.match(mapOf(html),/שרתים — קונסולה/); assert.doesNotMatch(html,/ניהול — קונסולה|>בין-שרתים —/);
-  // המשני אינו קופסה על המפה אלא שורה במגירת הוילן, עם "שרת משני" וחיבור לפי מה שנמדד
+  // שרת המשנה אינו קופסה על המפה אלא שורה במגירת הוילן, עם "שרת משנה" וחיבור לפי מה שנמדד
   assert.deepEqual(lane('ens18').rows.filter(r=>r.kind==='branch').map(r=>[r.name,r.ok]),[['סניף חיפה',false],['סניף ישן',false]],'connected is measured; disabled is not "connected"');
   run('globalThis.opened=null; openDrawer=(t,b)=>{ opened=b; }'); run("netLaneOpen('ens18')");
-  assert.match(run('opened'),/סניף חיפה<\/td>.*שרת משני/s);
+  assert.match(run('opened'),/סניף חיפה<\/td>.*שרת משנה/s);
 });
 
 test('#1081 v1: classrooms flag off does not draw the classrooms box and hides proxy DHCP from רשת הפצה', async () => {
@@ -678,6 +697,24 @@ test('#1264 deploy tab: "כרטיסים ברשת ההפצה" — each card, its 
   assert.match(cards,/class="pill warn">פעיל על כרטיס אחד</);
   assert.match(cards,/שני הכרטיסים עובדים יחד על הכתובת <span class="mono">10\.44\.9\.10<\/span>/);
   assert.match(card(html,'רשת ההפצה'),/netEditDeploy\('bond0'\)/,'the deploy network is edited on the bond');
+});
+
+/* ‏#1264, מדידה 17/10 (מעבדת netns על TA, ‏balance-alb מעל veth של 1Gb, 10 סבבים של 1GB): זרם
+   המולטיקאסט יוצא בכרטיס אחד בכל רגע (הקרנל מגבב לפי כתובת היעד, ועובר כרטיס רק באיזון של כל 10
+   שניות), וניתוק כרטיס באמצע סבב עוצר אותו ל-0.5–3 שניות — והסבב מסתיים, ‏sha זהה בכל המקבלים.
+   הטקסט אומר את זה, ולא "בלי הפסקה" או "בלי שירגישו". */
+test('#1264 the bond text says what was measured: a round leaves on one card, and a cut card pauses it for seconds',async()=>{
+  const {run}=await loaded(bondedFixtures(bondView('ok',[{name:'ens19',role:1,state:'active'},{name:'ens22',role:2,state:'active'}])));
+  const cards=card(run('networkPage(2)'),'כרטיסים ברשת ההפצה');
+  assert.match(cards,/סבב שיכפול יוצא בכרטיס אחד בכל רגע/);
+  assert.match(cards,/סבב שרץ נעצר לשניות ספורות ומסתיים כרגיל/);
+  assert.doesNotMatch(cards,/בלי הפסקה/);
+  const t=await loaded({'/net/deploy':DEPLOY_CONSOLE,'/net/interfaces':NICS_FREE,'/net/config':NETCFG_FREE});
+  t.run("netEditDeploy('ens19')");
+  const help=sheetAt(t.run,0).fields.find(f=>f.id==='second').help;
+  assert.match(help,/סבב שיכפול יוצא בכרטיס אחד/);
+  assert.match(help,/סבב שרץ נעצר לשניות ספורות ומסתיים כרגיל/);
+  assert.doesNotMatch(help,/בלי שירגישו/);
 });
 
 test('#1264 a bond state that was not read is "לא נבדק" on every card — never "פעיל"',async()=>{

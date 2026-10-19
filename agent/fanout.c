@@ -24,6 +24,8 @@
  *                <bytes-per-target-buffer> <out1> [out2] [out3] ...
  *         fanout --xxh64 | --sha256
  * -H writes XXH64 and -S writes SHA-256 after a clean EOF; -P appends input bytes.
+ * SHA-256 runs in the kernel (AF_ALG) when it can, else in-process; stderr says
+ * which. FANOUT_SHA_ENGINE=builtin|kernel forces one (#1596).
  * --xxh64 hashes stdin and writes the 16-digit lowercase digest to stdout.
  * --sha256 hashes stdin and writes the 64-digit lowercase digest to stdout.
  * Input:  stdin.
@@ -55,7 +57,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <linux/if_alg.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -84,7 +88,7 @@
 #define STALL_EVICT_MS 150000   /* full drawer, no FIFO write progress; override for tests */
 #define COUNTER_SUFFIX ".bytes" /* the per-target progress counter, next to the fifo */
 #define COUNTER_MS 1000         /* how often it is refreshed (the report goes out every 2s) */
-#define PIPE_BYTES (1 << 20)
+#define PIPE_BYTES (1 << 20)     /* FANOUT_PIPE_BYTES overrides (local clone experiments, 18/10) */
 
 #define OPEN_NO_READER (-2)     /* the fifo is there, nobody ever opened it */
 
@@ -98,6 +102,7 @@ struct target {
     int alive;
     const char *reason;
     long long taken;    /* bytes handed to this target's pipeline, for the counter */
+    long long queued;   /* of those, bytes that waited in the ring (the pipe was full) */
     long long last_progress_ms; /* monotonic ms of the last accepted FIFO write (#674) */
     int cfd;            /* the counter file, or -1 when it could not be opened */
 };
@@ -106,6 +111,7 @@ static struct target targets[MAX_TARGETS];
 static int target_count;
 static long long stall_evict_ms = STALL_EVICT_MS;
 static long long expected_bytes;          /* 0 = unknown; FANOUT_EXPECTED_BYTES */
+static long long pipe_bytes = PIPE_BYTES; /* FANOUT_PIPE_BYTES */
 static char stream_reason[96];            /* short/long stream, one string for all */
 
 static long long now_ms(void);
@@ -311,12 +317,128 @@ static void sha_hex(const struct sha256 *s, char line[65])
     line[64] = '\0';
 }
 
+/* The SHA-256 engine (#1596). On a 2-core cloner the hash was ~93% of
+ * fanout's CPU (Testrunner, 17/10: -S 7.0s against 0.64s without, per 2GB),
+ * and every cycle it does not take goes to zstd and partclone. The kernel's
+ * sha256-ssse3/avx (AF_ALG) hashed 346MB/s against 258MB/s for the code above
+ * on the same core (17/10), so it is used when present. Same algorithm, same
+ * digest -- the tests compare both engines with hashlib, byte for byte -- and
+ * which one ran is said on stderr. FANOUT_SHA_ENGINE=builtin forces the code
+ * above; =kernel refuses to fall back (so a test can prove the kernel path is
+ * the one exercised). A kernel failure mid-stream cannot fall back, because
+ * the kernel holds the state: it ends with no digest at all -- "not
+ * computed", never a wrong one (principle 5, #73). */
+struct sha_engine {
+    int kfd;            /* AF_ALG op socket, or -1 = the code above */
+    int failed;
+    struct sha256 c;
+};
+
+static int sha_engine_open(struct sha_engine *e)
+{
+    const char *want = getenv("FANOUT_SHA_ENGINE");
+    struct sockaddr_alg sa;
+    int s, saved;
+    e->kfd = -1;
+    e->failed = 0;
+    sha_init(&e->c);
+    if (want && strcmp(want, "builtin") == 0) {
+        fprintf(stderr, "fanout: sha256 in-process (FANOUT_SHA_ENGINE=builtin)\n");
+        return 0;
+    }
+    if (want && strcmp(want, "kernel") != 0 && strcmp(want, "auto") != 0) {
+        fprintf(stderr, "fanout: unknown FANOUT_SHA_ENGINE=%s (builtin|kernel|auto)\n", want);
+        return -1;                        /* a typo is not permission to guess */
+    }
+    memset(&sa, 0, sizeof sa);
+    sa.salg_family = AF_ALG;
+    memcpy(sa.salg_type, "hash", 5);
+    memcpy(sa.salg_name, "sha256", 7);
+    s = socket(AF_ALG, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+    if (s >= 0 && bind(s, (struct sockaddr *)&sa, sizeof sa) == 0)
+        e->kfd = accept4(s, NULL, NULL, SOCK_CLOEXEC);
+    saved = errno;
+    if (s >= 0)
+        close(s);
+    if (e->kfd >= 0) {
+        fprintf(stderr, "fanout: sha256 by the kernel (AF_ALG)\n");
+        return 0;
+    }
+    if (want && strcmp(want, "kernel") == 0) {
+        fprintf(stderr, "fanout: FANOUT_SHA_ENGINE=kernel, but AF_ALG sha256 is unavailable: %s\n",
+                strerror(saved));
+        return -1;
+    }
+    fprintf(stderr, "fanout: sha256 in-process (kernel AF_ALG unavailable: %s)\n",
+            strerror(saved));
+    return 0;
+}
+
+static void sha_engine_update(struct sha_engine *e, const char *p, size_t n)
+{
+    if (e->kfd < 0) {
+        sha_update(&e->c, p, n);
+        return;
+    }
+    while (n > 0 && !e->failed) {
+        ssize_t w = send(e->kfd, p, n, MSG_MORE);
+        if (w > 0) {
+            p += w;
+            n -= (size_t)w;
+        } else if (!(w < 0 && errno == EINTR)) {
+            fprintf(stderr, "fanout: kernel sha256 failed mid-stream: %s -- no digest\n",
+                    w < 0 ? strerror(errno) : "it took no bytes");
+            e->failed = 1;
+        }
+    }
+}
+
+/* 0 and the 64-digit digest, or -1: there is no digest to give. */
+static int sha_engine_hex(struct sha_engine *e, char line[65])
+{
+    static const char hex[] = "0123456789abcdef";
+    unsigned char d[32];
+    ssize_t got;
+    if (e->kfd < 0) {
+        sha_hex(&e->c, line);
+        return 0;
+    }
+    if (e->failed || send(e->kfd, NULL, 0, 0) < 0)
+        return -1;
+    do got = read(e->kfd, d, sizeof d); while (got < 0 && errno == EINTR);
+    if (got != (ssize_t)sizeof d) {
+        fprintf(stderr, "fanout: kernel sha256 gave %zd of 32 digest bytes -- no digest\n", got);
+        return -1;
+    }
+    for (int i = 0; i < 32; i++) { line[2*i] = hex[d[i] >> 4]; line[2*i+1] = hex[d[i] & 15]; }
+    line[64] = '\0';
+    return 0;
+}
+
 static void widen_pipe(int fd, const char *name)
 {
     struct stat st;
-    if (fstat(fd, &st) == 0 && S_ISFIFO(st.st_mode) &&
-        fcntl(fd, F_SETPIPE_SZ, PIPE_BYTES) < 0)
-        fprintf(stderr, "fanout: could not enlarge pipe %s: %s\n", name, strerror(errno));
+    if (fstat(fd, &st) != 0 || !S_ISFIFO(st.st_mode) ||
+        fcntl(fd, F_SETPIPE_SZ, (int)pipe_bytes) >= 0)
+        return;
+    /* Refused (#1738, Testrunner 18/10): not root, and above fs.pipe-max-size
+     * (1MB by default). The pipe would stay at the kernel's 64KB; it takes the
+     * largest an unprivileged process may have instead -- and says so. The
+     * agent is root on a cloner, where this never happens. */
+    int saved = errno;
+    long long ceiling = 0;
+    FILE *f = saved == EPERM ? fopen("/proc/sys/fs/pipe-max-size", "r") : NULL;
+    if (f) {
+        if (fscanf(f, "%lld", &ceiling) != 1)
+            ceiling = 0;
+        fclose(f);
+    }
+    if (ceiling > 0 && ceiling < pipe_bytes && fcntl(fd, F_SETPIPE_SZ, (int)ceiling) >= 0) {
+        fprintf(stderr, "fanout: pipe %s: %lld refused (%s), set to %lld (fs.pipe-max-size)\n",
+                name, pipe_bytes, strerror(saved), ceiling);
+        return;
+    }
+    fprintf(stderr, "fanout: could not enlarge pipe %s: %s\n", name, strerror(saved));
 }
 
 static int append_count(int fd, long long count, const char *name)
@@ -334,14 +456,15 @@ static int hash_only(int use_sha256)
 {
     unsigned char buf[READ_CHUNK];
     struct xxh64 h;
-    struct sha256 s;
+    struct sha_engine s;
     xxh_init(&h);
-    sha_init(&s);
+    if (use_sha256 && sha_engine_open(&s) != 0)
+        return 2;
     widen_pipe(STDIN_FILENO, "stdin");
     for (;;) {
         ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
         if (n > 0) {
-            if (use_sha256) sha_update(&s, buf, (size_t)n);
+            if (use_sha256) sha_engine_update(&s, (const char *)buf, (size_t)n);
             else xxh_update(&h, buf, (size_t)n);
             continue;
         }
@@ -351,7 +474,8 @@ static int hash_only(int use_sha256)
         return 2;
     }
     char sha_line[65];
-    if (use_sha256) sha_hex(&s, sha_line);
+    if (use_sha256 && sha_engine_hex(&s, sha_line) != 0)
+        return 2;
     if ((use_sha256 ? printf("%s\n", sha_line) :
          printf("%016llx\n", (unsigned long long)xxh_digest(&h))) < 0 || fflush(stdout) != 0)
         return 2;
@@ -436,6 +560,40 @@ static void flush_target(struct target *t)
         fail_target(t, "write error");
         return;
     }
+}
+
+/* Hand one read chunk to a target (18/10, local clone toward the disk
+ * ceiling). With nothing queued, the chunk is written straight from the read
+ * buffer, and only what the pipe does not take right now is copied into the
+ * ring, behind which everything else then waits, in order. Before this every
+ * byte was first copied into the ring: a 256MB ring the copies walk through
+ * end to end, so each one landed in memory no cache held -- on the cloner's
+ * i5-650, one cache-cold memcpy per byte per fanout (two per local clone
+ * target: the source fanout and the target's relay). The ring is unchanged
+ * for a drawer that falls behind, and so is every failure rule. */
+static void send_chunk(struct target *t, const char *data, size_t n)
+{
+    while (t->alive && t->len == 0 && n > 0) {
+        ssize_t written = write(t->fd, data, n);
+        if (written > 0) {
+            data += written;
+            n -= (size_t)written;
+            t->taken += written;
+            t->last_progress_ms = now_ms();
+            continue;
+        }
+        if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            break;                        /* full for now; the rest queues */
+        if (written < 0 && errno == EINTR)
+            continue;
+        fail_target(t, "write error");
+        return;
+    }
+    if (!t->alive || n == 0)
+        return;
+    t->queued += (long long)n;
+    if (enqueue(t, data, n) == 0)
+        flush_target(t);
 }
 
 static int alive_count(void)
@@ -580,7 +738,7 @@ int main(int argc, char **argv)
     int progress_fd = -1, argi = 1, reached_eof = 0;
     long long progress_last = 0;
     struct xxh64 hash;
-    struct sha256 sha;
+    struct sha_engine sha;
     /* Writing to a pipe whose reader has gone raises SIGPIPE, and the default
      * action would kill this process outright -- taking down every healthy
      * drawer because one drive died. Ignoring it turns that into the EPIPE
@@ -609,6 +767,15 @@ int main(int argc, char **argv)
      * all look like ok (#427). */
     stall_evict_ms = env_ll("FANOUT_STALL_EVICT_MS", STALL_EVICT_MS);
     expected_bytes = env_ll("FANOUT_EXPECTED_BYTES", 0);
+    /* Block sizes for measuring on metal (18/10): the pipes fanout widens and
+     * the size of one read. Defaults are the measured ones; a chunk is never
+     * below READ_CHUNK and never above one target's buffer (make_room). */
+    pipe_bytes = env_ll("FANOUT_PIPE_BYTES", PIPE_BYTES);
+    if (pipe_bytes > (1LL << 30)) {
+        fprintf(stderr, "fanout: ignoring invalid FANOUT_PIPE_BYTES\n");
+        pipe_bytes = PIPE_BYTES;
+    }
+    long long chunk_bytes = env_ll("FANOUT_CHUNK", READ_CHUNK);
 
     if (argc - argi < 2) {
         fprintf(stderr, "usage: fanout [-H file] [-S file] [-P file] <buffer-bytes> <out> [out...]\n");
@@ -618,6 +785,10 @@ int main(int argc, char **argv)
     if (cap < READ_CHUNK) {
         fprintf(stderr, "fanout: buffer must be at least %d bytes\n", READ_CHUNK);
         return 2;
+    }
+    if (chunk_bytes < READ_CHUNK || chunk_bytes > cap) {
+        fprintf(stderr, "fanout: ignoring invalid FANOUT_CHUNK\n");
+        chunk_bytes = READ_CHUNK;
     }
     target_count = argc - argi - 1;
     if (target_count > MAX_TARGETS) {
@@ -634,6 +805,7 @@ int main(int argc, char **argv)
         t->alive = 1;
         t->reason = NULL;
         t->taken = 0;
+        t->queued = 0;
         t->cfd = open_counter(t->path);
         if (!t->buf) {
             fprintf(stderr, "fanout: out of memory\n");
@@ -655,7 +827,8 @@ int main(int argc, char **argv)
 
     widen_pipe(STDIN_FILENO, "stdin");
     xxh_init(&hash);
-    sha_init(&sha);
+    if (sha_path && sha_engine_open(&sha) != 0)
+        return 2;
     if (progress_path) {
         progress_fd = open(progress_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
         if (progress_fd < 0)
@@ -663,7 +836,7 @@ int main(int argc, char **argv)
                     progress_path, strerror(errno));
     }
 
-    char *chunk = malloc(READ_CHUNK);
+    char *chunk = malloc((size_t)chunk_bytes);
     if (!chunk) {
         fprintf(stderr, "fanout: out of memory\n");
         return 2;
@@ -673,7 +846,7 @@ int main(int argc, char **argv)
     for (;;) {
         if (alive_count() == 0)
             break;                        /* nobody left to write to */
-        ssize_t got = read(STDIN_FILENO, chunk, READ_CHUNK);
+        ssize_t got = read(STDIN_FILENO, chunk, (size_t)chunk_bytes);
         if (got == 0) {
             reached_eof = 1;
             break;                        /* end of stream */
@@ -689,7 +862,7 @@ int main(int argc, char **argv)
         /* Only what was asked for (#1492): the room round and capture pass -S
          * alone, and an XXH64 nobody writes is a second pass over every byte. */
         if (hash_path) xxh_update(&hash, chunk, (size_t)got);
-        if (sha_path) sha_update(&sha, chunk, (size_t)got);
+        if (sha_path) sha_engine_update(&sha, chunk, (size_t)got);
         if (progress_fd >= 0 && now_ms() - progress_last >= COUNTER_MS) {
             progress_last = now_ms();
             if (append_count(progress_fd, stdin_got, progress_path) < 0) {
@@ -698,10 +871,8 @@ int main(int argc, char **argv)
             }
         }
         make_room((size_t)got);
-        for (int i = 0; i < target_count; i++) {
-            enqueue(&targets[i], chunk, (size_t)got);
-            flush_target(&targets[i]);
-        }
+        for (int i = 0; i < target_count; i++)
+            send_chunk(&targets[i], chunk, (size_t)got);
         write_counters(0);
     }
     free(chunk);
@@ -731,8 +902,15 @@ int main(int argc, char **argv)
     }
     if (sha_path && reached_eof) {
         char line[66];
-        int fd = open(sha_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        sha_hex(&sha, line);
+        int fd;
+        /* No digest = no file: the agent reads its absence as "the sha256
+         * was not computed", a state of its own (#73). Asked before open(),
+         * so not even an empty file is left behind. */
+        if (sha_engine_hex(&sha, line) != 0) {
+            fprintf(stderr, "fanout: no stream SHA-256 to write to %s\n", sha_path);
+            return 2;
+        }
+        fd = open(sha_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         line[64] = '\n'; line[65] = '\0';
         if (fd < 0 || write(fd, line, 65) != 65) {
             int saved = errno;
@@ -781,6 +959,10 @@ int main(int argc, char **argv)
         struct target *t = &targets[i];
         if (t->cfd >= 0)
             close(t->cfd);
+        /* How often this target kept up: 0 queued = every byte went straight
+         * from the read to its pipe. Read on metal, not by the agent. */
+        fprintf(stderr, "fanout: %s took %lld bytes, %lld of them through its queue\n",
+                t->path, t->taken, t->queued);
         if (t->alive) {
             /* fsync is for a real file; a FIFO returns EINVAL and is skipped.
              * close() errors were swallowed -- a target that lost its last

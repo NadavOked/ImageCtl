@@ -112,3 +112,80 @@ test('role with TWO groups: group nodes, each with its machines, as before', () 
   assert.ok(out.includes('id="sg-g1"') && out.includes('id="sg-g2"'));
   assert.ok(out.includes('HP-3'));
 });
+
+// Nadav 18/10 (the first login, with a picture; like vCenter with several hosts): TA open, סקירה כללית
+// chosen and סבב הפצה shown under it, מלאי / תשתית / ניהול folded; each secondary is a root node
+// like TA, after it, folded. There is no saved open/closed state of the tree today, so this is it.
+test('Nadav 18/10: the tree at the first login -- TA open, its three categories folded, the overview is the page, secondaries are folded roots after TA', () => {
+  const head = (id) => html.match(new RegExp(`<div class="inventory-node[^"]*" onclick="toggleInventoryGroup\\(this,'${id}'\\)"[^>]*aria-expanded="(true|false)"><span class="tree-arrow"[^>]*data-open="(true|false)">(.)<`));
+  const boxTag = (id) => html.match(new RegExp(`<div id="${id}" class="inventory-children"[^>]*>`))[0];
+  const ta = head('srvTA');
+  assert.ok(ta, 'the TA row');
+  assert.deepEqual([ta[1], ta[2], ta[3]], ['true', 'true', '▾'], 'TA open');
+  assert.doesNotMatch(boxTag('srvTA'), /hidden/);
+  for (const id of ['invTA', 'infraTA', 'adminTA']) {
+    const h = head(id);
+    assert.ok(h, id);
+    assert.deepEqual([h[1], h[2], h[3]], ['false', 'false', '▸'], `${id} folded`);
+    assert.match(boxTag(id), /\shidden>$/, `${id} box hidden`);
+  }
+  // סקירה כללית and סבב הפצה are direct rows of TA (shown while the categories are folded)
+  const srv = html.slice(html.indexOf('<div id="srvTA"'), html.indexOf("toggleInventoryGroup(this,'invTA')"));
+  assert.match(srv, /data-page="home"/); assert.match(srv, /data-page="deploy"/);
+  // after the login the overview is selected (markTreeSelection marks it active)
+  const showApp = source.slice(source.indexOf('async function showApp()'));
+  const body = showApp.slice(0, showApp.indexOf('\n}\n'));
+  assert.match(body, /selectPageById\("home"\);/, 'showApp opens the overview');
+  // the secondaries are roots after TA's box -- not inside it
+  let depth = 0, i = html.indexOf('<div id="srvTA"'), end = -1;
+  const tag = /<div\b|<\/div>/g; tag.lastIndex = i;
+  for (let m; (m = tag.exec(html));) { depth += m[0] === '</div>' ? -1 : 1; if (depth === 0) { end = m.index; break; } }
+  assert.ok(end > 0 && html.indexOf('<div id="secondaryServers"') > end, 'secondaries after TA, at its level');
+  // a secondary root starts folded (populateSidebarSecondaries: open only when it was open)
+  assert.match(source, /const open = !!wasOpen\[boxId\];/);
+});
+
+// Nadav 18/10 (TA, b951c1fd): "I logged in and the categories were not folded". The page keeps its tree DOM
+// between a logout (or the idle logout) and the next login; after every login the tree is index.html's again.
+function fakeBox(id, open) {
+  const arrow = {dataset: {open: String(open)}, textContent: open ? '▾' : '▸'};
+  const owner = {attrs: {'aria-expanded': String(open)}, classList: {contains: (c) => c === 'inventory-node'},
+    setAttribute(k, v) { this.attrs[k] = v; }, querySelector: (s) => (s === '.tree-arrow' ? arrow : null)};
+  const box = {id, hidden: !open, style: {display: '', removeProperty() { this.display = ''; }}, previousElementSibling: owner, arrow, owner,
+    hasAttribute(k) { return k === 'hidden' && this.hidden; }, setAttribute(k) { if (k === 'hidden') this.hidden = true; },
+    removeAttribute(k) { if (k === 'hidden') this.hidden = false; }};
+  return box;
+}
+test('Nadav 18/10: every login lands on the overview with the first tree -- TA open, its categories and every secondary folded (a #settings hash changes nothing)', async () => {
+  const boxes = {srvTA: fakeBox('srvTA', true), invTA: fakeBox('invTA', false), infraTA: fakeBox('infraTA', false),
+    adminTA: fakeBox('adminTA', false), machineTree: fakeBox('machineTree', true), 'srv-n0de': fakeBox('srv-n0de', false)};
+  const inside = ['invTA', 'infraTA', 'adminTA', 'machineTree'];
+  boxes.srvTA.querySelectorAll = () => inside.map((id) => boxes[id]);
+  const secondary = {querySelectorAll: () => [boxes['srv-n0de']]};
+  let pages = [];
+  const ctx = vm.createContext({
+    document: {getElementById: (id) => (id === 'secondaryServers' ? secondary : boxes[id] || null)},
+    location: {hash: '#settings'}, SERVER_CTX: null, ME: null, PRIMARY_ME: null, LOGIN: null, SERVER_HEALTH: {'': {}},
+    api: async () => ({username: 'nadav', role: 'admin'}),
+    showApp: async () => { pages.push('home'); }, restoreTaskDock() {},
+  });
+  vm.runInContext(cut('let TREE_INITIAL = null;', 'async function enterApp()') + cut('async function enterApp()', 'async function showApp()')
+    + ';this.api2={treeSnapshot,resetTreeToInitial,enterApp};this.set=(v)=>{TREE_INITIAL=v;};', ctx);
+  ctx.set(ctx.api2.treeSnapshot());   // init(): the page as index.html drew it
+  // the session before: settings open under ניהול, מלאי open, TA folded, a secondary open
+  for (const [id, on] of [['adminTA', true], ['invTA', true], ['srvTA', false], ['srv-n0de', true]]) {
+    boxes[id].hidden = !on; boxes[id].arrow.textContent = on ? '▾' : '▸';
+  }
+  await ctx.api2.enterApp();
+  const state = (id) => [boxes[id].hidden, boxes[id].arrow.textContent, boxes[id].owner.attrs['aria-expanded']];
+  assert.deepEqual(state('srvTA'), [false, '▾', 'true'], 'TA open');
+  for (const id of ['invTA', 'infraTA', 'adminTA']) assert.deepEqual(state(id), [true, '▸', 'false'], `${id} folded`);
+  assert.deepEqual(state('srv-n0de'), [true, '▸', 'false'], 'a secondary folded');
+  assert.equal(boxes.machineTree.hidden, false, 'a nested box goes back to its first state too');
+  assert.deepEqual(pages, ['home'], 'showApp -- which selects the overview');
+  assert.deepEqual(Object.keys(ctx.SERVER_HEALTH), [], 'the previous session server dots are measured again');
+  assert.doesNotMatch(source, /location\.hash/, 'no page is restored from the URL');
+  // and F5 inside a session (init -> /me -> showApp) does not go through enterApp: no reset there
+  const boot = source.slice(source.indexOf('window.addEventListener("DOMContentLoaded"'));
+  assert.match(boot, /api\("\/me"\)\.then\(\(me\) => \{ ME = me; return showApp\(\); \}\)/);
+});

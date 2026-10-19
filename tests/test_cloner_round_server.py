@@ -246,6 +246,31 @@ def test_no_second_round_while_one_is_active(identity_server):
     assert room.active_round(srv["ctx"].conn)["id"] == first
 
 
+def test_a_failed_round_does_not_block_the_next_one(identity_server):
+    """17/10 (ברזל): סבב שנכשל ("אף מחשב לא הצטרף לשידור תוך 180 שניות") אינו
+    חוסם פתיחה חדשה מהמסך של מחשב השיכפול, והסבב החדש הוא הנראה. הכשל אינו
+    נמחק (עיקרון 4): השורה הישנה נשארת `failed` עם הסיבה."""
+    srv = identity_server
+    ctx = srv["ctx"]
+    cloner(srv)
+    assert ask(srv).status_code == 200
+    row = room.active_round(ctx.conn)
+    reason = "אף מחשב לא הצטרף לשידור תוך 180 שניות"
+    wave = row["wave_session_id"]
+    # כמו on_sender_event ב-app.py על send_failed: הגל והסבב נכשלים יחד
+    assert ctx.store.fail(wave, reason, related=lambda: room.fail_wave(
+        ctx.conn, wave, reason, commit=False))
+    assert room.visible_round(ctx.conn)["state"] == "failed"
+
+    r = ask(srv, ports=[2])
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] != row["id"]
+    assert room.visible_round(ctx.conn)["id"] == r.json()["id"]
+    old = ctx.conn.execute("SELECT state, failed_reason FROM room_rounds WHERE id = ?",
+                           (row["id"],)).fetchone()
+    assert (old["state"], old["failed_reason"]) == ("failed", reason)
+
+
 def test_the_route_opens_and_nothing_else(identity_server):
     """No close, no start, no power-off from the agent port without a session."""
     srv = identity_server

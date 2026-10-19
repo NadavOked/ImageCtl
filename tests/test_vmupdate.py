@@ -291,13 +291,16 @@ def test_vm_may_not_take_every_core(lab):
     assert exc.reason == "cpus" and exc.numbers == {"vm_cpus": 4, "server_cpus": 4}
 
 
+@pytest.mark.system_reserve   # #1737: the real 10GiB is one of the numbers (conftest _host_free_space)
 def test_disk_space_refusal_names_every_number(lab):
     exc = refusal(lab["make"](FakeMachine(free=50 * 10**9)))
     assert (exc.status, exc.reason) == (507, "disk_space")
-    # תפוס 31457280+84509376512, מרווח 30GiB, גרסה חדשה = הדחוס 57982058496 (‏#1390)
-    need = 31457280 + 84509376512 + 30 * (1 << 30) + 57982058496
+    # תפוס 31457280+84509376512, מרווח 30GiB, גרסה חדשה = הדחוס 57982058496 (‏#1390),
+    # ורזרבה למערכת 10GiB (‏#1737)
+    need = 31457280 + 84509376512 + 30 * (1 << 30) + 57982058496 + 10 * (1 << 30)
     assert exc.numbers == {"need_bytes": need, "free_bytes": 50 * 10**9}
     assert "פנויים 50.0 GB" in exc.message
+    assert "רזרבה למערכת 10.7 GB" in exc.message
 
 
 def test_missing_tools_are_named(lab):
@@ -486,6 +489,21 @@ def test_hibernated_windows_keeps_the_disk_for_another_boot(lab):
     engine.save("noc", "Office 2024 v2")
     status = wait_for(engine, "failed")
     assert status["error"]["reason"] == "hibernated" and status["disk_ready"] is True
+    engine.boot("noc")
+    assert wait_for(engine, "running")["error"] is None
+
+
+@pytest.mark.parametrize("reason", ["shrink", "capture", "stream", "unchecked"])
+def test_a_failed_save_keeps_the_disk_for_another_boot(lab, reason):
+    """‏#1491: השמירה מכווצת עותק ואינה כותבת לדיסק — גם כשל באמצע הכיווץ
+    או הזרם משאיר אותו שלם: מדליקים שוב (ה-chkdsk שההודעה מבקשת) ושומרים."""
+    def broken(*_a, **_k):
+        raise vmdisk.DiskError(reason, "נכשל באמצע")
+    lab["monkeypatch"].setattr(vmdisk, "capture_disk", broken)
+    engine = run_to_stopped(lab)
+    engine.save("noc", "Office 2024 v2")
+    status = wait_for(engine, "failed")
+    assert status["error"]["reason"] == reason and status["disk_ready"] is True
     engine.boot("noc")
     assert wait_for(engine, "running")["error"] is None
 

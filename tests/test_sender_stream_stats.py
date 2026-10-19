@@ -269,8 +269,8 @@ def test_the_room_round_carries_the_stream_numbers(room_server, tmp_path, monkey
         room_server, 2, {CLONER1: ["S1", "S2"]})).status_code == 200
     rnd = room(admin)["round"]
     assert rnd.get("throughput_bps") is None and rnd.get("loss_blocks") is None, "הגל פתוח — לא משדר"
-    cloner_hello(anon, CLONER1, ["S1", "S2"])
-    assert admin.post("/api/console/room/start").status_code == 200
+    # #1703: the hello that covers the target starts the wave in its own answer
+    assert cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["state"] == "running"
     assert wait_for(lambda: len(recorder.commands) == 1)
     write_log(current_log(recorder), "Starting transfer: f\n" + line(64_000, 3))
     rnd = room(admin)["round"]

@@ -44,24 +44,9 @@ do_task() {
             echo "done" > "$RUN_DIR/state"
             report_final "$_ppid" "" "$MAC" "$SERVER" "$_tid" \
                 || { hold_unheard "" "$_tid"; return 1; }
-            # ‏#409: "power off, or back to the menu?" -- a GUI dialog since
-            # 11/10 (askgui.sh). Power off is the default: no GUI, no answer
-            # within CAPTURE_END_ASK_S -- the drive is pulled from a machine
-            # that is off, the protection that was here before #409.
-            case "$(attended "הקליטה הושלמה: לכבות או לחזור לתפריט" \
-                    gui_ask_choice capture-end "${CAPTURE_END_ASK_S:-20}" "" "${CAPTURE_END_ASK_S:-20}")" in
-                menu)
-                    log "capture complete -- back to the menu (operator's choice)"
-                    _build_standby=0; return 0 ;;
-                poweroff) log "capture complete -- powering off (operator's choice)" ;;
-                *) log "capture complete -- powering off" ;;
-            esac
-            [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
-            finish_and_stop
-            # #1222: finish_and_stop returns only when the machine stayed on (#1483: WoL, or poweroff)
-            # (#587) -- the machine stays on, like the idle power-off. The
-            # capture is done and reported; this is not the failure path.
-            task_done_stays_on "Capture complete. The server is verifying the image before it enters the library."
+            # ‏#409: "power off, or back to the menu?" -- a GUI dialog since 11/10.
+            build_end_ask capture-end "הקליטה הושלמה: לכבות או לחזור לתפריט" "capture complete" \
+                "Capture complete. The server is verifying the image before it enters the library."
             return 0
         fi
         log "manifest upload failed"
@@ -70,8 +55,44 @@ do_task() {
     report_final "$_ppid" "" "$MAC" "$SERVER" "$_tid" \
         || { hold_unheard "" "$_tid" \
              "capture did not complete, and the server was not told"; return 1; }
+    HOLD_YIELD_TASK="$_tid"   # #1575: the source was only read -- a new task ends the hold
     ui_error_hold "capture did not complete" hold_beat
     return 1
+}
+
+build_end_ask() {
+    # $1 = kind (capture-end|send-end|round-end), $2 = the question for the
+    # console (attended, #906), $3 = what completed (journal), $4 = the line
+    # when the machine stays on. #1560 (Nadav 17/10): the build machine's
+    # ends ask -- a capture (#409), a direct send, a round opened here --
+    # in the GUI dialog (askgui.sh). No GUI, or no answer within
+    # CAPTURE_END_ASK_S: power off -- the machine someone walked away from is
+    # off, as before #409: 20 s (Nadav 17/10). Metal 17/10: "20" was fixed
+    # text, and read as "it powers off by itself" -- the subject is now the
+    # epoch of the power-off, and the dialog counts down to it each second.
+    # Returns 0 on "back to the menu", or after a power-off that did not
+    # take; a power-off that took never returns.
+    _be_s=${CAPTURE_END_ASK_S:-20}
+    case "$(attended "$2" gui_ask_choice "$1" "$(( $(date +%s) + _be_s ))" "" "$_be_s")" in
+        menu) log "$3 -- back to the menu (operator's choice)"; _build_standby=0; return 0 ;;
+        poweroff) log "$3 -- powering off (operator's choice)" ;;
+        *) log "$3 -- powering off" ;;
+    esac
+    [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
+    finish_and_stop
+    # #1222: finish_and_stop returns only when the machine stayed on (#1483: WoL, or
+    # poweroff, #587). The task is done and reported; this is not the failure path.
+    task_done_stays_on "$4"
+    return 0
+}
+
+build_round_end() {
+    # #1560: the kiosk saw a round opened from this GUI end (roomflow.sh
+    # room_end_watch). Asked once, from the build menu's loop.
+    [ -f "$RUN_DIR/room.ended" ] || return 0
+    rm -f "$RUN_DIR/room.ended"
+    build_end_ask round-end "הסבב הסתיים: לכבות או לחזור לתפריט" "room round complete" \
+        "The round is complete."
 }
 
 task_done_stays_on() {

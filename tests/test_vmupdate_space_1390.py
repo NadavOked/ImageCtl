@@ -14,7 +14,12 @@ import copy
 import pytest
 
 from conftest import write_image
+from server.disk_reserve import SYSTEM_RESERVE_BYTES
 from test_vmupdate import SOURCE, FakeMachine, lab, refusal   # noqa: F401 — fixture
+
+#: #1737: this module reasons about the system reserve -- it stays 10GiB here
+#: (conftest `_host_free_space` sets it to 0 elsewhere).
+pytestmark = pytest.mark.system_reserve
 
 GB = 10**9
 GIB = 1 << 30
@@ -55,7 +60,8 @@ def test_the_tel_aviv_image_fits_on_the_tel_aviv_server(lab):
 def test_the_new_version_is_counted_compressed_not_one_and_a_half_times(lab):
     manifest = tel_aviv(measured=True)
     used = sum(p["used_bytes"] for p in manifest["partitions"])
-    need = used + 30 * GIB + manifest["total_compressed_bytes"]
+    # ‏#1737: ועוד הרזרבה למערכת — היא נוספת על מרווח הגדילה, לא בתוכו.
+    need = used + 30 * GIB + manifest["total_compressed_bytes"] + SYSTEM_RESERVE_BYTES
     engine, image = start_or_refusal(lab, manifest, need - 1)
     exc = refusal(engine, image)
     assert exc.numbers == {"need_bytes": need, "free_bytes": need - 1}
@@ -68,7 +74,7 @@ def test_partitions_without_used_bytes_count_their_full_size_and_say_so(lab):
     """לא ממציאים מספר (‏#1368): גודל המחיצה — שמרני — וההודעה אומרת היכן ולמה."""
     manifest = tel_aviv(measured=False)
     sizes = sum(p["size_bytes"] for p in manifest["partitions"][1:]) + manifest["partitions"][0]["used_bytes"]
-    need = sizes + 30 * GIB + manifest["total_compressed_bytes"]
+    need = sizes + 30 * GIB + manifest["total_compressed_bytes"] + SYSTEM_RESERVE_BYTES
     engine, image = start_or_refusal(lab, manifest, 100 * GB)
     exc = refusal(engine, image)
     assert (exc.status, exc.reason) == (507, "disk_space")
@@ -99,3 +105,25 @@ def test_a_used_bytes_that_is_not_a_count_never_reaches_the_vm_update(lab, bad):
     assert engine.library.get(image) is None
     exc = refusal(engine, image)
     assert exc.status == 404
+
+
+# --- ‏#1737: גם השמירה — לא רק הפתיחה ------------------------------------------
+
+
+@pytest.mark.parametrize("spare,saved", [(-1, False), (0, True)])
+def test_saving_the_new_version_keeps_the_system_reserve(lab, spare, saved):
+    """בין הפתיחה לשמירה עוברים ימים: דיסק העבודה גדל וקליטות נכנסו. הגרסה
+    החדשה (כגודל המקור הדחוס) נכתבת רק אם אחריה נשארת הרזרבה; אחרת — כשל
+    בשם, והדיסק נשמר להדלקה ולשמירה חוזרת אחרי שמפנים מקום."""
+    from test_vmupdate import run_to_stopped, wait_for
+
+    engine = run_to_stopped(lab)
+    compressed = lab["library"].get("img_7f3a91")["total_compressed_bytes"]
+    engine.machine._free = compressed + SYSTEM_RESERVE_BYTES + spare
+    engine.save("noc", "Office 2024 v2")
+    if saved:
+        assert wait_for(engine, "saved")["result"]["image_id"]
+        return
+    status = wait_for(engine, "failed")
+    assert status["error"]["reason"] == "disk_space" and status["disk_ready"] is True
+    assert "נשמרים למערכת" in status["error"]["message"]

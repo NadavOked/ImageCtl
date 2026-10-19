@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from conftest import MANIFEST_256, PARTITION_BYTES, write_image
-from server import archive, interserver_api
+from server import archive, disk_reserve, interserver_api, storage_locations
 from server.images import ImageLibrary
 
 IMAGE = MANIFEST_256["id"]
@@ -104,11 +104,13 @@ def test_no_second_read_of_the_partitions_after_the_last_byte(secondary, tmp_pat
 
 # --- (ג) מקום פנוי: פי 1 ---------------------------------------------------------
 
+@pytest.mark.system_reserve   # #1737: the real 10GiB (conftest _host_free_space)
 def test_free_space_precheck_needs_the_length_once(secondary, monkeypatch):
     """עם חילוץ ישיר אין עותק שני על הדיסק: ``length + margin`` מספיק בדיוק,
     ובית אחד פחות — 507 (לא "ננסה")."""
     length = 70 * 1024 ** 3
-    need = length + interserver_api.FREE_SPACE_MARGIN
+    # ‏#1737: ועוד הרזרבה למערכת — האימג' לא נכנס אם ישאיר פחות ממנה.
+    need = length + interserver_api.FREE_SPACE_MARGIN + disk_reserve.SYSTEM_RESERVE_BYTES
     ctx = secondary[0]
 
     def precheck(free):
@@ -119,6 +121,10 @@ def test_free_space_precheck_needs_the_length_once(secondary, monkeypatch):
             image_id=IMAGE, content_length=length)
 
     monkeypatch.setattr(interserver_api, "authenticate_parent", lambda *a, **k: None)
+    # #1719: the precheck reads the target's storage_locations row. This ctx has
+    # no DB (conn=None): no row for loc_local = the library root, the path the
+    # code keeps for an isolated context. The rule checked here is the space.
+    monkeypatch.setattr(storage_locations, "get", lambda _conn, _loc: None)
     plan = precheck(need)
     assert plan.content_length == length
     with pytest.raises(interserver_api.PairError) as e:

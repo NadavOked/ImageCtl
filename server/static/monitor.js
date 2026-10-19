@@ -23,7 +23,7 @@ const NAME = params.get("name") || MAC;
 const MAX_RECT_BYTES = 32 * 1024 * 1024;        // w*h*4 של מלבן/מסך
 const MAX_CUT_TEXT = 64 * 1024;                 // ServerCutText, ותיאור/שם
 const MAX_STREAM_BYTES = 64 * 1024 * 1024;      // חוצץ הקלט של ByteStream
-/* ‏#655 v1: ``node`` = מזהה שרת משני — המוניטור עובר דרך הראשי אל המשני
+/* ‏#655 v1: ``node`` = מזהה שרת משנה — המוניטור עובר דרך הראשי אל שרת המשנה
    ומשם למכונה. אותו זרם RFB, אותה לחיצת-יד מול הדפדפן; רק הנתיב שונה. */
 const NODE = params.get("node") || "";
 
@@ -31,12 +31,25 @@ const canvas = document.getElementById("screen");
 const gctx = canvas.getContext("2d", { alpha: false });
 const statusEl = document.getElementById("status");
 const titleEl = document.getElementById("title");
+const disconnectOverlay = document.getElementById("disconnect-overlay");
 titleEl.textContent = NAME ? `מוניטור — ${NAME}` : "מוניטור";
 document.title = titleEl.textContent;
 
 function setStatus(text, cls) {
   statusEl.textContent = text;
   statusEl.className = "status " + (cls || "");
+}
+
+function showMachineDisconnected(text) {
+  canvas.classList.add("disconnected");
+  disconnectOverlay.textContent = text;
+  disconnectOverlay.classList.add("visible");
+}
+
+function clearMachineDisconnected() {
+  canvas.classList.remove("disconnected");
+  disconnectOverlay.textContent = "";
+  disconnectOverlay.classList.remove("visible");
 }
 
 /* --- קורא בייטים סדרתי מעל ה-WebSocket -----------------------------------
@@ -107,6 +120,10 @@ let stream = null;
 let fbWidth = 0;
 let fbHeight = 0;
 let viewOnly = false;
+/* 18/10 (rc6, "סוג אבטחה לא צפוי"): קלט יוצא רק אחרי ServerInit. ה-WS פתוח עוד לפני
+   שהשרת הגיע למכונה (‏#1686: עד 15 ש' כשהיא עולה), והפרוקסי קורא את 12 הבייטים הראשונים
+   מהדפדפן כגרסת RFB — PointerEvent שנשלח בזמן "מתחבר…" הפך לגרסה ולבחירת אבטחה שגויה. */
+let rfbReady = false;
 
 function wsUrl() {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
@@ -187,6 +204,9 @@ function requestUpdate(incremental) {
 /* --- לולאת ההודעות מהשרת -------------------------------------------------- */
 async function pump() {
   await handshake();
+  rfbReady = true;
+  retries = 0;
+  clearMachineDisconnected();
   setPixelFormat();
   setEncodings();
   setStatus("מחובר", "ok");
@@ -263,9 +283,13 @@ let pendingMove = null;
 let moveTimer = null;
 let lastPointerAt = -Infinity;
 
+function sendInput(bytes) {
+  if (rfbReady) send(bytes);                   // לפני ServerInit — נזרק (ראו rfbReady)
+}
+
 function sendPointer(x, y) {
   lastPointerAt = Date.now();
-  send([5, buttonMask, (x >> 8) & 255, x & 255, (y >> 8) & 255, y & 255]);
+  sendInput([5, buttonMask, (x >> 8) & 255, x & 255, (y >> 8) & 255, y & 255]);
 }
 
 function flushMove() {
@@ -295,7 +319,7 @@ function pointerButton(event) {
 
 function keyEvent(keysym, down) {
   if (viewOnly || !keysym) return;
-  send([4, down ? 1 : 0, 0, 0,
+  sendInput([4, down ? 1 : 0, 0, 0,
         (keysym >>> 24) & 255, (keysym >>> 16) & 255, (keysym >>> 8) & 255, keysym & 255]);
 }
 
@@ -309,7 +333,19 @@ const SPECIAL = {
   F1: 0xffbe, F2: 0xffbf, F3: 0xffc0, F4: 0xffc1, F5: 0xffc2, F6: 0xffc3,
   F7: 0xffc4, F8: 0xffc5, F9: 0xffc6, F10: 0xffc7, F11: 0xffc8, F12: 0xffc9,
 };
+/* RFB carries X11 keysyms, while KeyboardEvent.code identifies the physical
+   key independently of the operator's active layout.  Send the unshifted US
+   keysym here: the browser sends Shift as its own down/up event, so the remote
+   kernel applies it exactly as it would to a local keyboard. */
+const PHYSICAL = {
+  Space: " ", Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]",
+  Semicolon: ";", Quote: "'", Backquote: "`", Backslash: "\\",
+  Comma: ",", Period: ".", Slash: "/",
+};
+for (let i = 0; i < 26; i++) PHYSICAL[`Key${String.fromCharCode(65 + i)}`] = String.fromCharCode(97 + i);
+for (let i = 0; i < 10; i++) PHYSICAL[`Digit${i}`] = String(i);
 function keysymFor(event) {
+  if (PHYSICAL[event.code]) return PHYSICAL[event.code].charCodeAt(0);
   if (event.key.length === 1) return event.key.charCodeAt(0);  // Latin-1
   return SPECIAL[event.key] || 0;
 }
@@ -341,24 +377,78 @@ async function sendPower(action, confirm) {
 }
 
 /* --- חיבור וניתוק -------------------------------------------------------- */
+/* 18/10 (rc6, "הריענון"): סגירה אינה משאירה מסך שחור תקוע. הסיבה נכתבת על המסך עצמו
+   (המסגרת האחרונה מוחשכת — היא אינה חיה), עם ספירה לאחור, והחיבור מנסה שוב לבד: מכונה
+   שאותחלה, מוניטור שעוד עולה (4502), ניתוק (4513), ‏4409 של iframe קודם שעוד משתחרר.
+   ההשהיה גדלה ונעצרת בתקרה — ואז "התחבר מחדש" ידני. מה שלא ישתנה עם הזמן — התחברות,
+   הרשאה, מכונה לא מוכרת, וסגירת חוסר-הפעילות המכוונת (#1129) — אינו חוזר לבד. */
+const RETRY_DELAYS_S = [2, 4, 8, 15, 30];      // האחרון חוזר עד התקרה
+const RETRY_MAX = 20;                          // ~9 דק' של ניסיונות, ואז ידני
+const NO_RETRY = new Set([4401, 4403, 4404, 4408]);
+let retries = 0;
+let retryTimer = null;
+
+function cancelRetry() {
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+}
+
+function showClosed(text) {
+  setStatus(text, "bad");
+  showMachineDisconnected(text);
+}
+
+function scheduleRetry(reason) {
+  if (retries >= RETRY_MAX) {
+    showClosed(`${reason} — ${RETRY_MAX} ניסיונות נכשלו; לחצו "התחבר מחדש"`);
+    return;
+  }
+  let left = RETRY_DELAYS_S[Math.min(retries, RETRY_DELAYS_S.length - 1)];
+  retries++;
+  const tick = () => {
+    retryTimer = null;
+    if (left <= 0) { connect(); return; }
+    showClosed(`${reason} — ניסיון חוזר בעוד ${left} שנ'`);
+    left--;
+    retryTimer = setTimeout(tick, 1000);
+  };
+  tick();
+}
+
 function connect() {
+  cancelRetry();
+  rfbReady = false;
+  /* החיבור הקודם נסגר, וה-handlers שלו קשורים לזרם ול-socket **שלו** (‏`bytes`/`sock`):
+     עד כאן הם קראו ל-`stream`/`ws` הגלובליים, ולכן ה-onclose המאוחר של הישן סגר את
+     הזרם של החיבור החדש, והבייטים שלו נכנסו אליו. הקורא שממתין על הזרם הישן משתחרר
+     עם null ויוצא. */
+  if (ws) ws.close();
+  if (stream) stream.fail(null);
   setStatus("מתחבר…", "");
-  stream = new ByteStream();
+  const bytes = stream = new ByteStream();
   /* בלי לבקש subprotocol: ‏`new WebSocket(url, "binary")` היה מחייב את
      השרת להחזיר "binary" ב-101, אחרת Chrome סוגר מיד (1006 → "החיבור
      נסגר", מסך ריק). ‏uvicorn עם מימוש ה-WS ‎wsproto **אינו** מהדהד את
      ה-subprotocol (‎websockets כן) — נמדד על הברזל. ‏RFB עובד על מסגרות
      בינאריות גולמיות בלי שום subprotocol, אז פשוט לא דורשים אותו וזה
      חסין לשני המימושים. */
-  ws = new WebSocket(wsUrl());
-  ws.binaryType = "arraybuffer";
-  ws.onmessage = (event) => stream.push(event.data);
-  ws.onopen = () => pump().catch((error) => {
-    setStatus("שגיאה: " + error.message, "bad");
-    if (ws) ws.close();
+  const sock = ws = new WebSocket(wsUrl());
+  let ended = false, failure = "";
+  sock.binaryType = "arraybuffer";
+  sock.onmessage = (event) => bytes.push(event.data);
+  sock.onopen = () => pump().catch((error) => {
+    /* סגירה מהשרת כבר טופלה ב-onclose (והיא מה שהפיל את הקריאה); כאן רק שגיאה של
+       הלקוח עצמו — היא נסגרת, וה-onclose מציג אותה ומנסה שוב. */
+    if (ended || ws !== sock) return;
+    failure = "שגיאה: " + error.message;
+    setStatus(failure, "bad");
+    sock.close();
   });
-  ws.onclose = (event) => {
-    stream.fail(event.reason ? new Error(event.reason) : null);
+  sock.onclose = (event) => {
+    ended = true;
+    bytes.fail(event.reason ? new Error(event.reason) : null);
+    if (ws !== sock) return;                   // חיבור שהוחלף — אין לו מה לומר לדף
+    rfbReady = false;
     /* ‏#904: השרת מקבל ואז סוגר, ולכן `event.reason` העברית שלו מגיעה
        (לפני כן הסגירה קדמה ל-accept → HTTP 403 → 1006 בלי קוד ובלי
        סיבה). הטבלה היא גיבוי לסיבה ריקה בלבד. */
@@ -366,10 +456,13 @@ function connect() {
       4404: "מכונה לא מוכרת", 4408: "המוניטור נסגר — 10 דק' בלי תעבורה",
       4409: "מוניטור כבר פתוח למכונה זו",
       4502: "שירות המוניטור במכונה אינו זמין",
-      4512: "הפרוקסי לא הזדהה מול המוניטור במכונה" };
-    setStatus(event.reason || reasons[event.code] || "החיבור נסגר", "bad");
+      4512: "הפרוקסי לא הזדהה מול המוניטור במכונה",
+      4513: "החיבור למחשב נותק — ייתכן שהמחשב כבה" };
+    const reason = failure || event.reason || reasons[event.code] || "החיבור נסגר";
+    if (NO_RETRY.has(event.code)) showClosed(reason);
+    else scheduleRetry(reason);
   };
-  ws.onerror = () => setStatus("החיבור נכשל", "bad");
+  sock.onerror = () => { if (ws === sock) setStatus("החיבור נכשל", "bad"); };
 }
 
 /* קלט המסך: קליק תופס פוקוס, המקלדת נלכדת כל עוד ה-canvas ממוקד. */
@@ -422,7 +515,7 @@ document.getElementById("reboot-btn").addEventListener(
 document.getElementById("poweroff-btn").addEventListener(
   "click", () => powerModal("poweroff", "כיבוי"));
 document.getElementById("reconnect").addEventListener("click", () => {
-  if (ws) ws.close(); connect();
+  retries = 0; connect();                      // connect() מנתק את הקודם
 });
 
 /* מסך מלא (console-full.html): הדף כולו, כדי שחלון האישור של פעולת כוח ייראה. הסרגל צף ומוסתר, ומופיע 2.5 שניות

@@ -24,7 +24,7 @@ import textwrap
 import time
 import zlib
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -121,15 +121,41 @@ def test_no_deploy_network_is_grey_on_an_unpaired_secondary_and_red_on_a_primary
     assert _first(frame, "hero")[1] == "bad"
 
 
-def test_a_paired_secondary_says_so_and_then_needs_its_deploy_network():
+def test_a_paired_secondary_without_contact_is_never_green():
     deploy = NicInfo("ens34", "10.45.0.1/16", "static", "up", "1000")
     snapshot = replace(samples.SECONDARY, services=dict(samples.UP), deploy=deploy)
     extras = view.Extras(has_parent=True, primary_url="https://10.20.10.5:8443")
     frame = _render(_runtime(snapshot, extras))
     hero = _first(frame, "hero")
-    assert hero[1] == "ok" and "10.20.10.5" in hero[2]
-    assert _row(frame, "שרת ראשי")[6:8] == ["ok", "מחובר ✓"]
-    assert _first(frame, "sb")[2] == "תקין · מחובר לראשי"
+    assert hero[1] == "warn" and "מגע לא ידוע" in hero[2] and "✓" not in hero[2]
+    assert _row(frame, "שרת ראשי")[6:8] == ["warn", "מצומד · מגע לא ידוע"]
+    assert _first(frame, "sb")[1:3] == ["warn", "מצומד · מגע לא ידוע"]
+
+
+def test_a_fresh_parent_contact_is_green_and_a_stale_one_is_orange():
+    deploy = NicInfo("ens34", "10.45.0.1/16", "static", "up", "1000")
+    snapshot = replace(samples.SECONDARY, services=dict(samples.UP), deploy=deploy)
+    fresh_at = (TODAY.astimezone() - timedelta(minutes=4)).isoformat()
+    extras = view.Extras(has_parent=True, primary_url="https://10.20.10.5:8443",
+                         parent_last_contact=fresh_at)
+    frame = _render(_runtime(snapshot, extras))
+    assert _first(frame, "hero")[1] == "ok"
+    assert _row(frame, "שרת ראשי")[6:8] == ["ok", "מחובר · מגע לפני 4 דק'"]
+    assert _first(frame, "sb")[1:3] == ["ok", "מחובר · מגע לפני 4 דק'"]
+
+    stale_at = (TODAY.astimezone() - timedelta(minutes=11)).isoformat()
+    stale = replace(extras, parent_last_contact=stale_at)
+    frame = _render(_runtime(snapshot, stale))
+    assert _first(frame, "hero")[1] == "warn"
+    assert _row(frame, "שרת ראשי")[6] == "warn"
+    assert _row(frame, "שרת ראשי")[7] == f"מצומד · אין מגע מאז {(TODAY - timedelta(minutes=11)):%H:%M}"
+    assert _first(frame, "sb")[1] == "warn"
+
+
+def test_a_paired_secondary_still_needs_its_deploy_network():
+    deploy = NicInfo("ens34", "10.45.0.1/16", "static", "up", "1000")
+    snapshot = replace(samples.SECONDARY, services=dict(samples.UP), deploy=deploy)
+    extras = view.Extras(has_parent=True, primary_url="https://10.20.10.5:8443")
     # paired, it distributes to its own network -- so it needs one now
     frame = _render(_runtime(replace(snapshot, deploy=None), extras))
     assert any(rec[3] == "רשת ההפצה לא הוגדרה" for rec in _all(frame, "prob"))
@@ -348,8 +374,14 @@ def _cc(tmp_path: Path, out: str, sources: str) -> Path:
     )
     proc = subprocess.run(["bash", "-c", command, "_", str(GUI_DIR), str(binary)],
                           capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
-    assert proc.returncode == 0, proc.stderr
-    assert "warning" not in proc.stderr, proc.stderr
+    if proc.returncode != 0 or "warning" in proc.stderr:
+        # rc6: a module fixture that fails shows up as N ERRORs; the compiler's own
+        # lines say why, so they are the message -- whole, and in a file beside it.
+        log = tmp_path / f"{out}.build.log"
+        log.write_text(f"rc={proc.returncode}\n{proc.stderr}{proc.stdout}", encoding="utf-8")
+        why = "failed" if proc.returncode != 0 else "warned (the GUI builds warning-free)"
+        pytest.fail(f"cc {why}, rc={proc.returncode}; full log: {log}\n{proc.stderr}{proc.stdout}",
+                    pytrace=False)
     return binary
 
 
@@ -417,7 +449,9 @@ def renders(built, tmp_path_factory):
                                    "--size", size, "--state", str(frame)],
                                   capture_output=True, text=True, timeout=120,
                                   stdin=subprocess.DEVNULL)
-            assert proc.returncode == 0, proc.stderr
+            if proc.returncode != 0:
+                pytest.fail(f"render {name} {size} failed, rc={proc.returncode}:\n"
+                            f"{proc.stderr}{proc.stdout}", pytrace=False)
             for theme in ("light", "dark"):
                 paths[(name, size, theme)] = Path(f"{prefix}-{theme}.png")
     return paths
@@ -548,3 +582,89 @@ def test_dcui_png_needs_a_frame_file(built, tmp_path):
     proc = subprocess.run([str(built), "--screen", "dcui", "--png", str(tmp_path / "x")],
                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
     assert proc.returncode == 2 and "--state" in proc.stderr
+
+
+# ---- #1363: a tile is never cut through a row --------------------------------------
+
+def _three_problems() -> str:
+    """The sample with two problems plus imagectl-server failed: three cards
+    in the hero, the case that left the tiles a sliver at 1280x768."""
+    two = samples.runtimes()["2-primary-problem"]
+    snapshot = replace(two.snapshot, services=dict(two.snapshot.services)
+                       | {"imagectl-server": ServiceState("failed", "enabled")})
+    runtime = samples._runtime(snapshot, samples.PRIMARY_EXTRAS)
+    return view.render(runtime, samples.NOW, samples.NOW, samples.CLOCK, TODAY, 47)
+
+
+def _render_light(built, tmp_path: Path, name: str, text: str, size: str) -> Path:
+    path = tmp_path / f"{name}-{size}.frame"
+    path.write_text(text, encoding="utf-8", newline="\n")
+    proc = subprocess.run([str(built), "--screen", "dcui", "--png", str(tmp_path / f"{name}-{size}"),
+                           "--size", size, "--state", str(path)],
+                          capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    assert proc.returncode == 0, proc.stderr
+    return tmp_path / f"{name}-{size}-light.png"
+
+
+def _tile_boxes(png: Path) -> list[tuple[int, int, int, int]]:
+    """(left, top, right, bottom) of every tile, found in the pixels: a column
+    5px inside each outer edge crosses the hero and the tiles, and the
+    porcelain between them separates the boxes. The last two boxes of each
+    column are the tiles (the hero, when there is one, is the first)."""
+    width, height, px = _png(png, rows=10 ** 6)
+    bg = _hex(LIGHT["porcelain"])
+    probe = height - 40 - 30                                   # inside the bottom row of tiles
+    left = next(x for x in range(width) if px(x, probe) != bg)
+    right = next(x for x in range(width - 1, -1, -1) if px(x, probe) != bg)
+    boxes = []
+    for edge, step in ((left, 1), (right, -1)):
+        col, runs, start = edge + 5 * step, [], None
+        for y in range(49, height - 40):
+            inside = px(col, y) != bg
+            if inside and start is None:
+                start = y
+            elif not inside and start is not None:
+                runs.append((start, y - 1)); start = None
+        for top, bottom in runs[-2:]:
+            mid, x = (top + bottom) // 2, col
+            while px(x + step, mid) != bg:
+                x += step
+            boxes.append((min(edge, x), top, max(edge, x), bottom))
+    return boxes
+
+
+@NATIVE
+@pytest.mark.parametrize("size", ["1280x768", "1024x768"])
+@pytest.mark.parametrize("problems", [2, 3])
+def test_no_tile_row_is_cut_by_the_tile_edge(built, tmp_path, size, problems):
+    """#1363: ESXi's 1280x768 with problem cards in the hero left the tiles too
+    short, and their clip cut the last row in half (nftables, without its
+    state). A row is drawn whole or not at all: the 6px band just above every
+    tile's bottom border is plain surface (the tile keeps 8px under its last
+    row; a cut row runs into the border)."""
+    text = samples.frames()["2-primary-problem"] if problems == 2 else _three_problems()
+    png = _render_light(built, tmp_path, f"p{problems}", text, size)
+    boxes = _tile_boxes(png)
+    assert len(boxes) == 4, boxes                              # the probe saw every tile
+    _w, _h, px = _png(png, rows=10 ** 6)
+    surface = _hex(0xFFFFFF)
+    for left, _top, right, bottom in boxes:
+        cut = [(x, y) for y in range(bottom - 7, bottom - 1) for x in range(left + 10, right - 9)
+               if px(x, y) != surface]
+        assert not cut, (png.name, (left, bottom), cut[:5])
+
+
+@NATIVE
+def test_rows_that_do_not_fit_are_named_not_dropped(built, tmp_path):
+    """#1363, principle 5: a row the tile has no room for is not drawn -- and
+    the tile says so, naming it. Changing the hidden row's *value* leaves the
+    picture as it was (it is not drawn), changing its *label* does not (it is
+    named, with its state, in the tile's last line)."""
+    frame = _three_problems()
+    row = next(line for line in frame.splitlines() if line.startswith("row\tnftables\t"))
+    renamed = frame.replace(row, row.replace("nftables", "nftablez", 1))
+    revalued = frame.replace(row, row.replace("חומת האש של השרת", "ערך אחר לגמרי", 1))
+    assert renamed != frame and revalued != frame
+    base = _render_light(built, tmp_path, "base", frame, "1280x768").read_bytes()
+    assert _render_light(built, tmp_path, "revalued", revalued, "1280x768").read_bytes() == base
+    assert _render_light(built, tmp_path, "renamed", renamed, "1280x768").read_bytes() != base

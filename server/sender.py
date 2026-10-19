@@ -62,6 +62,9 @@ DEFAULT_START_TIMEOUT = 180
 #: ‏start-timeout של 180 היה מת. לכן למחיצות 2+ הוא `max_wait_later +
 #: start_timeout`: עד 180 שניות למקבל הראשון, ואז עד 600 לשאר.
 LATER_MAX_WAIT = 600
+#: ‏ברזל 17/10: כל כמה זמן השולח שואל אם מחשב שיכפול בגל עוד ממתין לתשובת
+#: אדם על דיסק (‏`smart_ask.open_in_wave`). קריאה אחת מה-DB, בלי תעבורה.
+ASK_HOLD_POLL_S = 1.0
 
 
 def later_max_wait(max_wait: int) -> int:
@@ -70,6 +73,13 @@ def later_max_wait(max_wait: int) -> int:
 
 def later_start_timeout(max_wait: int, start_timeout: float) -> int:
     return later_max_wait(max_wait) + int(start_timeout)
+#: ‏`--rexmit-hello-interval` (מילישניות): כל כמה זמן udp-sender משדר שוב את
+#: ה-hello שבו מקבל מתחבר. ברירת המחדל של udpcast היא 2000, וכל מחיצה היא
+#: udp-sender משלה — ארבע מחיצות = ארבע המתנות של 2ש' בין "התחבר" ל"משדר",
+#: על ברזל (‏17/10, ‏ses_fbd8f9ca: 08:24:46→48, 08:24:51→53, 08:24:56→58,
+#: 08:29:43→45) ובמדידה על loopback (‏2.83ש' בברירת המחדל, ‏1.02ש' ב-200).
+#: ה-hello הוא חבילה קטנה אחת; ב-5 לשנייה זו עלות אפסית גם במחכה של 600ש'.
+HELLO_INTERVAL_MS = 200
 #: אחרי כמה בקשות ACK ללא מענה udpcast מוותר על מקבל וממשיך בלעדיו.
 #: **בלי הדגל הזה udpcast מגדיר 200**.
 #:
@@ -349,6 +359,31 @@ def wave_totals(logs: list[Path]) -> tuple[int, int] | None:
     return sent, loss
 
 
+#: ‏#1761: שתי השורות ש-udp-sender כותב כשמקלט לא עונה (‏senddata.c:930-967).
+#: כל פקיעה של המתנה ל-REQACK מדפיסה `Timeout notAnswered=...`; וכש-rxmitId
+#: עובר את `--retries-until-drop` הוא מנתק את המקלט: `Dropping client #N
+#: because of timeout`. ניתוק הוא האות הישיר שהקצב הפיל מקלט — לא rcvbuf.
+SENDER_TIMEOUT = "Timeout notAnswered"
+SENDER_DROP = "Dropping client"
+
+
+def wave_events(logs: list[Path]) -> tuple[int, int] | None:
+    """‏(שורות `Dropping client`, שורות `Timeout notAnswered`) — סכום על כל
+    המחיצות של גל, מהקובץ כולו (השורות נדחקות מהזנב ע"י ההתקדמות).
+
+    ‏None = לוג אחד לפחות לא נקרא: "לא נבדק", ולא "אפס ניתוקים" (עיקרון 5).
+    """
+    drops = timeouts = 0
+    for path in logs:
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            return None
+        drops += text.count(SENDER_DROP)
+        timeouts += text.count(SENDER_TIMEOUT)
+    return drops, timeouts
+
+
 def _reaped(process, seconds: float) -> bool:
     """True רק כשיש ראיה שהילד מת. היעדר בדיקה אינו ראיה (#439)."""
     deadline = time.monotonic() + seconds
@@ -380,6 +415,9 @@ class SendState:
     # קצב אוטומטי: בייטים ושניות שבהם המונה של udp-sender זז, על כל המחיצות.
     moved_bytes: int = 0
     moved_s: float = 0.0
+    # ‏#1758: משך הזרם כולו — מהבייט הראשון של הגל (‏monotonic) ועד `send_done`.
+    first_byte_at: float | None = None
+    done_at: float | None = None
 
 
 class SenderEngine:
@@ -400,6 +438,7 @@ class SenderEngine:
         wave_bitrate: Callable[[dict], str | None] | None = None,
         live_receivers: Callable[[str], int] | None = None,
         link_speed: Callable[[str | None], dict] | None = None,
+        pending_asks: Callable[[str], list[str]] | None = None,
     ):
         self.library = library
         self.runner = runner
@@ -437,6 +476,11 @@ class SenderEngine:
         # — הגג והפתיחה של הקצב לפיה. ‏None = לא מחובר (בדיקות; ‏`server.main`
         # מחבר תמיד): "לא נקרא", וההתנהגות של היום — לא ניחוש של 1GbE.
         self.link_speed = link_speed
+        # ברזל 17/10: מי בגל ממתין עכשיו לאדם (שאלת SMART פתוחה). כל עוד יש
+        # כזה, ‏udp-sender של המחיצה הראשונה לא מופעל — ה-`--start-timeout`
+        # שלו נספר מההפעלה, ושלוש דקות מול חלון SMART פתוח נגמרו בשולח שיצא
+        # עשר שניות אחרי התשובה. ‏None = לא מחובר: ההתנהגות של לפני.
+        self.pending_asks = pending_asks
         self.on_event = on_event or (lambda event, detail: None)
         #: ‏#705: ‏`gate(interface)` → סיבת סירוב או None — השידור כבוי בכרטיס
         #: (רשת ← חיבורים פיזיים ← שירותים). ‏`create_runtime` מתקין.
@@ -572,34 +616,70 @@ class SenderEngine:
           שהמונה של udp-sender זז חלקי השניות שבהן זז, על כל המחיצות
           (‏`_wait_sampling`). זה הקצב **בקו** — לפני פריסת הדחיסה, ולכן
           בלי ההטיה של `bytes_written` בכוננים. ‏None = לא זז בין שתי דגימות.
+        * ‏`wall_s` (‏#1758) — משך הזרם של הגל כולו בשעון: מהדגימה הראשונה
+          שבה המונה זז (הבייט הראשון של מחיצה 1) ועד `send_done`. כולל את
+          הזנב של השידורים החוזרים, את ה-ACK האחרון ואת המעברים בין
+          המחיצות — כל מה שהקצב יכול להאריך — ובלי ההמתנה למקבלים ולשאלות
+          SMART לפני הבייט הראשון (אדם, לא קצב). ‏None — הגל לא הגיע ל-
+          `send_done` (נכשל / נעצר) או שהמונה לא זז.
+        * ‏`dropped_clients`, ‏`timeouts` (‏#1761) — כמה שורות `Dropping client`
+          ו-`Timeout notAnswered` כתב udp-sender בכל המחיצות (`wave_events`).
+          ‏None בשניהם = לוג שלא נקרא — "לא נבדק", לא "נקי".
         """
         none = {"sent_bytes": None, "loss_blocks": None,
-                "stream_bps": None, "stream_s": None}
+                "stream_bps": None, "stream_s": None, "wall_s": None,
+                "dropped_clients": None, "timeouts": None}
         logs, _ = self._wave_logs(session_id)
         if not logs:
             return none
         totals = wave_totals(logs)
+        events = wave_events(logs)
         with self._lock:
             moved_bytes, moved_s = self._state.moved_bytes, self._state.moved_s
+            began, ended = self._state.first_byte_at, self._state.done_at
+        wall = ended - began if began is not None and ended is not None else None
         return {"sent_bytes": totals[0] if totals is not None else None,
                 "loss_blocks": totals[1] if totals is not None else None,
                 "stream_bps": int(moved_bytes / moved_s) if moved_s > 0 else None,
-                "stream_s": round(moved_s, 1) if moved_s > 0 else None}
+                "stream_s": round(moved_s, 1) if moved_s > 0 else None,
+                "wall_s": round(wall, 1) if wall is not None and wall > 0 else None,
+                "dropped_clients": events[0] if events is not None else None,
+                "timeouts": events[1] if events is not None else None}
 
-    def _wait_sampling(self, process, log_path: Path) -> int:
+    def _wait_sampling(self, process, log_path: Path, asks_of: str | None = None) -> int | None:
         """ממתין ל-udp-sender, ובינתיים דוגם את המונה שלו כל `PACE_POLL`.
 
         נספר רק הזמן שבו המונה **זז**: מהדגימה הראשונה מעל אפס (ההמתנה
         למקבלים לפני הבייט הראשון אינה זרם) ועד הדגימה האחרונה שבה גדל
         (ההמתנה ל-ACK האחרון אחרי הבייט האחרון גם אינה). דגימה אחרונה גם
-        אחרי היציאה — השורה הסופית. מחיצה שזזה בדגימה אחת בלבד — לא תורמת."""
+        אחרי היציאה — השורה הסופית. מחיצה שזזה בדגימה אחת בלבד — לא תורמת.
+
+        ‏`asks_of` (ברזל rc2, 17/10): מזהה הגל — המחיצה הראשונה. שאלת SMART
+        שהגיעה **אחרי** ש-udp-sender עלה (באותה שנייה כמו `send_start`) לא
+        נתפסה בהמתנה שלפניו, ו-`--start-timeout` רץ מתחתיה עד הכשל. כל עוד
+        יש ראיה חיובית שהשידור **לא** התחיל (הלוג נקרא ואין Starting
+        transfer), שאלה פתוחה הורגת את udp-sender שעוד לא שידר בייט ומחזירה
+        None — הקורא חוזר להמתנה ומפעיל אותו מחדש עם שעון מלא."""
         first = last = None
+        next_ask = time.monotonic()
         while True:
+            if asks_of is not None and time.monotonic() >= next_ask:
+                next_ask = time.monotonic() + ASK_HOLD_POLL_S
+                if (transfer_started_in_log(log_path) is False
+                        and self._asks_waiting(asks_of) and process.poll() is None):
+                    log.info("sender: a SMART question arrived before the first byte -- "
+                             "rewinding partition 1 of %s", asks_of)
+                    self._reap(process)
+                    return None
             done = process.poll() is not None
             got = sender_progress(log_path)
             if got is not None and got[0] > 0 and (last is None or got[0] > last[1]):
                 last = (time.monotonic(), got[0])
-                first = first or last
+                if first is None:
+                    first = last
+                    with self._lock:      # ‏#1758: תחילת הזרם של הגל כולו
+                        if self._state.first_byte_at is None:
+                            self._state.first_byte_at = first[0]
             if done:
                 break
             time.sleep(PACE_POLL)
@@ -675,6 +755,7 @@ class SenderEngine:
             # מקבל שמת אינו שולח CMD_DISCONNECT — הוא פשוט מפסיק לענות,
             # וכל שאר החדר ממתין לו. זו התקרה על ההמתנה הזאת (#437).
             "--retries-until-drop", str(self.retries_until_drop),
+            "--rexmit-hello-interval", str(HELLO_INTERVAL_MS),
             "--nokbd",
             "--file", str(path),
         ]
@@ -801,6 +882,58 @@ class SenderEngine:
         return ("הפורטים נבדקו כעת ושניהם פנויים — הכישלון אינו התנגשות"
                 " על פורט, והסיבה אינה ידועה")
 
+    def _asks_waiting(self, session_id: str) -> list[str]:
+        """מי בגל ממתין עכשיו לאדם. קריאה שנכשלה = אין (נרשם), לא "יש" לנצח."""
+        if self.pending_asks is None:
+            return []
+        try:
+            return list(self.pending_asks(session_id))
+        except Exception as exc:      # noqa: BLE001 — חריגה כאן הורגת את התהליכון
+            log.warning("sender: open SMART questions of %s unreadable (%s);"
+                        " sending without waiting", session_id, exc)
+            return []
+
+    @staticmethod
+    def _reap(process) -> None:
+        """udp-sender שעוד לא שידר: TERM, ואם לא מת — KILL, ותמיד wait."""
+        process.terminate()
+        if not _reaped(process, STOP_TERM_WAIT):
+            try:
+                process.kill()
+            except OSError:
+                pass
+            if not _reaped(process, STOP_KILL_WAIT):
+                # לא ממתינים לנצח על תהליך שלא מת: ההפעלה הבאה תיכשל על
+                # הפורט התפוס, בשמה (`_port_verdict`), ולא תיתקע כאן.
+                log.error("sender: udp-sender still alive after SIGKILL (PID %s)",
+                          getattr(process, "pid", None))
+                return
+        process.wait()
+
+    def _hold_for_asks(self, session_id: str) -> bool:
+        """ממתין כל עוד מחשב שיכפול בגל עומד על שאלת SMART (ברזל 17/10).
+
+        רק לפני המחיצה הראשונה: השאלה נשאלת לפני שהמכונה כותבת בייט, ומי
+        שכבר קיבל את המחיצה הראשונה עבר אותה. ההמתנה נגמרת כשאין שאלה
+        פתוחה של מכונה חיה (‏`open_in_wave` משחרר מכונה שנעלמה), או בעצירה
+        — ‏False. קריאה שנכשלה אינה "יש שאלה" לנצח: יומן, ומשדרים כמו לפני.
+        """
+        if self.pending_asks is None:
+            return True
+        held_since = None
+        while not self._stop.is_set():
+            waiting = self._asks_waiting(session_id)
+            if not waiting:
+                if held_since is not None:
+                    self.on_event("send_hold_released",
+                                  f"{session_id} {int(time.monotonic() - held_since)}s")
+                return True
+            if held_since is None:
+                held_since = time.monotonic()
+                self.on_event("send_held_smart", f"{session_id} {' '.join(waiting)}")
+            self._stop.wait(ASK_HOLD_POLL_S)
+        return False
+
     def _receivers(self, session_id: str, joined: int) -> int:
         """‏`--min-receivers` למחיצה שעומדת לצאת: החברים החיים, לא פחות מ-1.
 
@@ -850,25 +983,33 @@ class SenderEngine:
             if path is None:
                 self._fail(f"קובץ מחיצה חסר: {part['file']}")
                 return
-            with self._lock:
-                self._state.index = number
-                self._state.file = part["file"]
-                self._state.state = "sending"
-            cmd = self.command_for(path, self._receivers(session["id"], joined),
-                                   number, bitrate)
-            log_path = partition_log(path)
-            log.info("sending partition %s/%s: %s", number, len(partitions), part["file"])
-            try:
-                process = self.runner(cmd)
-            except OSError as exc:
-                self._fail(f"udp-sender לא רץ: {exc}")
-                return
-            with self._lock:
-                self._process = process
-                self._state.commands.append(cmd)
-            code = self._wait_sampling(process, log_path)
-            with self._lock:
-                self._process = None
+            code = None
+            while code is None:      # ברזל rc2: מחיצה 1 חוזרת להמתנה על שאלה מאוחרת
+                if number == 1 and not self._hold_for_asks(session["id"]):
+                    self.on_event("send_stopped", session["id"])
+                    return
+                with self._lock:
+                    self._state.index = number
+                    self._state.file = part["file"]
+                    self._state.state = "sending"
+                cmd = self.command_for(path, self._receivers(session["id"], joined),
+                                       number, bitrate)
+                log_path = partition_log(path)
+                log.info("sending partition %s/%s: %s", number, len(partitions), part["file"])
+                try:
+                    process = self.runner(cmd)
+                except OSError as exc:
+                    self._fail(f"udp-sender לא רץ: {exc}")
+                    return
+                with self._lock:
+                    self._process = process
+                    self._state.commands.append(cmd)
+                code = self._wait_sampling(process, log_path,
+                                           session["id"] if number == 1 else None)
+                with self._lock:
+                    self._process = None
+                if self._stop.is_set():
+                    break
             if self._stop.is_set():
                 self.on_event("send_stopped", session["id"])
                 return
@@ -899,4 +1040,5 @@ class SenderEngine:
 
         with self._lock:
             self._state.state = "done"
+            self._state.done_at = time.monotonic()
         self.on_event("send_done", session["id"])

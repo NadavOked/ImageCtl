@@ -40,7 +40,7 @@ CONSOLE_TLS_DIRNAME = "console-tls"
 CERT_NAME = "console.crt"
 KEY_NAME = "console.key"
 #: ה-CN של התעודה; מה שהדפדפן מציג ב"הונפק ל".
-COMMON_NAME = "imagectl-console"
+COMMON_NAME = "imagesrv-console"
 GENERATED_MARKER = "generated.sha256"
 
 
@@ -300,3 +300,38 @@ def install_upload(data_dir, cert_pem: bytes, key_pem: bytes) -> dict:
     os.replace(tmp, cert_path)
     (directory / GENERATED_MARKER).unlink(missing_ok=True)
     return info
+
+
+def reissue_self_signed(data_dir, hostname: str) -> dict:
+    """הנפקה מחדש של תעודה **עצמית** (הכפתור "הנפקת תעודה חדשה" בהגדרות).
+
+    ה-SAN נשמר כפי שהיה בתעודה על הדיסק (כתובת הקונסולה והשמות שכבר הוזנו) +
+    ``hostname`` — כך שהכתובת שהמפעיל משתמש בה ממשיכה להיות מכוסה. הזוג הקודם נשמר
+    כ-``.prev`` כמו בהעלאה; התעודה החדשה נטענת רק באתחול השרת. תעודה חתומה (שהועלתה)
+    אינה מוחלפת כאן — ``UploadRefused``, שום קובץ לא השתנה."""
+    directory = Path(data_dir) / CONSOLE_TLS_DIRNAME
+    cert_path, key_path = directory / CERT_NAME, directory / KEY_NAME
+    if not (cert_path.exists() and key_path.exists()):
+        raise UploadRefused("אין תעודה על הדיסק להחליף")
+    old_pem = cert_path.read_bytes()
+    if not _self_signed(old_pem):
+        raise UploadRefused("התעודה הנוכחית חתומה בידי גורם חיצוני — מחליפים אותה ב\"העלאת תעודה\", "
+                            "לא מנפיקים במקומה תעודה עצמית")
+    sans = list(cert_sans(old_pem))
+    if hostname and hostname not in sans:
+        sans.append(hostname)
+    cert_pem, key_pem = generate_self_signed(
+        COMMON_NAME, ip_sans=[h for h in sans if _is_ip(h)],
+        dns_sans=[h for h in sans if not _is_ip(h)])
+    error = _ssl_loads(cert_pem, key_pem, directory)
+    if error:
+        raise UploadRefused(f"השרת לא הצליח לטעון את הזוג ל-TLS: {error}")
+    shutil.copy2(cert_path, cert_path.with_name(CERT_NAME + PREV_SUFFIX))
+    write_credential_0600(key_path.with_name(KEY_NAME + PREV_SUFFIX),
+                          key_path.read_text(encoding="utf-8"))
+    write_credential_0600(key_path, key_pem.decode())
+    tmp = cert_path.with_name(f".{CERT_NAME}.tmp")
+    tmp.write_bytes(cert_pem)
+    os.replace(tmp, cert_path)
+    (directory / GENERATED_MARKER).write_text(fingerprint_sha256(cert_pem) + "\n", encoding="ascii")
+    return cert_details(cert_pem)

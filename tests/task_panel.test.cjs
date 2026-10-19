@@ -128,3 +128,43 @@ test('final mockup: opening the panel marks the body so the dock header moves ab
   const css=fs.readFileSync(path.join(root,'console.css'),'utf8');
   assert.match(css,/body\.tasks-open \.app>\.task-dock\{bottom:var\(--task-h/,'the dock sits above the open rows');
 });
+
+// נדב 17/10: הדוק סגור בכל כניסה; מה שנפתח נזכר לאותו סשן בלבד; התפריט הצדדי נגמר מעל הדוק.
+test('dock: closed on login (activity already running at login does not open it); a user-open is remembered in sessionStorage and showLogin forgets it',()=>{
+  const {run}=setup();
+  run(`globalThis.store={}; globalThis.sessionStorage={getItem:(k)=>k in store?store[k]:null,setItem:(k,v)=>{store[k]=v;},removeItem:(k)=>{delete store[k];}};
+    globalThis.cls=new Set(); globalThis.bodyCls=new Set(); globalThis.toggles=0;
+    const mk=(set)=>({toggle(c){ set.has(c)?set.delete(c):set.add(c); },contains:(c)=>set.has(c),remove(c){set.delete(c);}});
+    globalThis.panel={classList:mk(cls),querySelector:()=>({scrollHeight:100})};
+    document.getElementById=(id)=>id==='taskPanel'?panel:null;
+    document.body={classList:mk(bodyCls),style:{setProperty(){}}};
+    activityRows=()=>({rows:globalThis.rows});`);
+  run('rows=[{}]; homeDockAuto()');
+  assert.equal(run('cls.has("open")'),false,'activity already there at login: stays closed');
+  run('rows=[]; homeDockAuto(); rows=[{}]; homeDockAuto()');
+  assert.equal(run('cls.has("open")'),true,'activity that STARTS after login still opens it (#1300)');
+  assert.equal(run('store["imagectl.dock.open"]'),'1','remembered for this session');
+  run('cls.delete("open"); bodyCls.delete("tasks-open"); restoreTaskDock()');
+  assert.equal(run('cls.has("open")'),true,'a reload in the same session restores it');
+  run('store={}; cls.delete("open"); restoreTaskDock()');
+  assert.equal(run('cls.has("open")'),false,'nothing remembered = closed');
+  run('dockStore(true)'); assert.equal(run('"imagectl.dock.open" in store'),true);
+  run('dockStore(false)'); assert.equal(run('"imagectl.dock.open" in store'),false);
+});
+
+test('sidebar: nav and rail end above the dock (34px closed, + panel height open) so the foot card is never hidden',()=>{
+  const css=fs.readFileSync(path.join(root,'console.css'),'utf8');
+  assert.match(css,/\.sidebar\{--dock-h:34px\}/);
+  assert.match(css,/body\.tasks-open \.sidebar\{--dock-h:calc\(34px \+ var\(--task-h/);
+  assert.match(css,/\.sidebar \.nav-full,\.sidebar \.rail\{bottom:var\(--dock-h\)\}/);
+});
+
+test('Multicast dot: an udp-sender inside an open round is "sending" (green), an orphan is red with the reason in the tooltip',()=>{
+  const {run}=setup();
+  run(`globalThis.el={cls:new Set(),attrs:{},classList:{toggle(c,on){ on?el.cls.add(c):el.cls.delete(c); }},setAttribute(k,v){el.attrs[k]=v;}};
+    document.querySelector=(s)=>s==='[data-svc="Multicast"]'?el:null; document.getElementById=()=>null;`);
+  const paint=(state,detail)=>{ run(`HEALTH=[{id:"udp_sender",state:${JSON.stringify(state)},detail:${JSON.stringify(detail)}}]; el.cls.clear(); paintServiceStatus()`); return {cls:run('[...el.cls].join()'),title:run('el.attrs.title')}; };
+  let r=paint('warn','רץ (PID 7) — יש סבב פתוח'); assert.equal(r.cls,'svc-ok'); assert.match(r.title,/משדר כעת/);
+  r=paint('bad','רץ בלי סבב (PID 7) — יתום אחרי סגירה, יש לעצור אותו'); assert.equal(r.cls,'svc-err'); assert.match(r.title,/Multicast \(משדר udp-sender\): תקלה — רץ בלי סבב/);
+  r=paint('warn','משהו אחר'); assert.equal(r.cls,'svc-warn');
+});

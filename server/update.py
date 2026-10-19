@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, NamedTuple
 
@@ -434,6 +435,35 @@ def get_last_check(conn) -> dict | None:
     return _get_json_setting(conn, LAST_CHECK_KEY)
 
 
+def running_verdict(doc: dict, current: str | None) -> bool | None:
+    """‏#1642: מה ``running`` שב-DB שווה, מול הגרסה שרצה **עכשיו**.
+
+    ‏``None`` = הסטטוס אינו "רץ עם תג"; ‏``True`` = הגרסה הרצה היא התג, כלומר
+    העדכון הסתיים והסטטוס רק לא עודכן (הקונסולה מציגה "הושלם"); ‏``False`` =
+    גרסה אחרת (או שלא נקראה) רצה — העדכון אולי עדיין רץ. תשובה אחת לשני
+    הקוראים: הקונסולה (``status_with_verification``) וההפעלה המתוזמנת."""
+    if doc.get("state") != "running" or not doc.get("tag"):
+        return None
+    return current == doc["tag"]
+
+
+def last_progress(doc: dict) -> datetime | None:
+    """‏#1642: הרגע האחרון שבו ריצת העדכון זזה — ‏``started_at`` וחותמות
+    ‏``stages`` שהסקריפט כותב בכל מעבר שלב. ‏``None`` = אין חותמת, או שאחת
+    מהן אינה זמן עם אזור זמן: "לא ידוע" ולא "ישן" (עיקרון 5)."""
+    stages = doc.get("stages")
+    stamps = []
+    for value in [doc.get("started_at"), *(stages.values() if isinstance(stages, dict) else [])]:
+        try:
+            moment = datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None
+        if moment.tzinfo is None:
+            return None
+        stamps.append(moment)
+    return max(stamps) if stamps else None
+
+
 def status_with_verification(conn, hooks: Hooks, repo_dir: str | Path,
                              vm_warning: Callable[[], str | None] | None = None) -> dict:
     """מצב ההרצה האחרונה + הראיה החיובית: האם הגרסה שרצה בפועל, עכשיו,
@@ -446,12 +476,11 @@ def status_with_verification(conn, hooks: Hooks, repo_dir: str | Path,
     doc = get_status(conn) or {"state": "idle"}
     current = current_version(hooks, repo_dir)
     result = {**doc, "current": current, "now": now_iso()}
-    if doc.get("state") == "running" and doc.get("tag"):
-        if current == doc["tag"]:
-            result["verified"] = True
+    verdict = running_verdict(doc, current)
+    if verdict is not None:
+        result["verified"] = verdict
+        if verdict:
             result["state"] = "done"
-        else:
-            result["verified"] = False
     elif doc.get("state") == "done" and doc.get("tag"):
         result["verified"] = current == doc["tag"]
     # ‏#1372: עדכון שהסתיים ואומת על הגרסה שרצה — אבל המארח של "עדכון ב-VM" אינו
@@ -537,10 +566,6 @@ def create_update_router(ctx, repo_dir: str | Path, server_base: str,
     # בקשות מה-thread pool (לחיצה כפולה) עוברות שתיהן את השומר.
     apply_lock = threading.Lock()
 
-    def _server_name() -> str:
-        import socket
-        return get_setting(ctx.conn, "server_name") or socket.gethostname()
-
     @router.get("/backup")
     def settings_backup(user=Depends(admin_only)):
         """‏#1128: "הורד גיבוי הגדרות" — tar.gz של data_dir עם עותק עקבי של
@@ -587,12 +612,9 @@ def create_update_router(ctx, repo_dir: str | Path, server_base: str,
                f"current={result['current']} latest={result['latest']}", user[0])
         return result
 
-    def _apply_or_revert(body: dict, user, tag: str, *, confirm_name: bool) -> dict:
+    def _apply_or_revert(user, tag: str) -> dict:
         if not enabled(ctx.conn):
             raise HTTPException(404, "עדכון כבוי בהגדרות השרת")
-        typed = body.get("confirm_name", "") if isinstance(body, dict) else ""
-        if confirm_name and typed != _server_name():
-            raise HTTPException(403, "השם שהוקלד אינו תואם את שם השרת")
         if _active_round(ctx):
             raise HTTPException(409, "יש סבב פתוח/רץ — לא ניתן לעדכן עכשיו")
         with apply_lock:
@@ -615,13 +637,16 @@ def create_update_router(ctx, repo_dir: str | Path, server_base: str,
         if not semver_key(tag):
             raise HTTPException(400, f"תג לא תקין: {tag!r}")
         # עדכון הפיך דרך update_previous, ולכן אינו דורש הקלדת שם (#1192).
-        return _apply_or_revert(body, user, tag, confirm_name=False)
+        return _apply_or_revert(user, tag)
 
+    # ‏#1778 (הכרעת #1270): בלי הקלדת שם — חלון אישור עם כפתור אדום בקונסולה.
+    # החזרה הפיכה בדיוק כמו apply: היא עוברת באותו מסלול, ו-update_previous
+    # מקבל את הגרסה שממנה חזרנו. ‏confirm_name שנשלח (קונסולה ישנה) מתעלמים ממנו.
     @router.post("/revert")
-    def revert(body: dict = Body(default={}), user=Depends(admin_only)):
+    def revert(user=Depends(admin_only)):
         previous = get_setting(ctx.conn, PREVIOUS_KEY)
         if not previous:
             raise HTTPException(404, "אין גרסה קודמת לחזור אליה")
-        return _apply_or_revert(body, user, previous, confirm_name=True)
+        return _apply_or_revert(user, previous)
 
     return router

@@ -11,7 +11,7 @@
 # במקום זה, שני דברים:
 #
 # 1. **בכשל** (‏fail_written_target) הסוכן אוסף את שורות ה-ATA של הקרנל על
-#    הפורט של היעד — ‏`dmesg`, מסונן ל-`ata<N>` / `I/O error, dev <dev>`,
+#    הפורט של היעד — ‏`dmesg`, מסונן ל-`ata<N>` / `<סוג> error, dev <dev>`,
 #    מאז ‏target_init, עד 40 שורות — ושולח אותן **כמות שהן** בדיווח
 #    ההתקדמות (‏progress.sh → failure_json), עם הסידורי והחריץ. **הסוכן
 #    אינו מסווג**: כבל או דיסק נקבע בשרת (‏server/ata_cause.py), במקום אחד.
@@ -33,6 +33,25 @@ ata_port_of() {
     esac
 }
 
+target_ident_keep() {
+    # $1 = disk. ‏serial|port|ata_port כשהכונן עוד ב-sysfs (target_init, #1602).
+    # מגירה שנשלפה יוצאת מ-sysfs, ואחריה disk_port ו-ata_port_of ריקים: על
+    # ברזל (17/10) הגואי הראה `drawer=0|sdb`, והראיה הגיעה לשרת בלי זהות.
+    printf '%s|%s|%s\n' "$(disk_serial "$1")" "$(disk_port "$1")" "$(ata_port_of "$1")" \
+        > "$RUN_DIR/targets/$1/seen"
+}
+
+target_ident() {
+    # $1 = disk. ‏serial|port|ata_port: מה שהכונן אומר עכשיו, ושדה שריק עכשיו
+    # (הכונן כבר לא ב-sysfs) -- מה שנשמר ב-target_ident_keep (#1602).
+    _ti_s=; _ti_p=; _ti_a=
+    [ -f "$RUN_DIR/targets/$1/seen" ] && IFS='|' read -r _ti_s _ti_p _ti_a < "$RUN_DIR/targets/$1/seen"
+    _ti_x=$(disk_serial "$1"); [ -z "$_ti_x" ] || _ti_s=$_ti_x
+    _ti_x=$(disk_port "$1"); [ -z "$_ti_x" ] || _ti_p=$_ti_x
+    _ti_x=$(ata_port_of "$1"); [ -z "$_ti_x" ] || _ti_a=$_ti_x
+    printf '%s|%s|%s\n' "$_ti_s" "$_ti_p" "$_ti_a"
+}
+
 ata_log_json() {
     # $1 = disk. מערך JSON של שורות ata_log, מחרוזת לכל שורה.
     _aj="["; _aj_sep=""
@@ -52,16 +71,16 @@ ata_capture() {
     # out / SATA link up / configured for UDMA / EH complete). `tail` היה
     # שומר את הרעש ומוחק את ה-SError — והשרת סיווג כבל כ"דיסק".
     _ac_t="$RUN_DIR/targets/$1"
-    _ac_ata=$(ata_port_of "$1")
+    _ac_id=$(target_ident "$1"); _ac_ata=${_ac_id##*|}   # #1602: גם אחרי שהכונן יצא מ-sysfs
     _ac_since=$(cat "$_ac_t/since" 2>/dev/null)
-    printf '%s|%s|%s\n' "$(disk_serial "$1")" "$(disk_port "$1")" "$_ac_ata" > "$_ac_t/ident"
+    printf '%s\n' "$_ac_id" > "$_ac_t/ident"
     dmesg 2>/dev/null | awk -v dev="$1" -v ata="$_ac_ata" -v since="${_ac_since:-0}" '
         {
             ts = -1
             if (match($0, /^\[ *[0-9]+\.[0-9]+\]/)) ts = substr($0, RSTART + 1, RLENGTH - 2) + 0
             if (ts >= 0 && ts < since + 0) next
             if ($0 ~ /ACPI cmd .* filtered out|configured for UDMA|SATA link up|EH complete/) next
-            io = index($0, "I/O error, dev " dev ",") > 0
+            io = index($0, " error, dev " dev ",") > 0   # I/O, device offline, critical medium (#1602)
             if (!io && (ata == "" || $0 !~ ("ata" ata "(\\.[0-9]+)?:"))) next
             kept[++n] = $0
             if (!head && (io || $0 ~ /exception Emask/)) head = n
@@ -87,8 +106,29 @@ failure_json() {
         "$_fj_sj" "$_fj_p" "$_fj_a" "$(cat "$_fj_t/ata_log.json")"
 }
 
+restore_blame() {
+    # $1 = the station's target dir, $2 = the partition's sha256 (#1601). Sets
+    # RESTORE_BLAME to `stream` unless there is positive evidence against the
+    # disk -- the station's twin of drawers.sh's verdict (#1598): fanout lost its
+    # reader under a flowing stream (partclone died: `write error`; it hung:
+    # `stalled`), or the whole stream arrived (sha matches) and the write still
+    # failed. A stream that timed out, ended early or never began is not the
+    # disk's, and an ata_log on it is a disk_failure on a healthy disk.
+    RESTORE_BLAME=""
+    _rb=$(awk '{print $1}' "$1/sha.out" 2>/dev/null)
+    is_sha256 "$_rb" && [ "$_rb" = "$2" ] && return 0
+    # grep: 0 = found, 1 = not found (an answer), 2 = the check broke.
+    grep -qE ' failed (write error|stalled)' "$1/fanout.out" 2>/dev/null
+    case $? in
+        0) ;;
+        1) RESTORE_BLAME=stream ;;
+        *) log "WARNING: fanout's report is unreadable -- the disk keeps its evidence" ;;
+    esac
+}
+
 fail_written_target() {
-    # $1 = disk, $2 = reason. ‏target_set failed, והראיה נאספת **פעם אחת** —
+    # $1 = disk, $2 = reason, $3 = `stream` כשהזרם אשם ולא הכונן (#1598).
+    # ‏target_set failed, והראיה נאספת **פעם אחת** —
     # ליעד שעובר עכשיו ל-failed. יעד שכבר failed: הסיבה נדרסת (בכוונה, #73),
     # הראיה שכבר נאספה נשארת. הקוראים: restore.sh, drawers.sh, verdict.sh —
     # כל כשל בנתיב הכתיבה, כולל טבלה שלא נכתבה (הדיסק נעלם מהקו לפניה).
@@ -97,22 +137,30 @@ fail_written_target() {
     target_set "$1" "failed" "$2"
     # ‏#1429: בלי write_started לא נוסתה כתיבה — כשל תוכנה (תוכנית שנדחתה),
     # לא של הכונן. בלי ראיה השרת אינו רושם disk_failure נגד כונן תקין.
-    [ "$_was" = "failed" ] || [ ! -f "$RUN_DIR/targets/$1/write_started" ] || ata_capture "$1"
+    # ‏#1598: ואחרי כשל של הזרם (פג, נקטע, sha) -- בלי ata_log גם השרת אינו רושם.
+    [ "${3:-}" = stream ] || [ "$_was" = "failed" ] || [ ! -f "$RUN_DIR/targets/$1/write_started" ] || ata_capture "$1"
     # #1388: once the tmpfs failure record and ATA evidence exist, make a
     # partly restored disk visibly non-bootable too.  The device name is the
     # failed target passed by its own restore path; never enumerate drawers.
-    _written_serial=$(cat "$RUN_DIR/targets/$1/write_started" 2>/dev/null)
-    _current_serial=$(disk_serial "$1")
-    if [ "$_was" != "failed" ] && [ ! -f "$RUN_DIR/targets/$1/evidence_only" ] \
-            && [ -n "$_written_serial" ] && [ "$_current_serial" = "$_written_serial" ]; then
-        if sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1; then
-            blockdev --rereadpt "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || :
-            log "$1: wiped primary and backup GPT after restore failure"
-        else
-            log "WARNING: $1: failed to wipe GPT after restore failure"
-        fi
+    if [ "$_was" != "failed" ] && [ ! -f "$RUN_DIR/targets/$1/evidence_only" ]; then
+        wipe_written_gpt "$1" "restore failure" || :
     fi
     return 0
+}
+
+wipe_written_gpt() {
+    # $1 = disk, $2 = why (the log line). #1388, and #1386's cancel: the primary
+    # and backup GPT of the disk THIS run wrote -- write_started holds its serial;
+    # another disk, or one with no serial (#1427), is not touched. 0 = wiped.
+    _written_serial=$(cat "$RUN_DIR/targets/$1/write_started" 2>/dev/null)
+    [ -n "$_written_serial" ] && [ "$(disk_serial "$1")" = "$_written_serial" ] || return 1
+    if sgdisk --zap-all "$DEVROOT/$1" >> "$LOG_FILE" 2>&1; then
+        blockdev --rereadpt "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || :
+        log "$1: wiped primary and backup GPT after $2"
+        return 0
+    fi
+    log "WARNING: $1: failed to wipe GPT after $2"
+    return 1
 }
 
 disk_failures_refresh() {
@@ -136,5 +184,15 @@ disk_failure_cause() {
     _dc_s=$(disk_serial "$1"); _dc_p=$(disk_port "$1")
     awk -F'|' -v s="$_dc_s" -v p="$_dc_p" \
         'NF >= 3 && ((s != "" && $1 == s) || (p != "" && $2 == p)) { print $3; f = 1; exit }
+         END { exit !f }' "$RUN_DIR/disk_failures" 2>/dev/null
+}
+
+disk_failure_readonly() {
+    # $1 = disk. ‏#1742: אמת כשיש רשומה פתוחה עם cause=readonly **על הדיסק הזה** --
+    # לפי סידורי בלבד: קריאה-בלבד היא של הדיסק, לא של החריץ, ודיסק חדש באותו
+    # חריץ אינו הוא. בלי סידורי אין ראיה -- שקר (‏smart.sh קורא גם את ‏/sys).
+    [ -f "$RUN_DIR/disk_failures" ] || return 1
+    _dro_s=$(disk_serial "$1"); [ -n "$_dro_s" ] || return 1
+    awk -F'|' -v s="$_dro_s" 'NF >= 3 && $1 == s && $3 == "readonly" { f = 1; exit }
          END { exit !f }' "$RUN_DIR/disk_failures" 2>/dev/null
 }

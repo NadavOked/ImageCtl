@@ -9,12 +9,16 @@ static void hostname(App *a,cairo_t *cr,InstallLayout l){InstallState *s=&a->ins
     install_field_draw(a,cr,(Rect){x,y,w,56},"שם השרת (hostname)",s->hostname,0,HIT_INSTALL_HOSTNAME,1);y+=65;
     install_text_r(cr,t,"אותיות באנגלית, ספרות ומקפים בלבד; עד 63 תווים; לא מתחיל ולא מסתיים במקף.",12,400,x+w,y,w,t->muted);y+=36;
     if(s->field_error[9][0]){install_text_r(cr,t,s->field_error[9],12,600,x+w,y,w,t->danger_fg);y+=30;}
+    /* #1447 (Nadav 17/10): the server's timezone -- the same field as the name above */
+    install_field_draw(a,cr,(Rect){x,y,w,56},"אזור זמן",s->timezone,0,HIT_INSTALL_TIMEZONE,1);y+=65;
+    if(s->field_error[14][0]){install_text_r(cr,t,s->field_error[14],12,600,x+w,y,w,t->danger_fg);y+=30;}
+    else{install_text_r(cr,t,"שם אזור של tzdata באנגלית, למשל Asia/Jerusalem. השעה במסך השרת ובמסכי התחנות; אפשר לשנות בקונסולה.",12,400,x+w,y,w,t->muted);y+=36;}
     Rect card={x,y,w,190};install_card(cr,t,card);install_text_r(cr,t,"איפה השם יופיע",15,600,x+w-16,y+14,w-32,t->ink);y+=48;
     char hostline[128];snprintf(hostline,sizeof hostline,"Hostname: %s",s->hostname);kv(a,cr,(Rect){x+1,y,w-2,34},"מסך השרת (DCUI)",hostline,1);y+=34;
     kv(a,cr,(Rect){x+1,y,w-2,34},"הקונסולה","כותרת העץ ושורת הסטטוס",0);y+=34;
-    kv(a,cr,(Rect){x+1,y,w-2,34},"אצל הראשי","סניפים — אחרי הצימוד",0);y+=34;
+    kv(a,cr,(Rect){x+1,y,w-2,34},"אצל הראשי","שרתי משנה — אחרי הצימוד",0);y+=34;
     kv(a,cr,(Rect){x+1,y,w-2,34},"תעודת TLS","נכנס ל-SAN יחד עם הכתובת",0);
-    install_footer(a,cr,l,"הבא",HIT_INSTALL_NEXT,1,s->hostname[0]!=0);
+    install_footer(a,cr,l,"הבא",HIT_INSTALL_NEXT,1,s->hostname[0]!=0&&s->timezone[0]!=0);
 }
 
 static void rule(App *a,cairo_t *cr,double right,double y,const char *label,int ok){const Theme *t=a->theme;Rgb c=ok?t->success_ink:t->muted;cairo_arc(cr,right-7,y+8,7,0,6.283);draw_set_a(cr,c,ok?1:.35);cairo_fill(cr);Text mark=text_make(cr,FONT_SANS,11,600,ok?"✓":"×",0,DIR_RTL);text_draw(cr,&mark,right-7-mark.w/2,y+8-mark.h/2,t->on_ink);text_free(&mark);install_text_r(cr,t,label,12,500,right-22,y,180,c);}

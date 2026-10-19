@@ -123,7 +123,7 @@ test('#1485 cloners page = console-full.html P.cloners: header (counters, add, p
   const html=run('machines(0)'); balanced(html);
   assert.match(html,/obj-name">מחשבי שיכפול</);
   assert.match(html,/<span>מחשבים<\/a>|onclick="openMachinesPage\(\)">מחשבים<\/a><span>\/<\/span><span>מחשבי שיכפול<\/span><\/div>/,'crumbs: … › מחשבים › מחשבי שיכפול');
-  assert.match(html,/obj-sub" title="3 מחשבים · 2 מחוברים · דיסק אדום אחד">/);
+  assert.match(html,/obj-sub" title="3 מחשבים · 2 מחוברים · דיסק אחד נכשל בשיכפול הקודם">/);   // #1580: orange
   assert.doesNotMatch(html,/role="tab"/,'the mockup page has no tabs');
   assert.doesNotMatch(html,/class="kpi/,'no KPI strip in the mockup');
   assert.match(html,/<button class="btn" onclick="openAddMachine\(\{group:'grp_CLONERS'\}\)">\+ מחשב שיכפול<\/button><button class="btn danger" onclick="poweroffRoom\('grp_CLONERS'\)">כיבוי כולם…<\/button>/);
@@ -146,8 +146,11 @@ test('#1485 cloner cards (.mach): name + status pill, MAC, one row per slot "ד�
   assert.equal((c1.match(/<div class="dsk vacant" data-slot="\d" title="דיסק \d · SATA \d · ריק"><span>דיסק \d<\/span><div class="bar"><i style="--w:0%"><\/i><\/div><b>ריק<\/b><\/div>/g)||[]).length,2,'drawer_count=2, nothing reported in them → two empty rows');
   assert.match(dsk(c2,1),/<div class="dsk" data-slot="1" title="SATA 0 · 870 EVO · S5Y30 · SMART תקין"><span>דיסק 1<\/span><div class="bar ok"><i style="--w:100%"><\/i><\/div><b>תקין<\/b><\/div>/,'SMART ok = green');
   assert.match(dsk(c2,2),/<span>דיסק 2<\/span><div class="bar idle"><i style="--w:100%"><\/i><\/div><b>לא נבדק<\/b>/,'unchecked is grey, never green (principle 5)');
-  assert.match(dsk(c2,3),/title="SATA 2 · 870 EVO · S5Y2NX0R12345 · אדום 15\/09\/2026 · כבל\/חריץ SATA 2"><span>דיסק 3<\/span><div class="bar err"><i style="--w:100%"><\/i><\/div><b>אדום<\/b>/);
-  assert.match(c2,/^<div class="mach err"[^>]*><div class="mt"><span>מחשב 2<\/span><span class="pill ok">מחובר<\/span><span class="pill err">דיסק אדום<\/span>/,'a red disk paints the card red (mockup CLONE-04)');
+  assert.match(dsk(c2,3),/title="SATA 2 · 870 EVO · S5Y2NX0R12345 · נכשל בשיכפול הקודם 15\/09\/2026 · כבל\/חריץ SATA 2"><span>דיסק 3<\/span><div class="bar warn"><i style="--w:100%"><\/i><\/div><b>אזהרה<\/b>/,'#1580: failed last time = orange');
+  run(`MACHINES.find(m=>m.mac==='${C2}').disks.find(d=>d.serial==='S5Y2NX0R12345').smart='fail'`);   // #1580: SMART fail = red
+  const c2r=mach(between(run('machines(0)'),'<div class="rgrid">','מחשבים שלא דיווחו'),C2);
+  assert.match(dsk(c2r,3),/<div class="bar err"><i style="--w:100%"><\/i><\/div><b>אדום<\/b>/,'SMART fail = red');
+  assert.match(c2r,/^<div class="mach err"[^>]*><div class="mt"><span>מחשב 2<\/span><span class="pill ok">מחובר<\/span><span class="pill err">דיסק אדום<\/span>/,'a red disk paints the card red (mockup CLONE-04)');
   assert.match(c2,/<div class="acts"><button class="btn sm" type="button" onclick="event.stopPropagation\(\);openMachineDetail\('78%3Aac%3Ac0%3A9b%3A11%3Ac2','disks'\)">חריצים<\/button><\/div>/);
   assert.match(c3,/^<div class="mach off"/,'not connected → dashed'); assert.match(c3,/מעולם לא דיווח על דיסקים/);
   assert.doesNotMatch(grid,/editDrawerCount|monitorMachine\(|clearDiskFailure/,'the count dialog is gone; clearing a red disk is in the panel');
@@ -178,7 +181,7 @@ test('#1485 mapping: drawer_slots picks which connection is "דיסק N"; an unm
   run("openClass('grp_CLONERS')"); const html=run('machines(0)'); balanced(html);
   const c2=mach(html,C2);
   assert.deepEqual([...c2.matchAll(/data-slot="(\d*)"/g)].map(m=>m[1]),['1','2',''],'two mapped drawers, then the unmapped drive');
-  assert.match(dsk(c2,1),/title="SATA 2 · 870 EVO · S5Y2NX0R12345[^"]*"><span>דיסק 1<\/span>[^]*<b>אדום<\/b>/,'SATA 2 is disk 1 on this machine — and its red memory follows the port');
+  assert.match(dsk(c2,1),/title="SATA 2 · 870 EVO · S5Y2NX0R12345[^"]*נכשל בשיכפול הקודם[^"]*"><span>דיסק 1<\/span>[^]*<b>אזהרה<\/b>/,'SATA 2 is disk 1 on this machine — and its red memory follows the port');
   assert.match(dsk(c2,2),/title="SATA 0 · 870 EVO · S5Y30[^"]*"><span>דיסק 2<\/span>/);
   assert.match(c2,/<div class="dsk unmapped" data-slot="" title="SATA 1 — לא ממופה לאף דיסק · 870 EVO · S5Y31[^"]*"><span>SATA 1<\/span><div class="bar"><i style="--w:0%"><\/i><\/div><b>לא ממופה<\/b><\/div>/);
   const c1=mach(html,C1);
@@ -213,7 +216,7 @@ test('#1485 cloners: unread lists say so, empty group, and the deploy role', () 
   const {run}=setup();
   run("openClass('grp_CLONERS'); DISK_FAILURES=null; MONITOR_ROWS=null; NET=null");
   let html=run('machines(0)');
-  assert.match(html,/3 מחשבים · מחוברים: לא נקרא · אדומים: לא נקרא/);
+  assert.match(html,/3 מחשבים · מחוברים: לא נקרא · כשלים קודמים: לא נקרא/);
   assert.match(html,/רשימת הרשת לא נקראה — אי אפשר לדעת מי לא דיווח/,'unread ≠ "everyone reported"');
   run("NET=[]; MACHINES=MACHINES.filter(m=>m.group_id!=='grp_CLONERS'); DISK_FAILURES=[]"); html=run('machines(0)'); balanced(html);
   assert.match(html,/0 מחשבים/); assert.match(html,/אין מחשבי שיכפול רשומים — הוסיפו את הראשון/);
@@ -384,7 +387,8 @@ test('#980 §6: "before capture" (build card) — used from the last finished ca
   let c=cell();
   assert.match(c,/בשימוש <bdi dir="ltr">79.0 GB<\/bdi> <span class="cap">\(מהקליטה האחרונה, 10\/09\/2026\)<\/span>/); assert.match(c,/<span class="st ok">NTFS נקי<\/span>/);
   set({probe:{ntfs:[{node:'/dev/sda1',state:'clean'},{node:'/dev/sda3',state:'hibernated'}]}}); c=cell();
-  assert.match(c,/<span class="st warn">NTFS מהובר — כבו את Windows כיבוי מלא<\/span>/,'one hibernated partition is enough to refuse a capture');
+  assert.match(c,/<span class="st warn">NTFS נעול ב-Fast Startup — כיבוי רגיל לא משחרר; powercfg \/h off כמנהל<\/span>/,'one hibernated partition is enough to refuse a capture');
+  assert.doesNotMatch(c,/כיבוי מלא/,'#1504: a full shutdown does not release a Fast Startup disk (metal 16/10) — the fix is powercfg /h off');
   set({probe:{ntfs:[{node:'/dev/sda3',state:'dirty'}]}}); assert.match(cell(),/<span class="st warn">NTFS dirty — chkdsk ב-Windows<\/span>/);
   set({probe:{ntfs:[{node:'/dev/sda3',error:'ntfs-3g.probe rc 21'}]}}); assert.match(cell(),/<span class="st warn">NTFS: לא הצלחנו לבדוק \/dev\/sda3<\/span>/);
   set({probe:{ntfs:[]}}); assert.match(cell(),/<span class="muted">אין מחיצת NTFS<\/span>/);
@@ -410,14 +414,30 @@ test('#1485 panel "דיסקים" tab = the mockup table (דיסק | חיבור |
   const t=tab(html);
   assert.match(t,/<div class="sec" data-cnt="3">דיסקים<\/div><table class="n-tbl disk-map"><thead><tr><th>דיסק<\/th><th>חיבור<\/th><th>גודל<\/th><th>SMART<\/th>/);
   assert.equal((t.match(/<select class="n-in conn-sel"/g)||[]).length,3,'one selector per disk');
-  assert.match(t,/<tr class="" data-slot="1"><td><b>דיסק 1<\/b><\/td><td><select class="n-in conn-sel" aria-label="החיבור של דיסק 1" onchange="slotEditSet\('78%3Aac%3Ac0%3A9b%3A11%3Ac2',0,this.value\)"><option value="sata:1" selected>SATA 0<\/option><option value="sata:2">SATA 1 · דיסק 2<\/option><option value="sata:3">SATA 2 · דיסק 3<\/option><option value="sata:4">SATA 3<\/option>/,'SATA 0..7, the taken ones say whose they are');
+  assert.match(t,/<tr class="" data-slot="1"><td><b>דיסק 1<\/b><\/td><td><select class="n-in conn-sel" aria-label="החיבור של דיסק 1" onchange="slotEditSet\('78%3Aac%3Ac0%3A9b%3A11%3Ac2',0,this.value\)"><option value="sata:1" title="SATA 0" selected>דיסק 1<\/option><option value="sata:2" title="SATA 1">דיסק 2 · תפוס<\/option><option value="sata:3" title="SATA 2">דיסק 3 · תפוס<\/option><option value="sata:4" title="SATA 3">דיסק 4<\/option>/,'#1375: connections 1..8 by drawer number (SATA k-1 in the title), the taken ones say so (choosing one swaps)');
   assert.match(t,/<td><span class="mono"><bdi dir="ltr">256GB<\/bdi><\/span> <span class="cap">870<\/span><\/td><td><span class="n-chip">תקין<\/span><\/td>/);
   assert.match(t,/data-slot="2">[^]*?<span class="n-chip n">לא נבדק<\/span>/,'unchecked is grey');
-  assert.match(t,/data-slot="3">[^]*?<span class="n-chip d">נכשל<\/span>[^]*?clearDiskFailure\(7\)">נקה<\/a>/,'the red disk is cleared here now');
+  assert.match(t,/data-slot="3">[^]*?<span class="n-chip w">נכשל בשיכפול הקודם<\/span>[^]*?clearDiskFailure\(7\)">נקה<\/a>/,'the red disk is cleared here now');
   assert.match(t,/<tr class="opt" data-slot=""><td><b>כונן CD\/DVD<\/b><\/td><td><span class="mono">SATA 4<\/span><\/td><td><span class="muted">HL-DT-ST DVDRAM<\/span><\/td><td><span class="muted">—<\/span><\/td>/,'the CD drive is a row of its own, not a slot, never "empty"');
   assert.match(t,/<div class="map-tools"><button class="btn sm" type="button" onclick="slotEditAdd\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">\+ הוסף חריץ<\/button><button class="btn sm" type="button" onclick="slotEditRemove\('78%3Aac%3Ac0%3A9b%3A11%3Ac2'\)">הסר חריץ<\/button><\/div>/);
   assert.doesNotMatch(t,/שמירת החיבורים|חזרה לברירת המחדל/,'nothing to save, nothing custom');
   assert.doesNotMatch(html,/editDrawerCount|מספר חריצי SATA/,'the separate count dialog is gone');
+});
+
+test('#1375 disks tab: the connection is "דיסק N" by drawer number, never "SATA n-1"; the size is the marketed one (500GB, not 466GiB); unmapped and CD/DVD keep their SATA port', () => {
+  const {run}=drawerSetup();
+  run(`MACHINES.find(m=>m.mac==='${C2}').disks[0].size_bytes=500107862016`);   // a "500GB" drive = 465.8 GiB
+  run(`Object.assign(MACHINES.find(m=>m.mac==='${C2}'),{optical:[{dev:'sr0',port:5,model:'HL-DT-ST DVDRAM'}]})`);
+  run(`openMachineDetail('${encodeURIComponent(C2)}')`); const t=tab(run('drawerHtml'));
+  const shown=t.replace(/title="[^"]*"/g,'');   // what the eye reads: no tooltips
+  assert.match(t,/data-slot="1"><td><b>דיסק 1<\/b><\/td><td><select[^>]*><option value="sata:1" title="SATA 0" selected>דיסק 1<\/option>/,'disk 1 sits on connection "דיסק 1"');
+  assert.match(t,/<span class="mono"><bdi dir="ltr">500GB<\/bdi><\/span>/,'marketed size');
+  assert.doesNotMatch(t,/GiB|465|466/,'never the binary size');
+  assert.doesNotMatch(shown.replace(/<tr class="opt"[^]*?<\/tr>/,'').replace(/<p class="map-help">[^]*?<\/p>/,''),/SATA \d/,'no "SATA n" on a mapped row');
+  assert.match(t,/<tr class="opt" data-slot=""><td><b>כונן CD\/DVD<\/b><\/td><td><span class="mono">SATA 4<\/span>/,'the CD drive is not a drawer: its port, not a number');
+  run(`Object.assign(MACHINES.find(m=>m.mac==='${C2}'),{drawer_slots:['sata:3'],drawer_slots_custom:true})`);
+  run(`openMachineDetail('${encodeURIComponent(C2)}')`);
+  assert.match(tab(run('drawerHtml')),/<tr class="unmapped" data-slot=""><td><b>SATA 0 \(לא ממופה\)<\/b><\/td><td><span class="mono">SATA 0<\/span>/,'an unmapped drive gets no guessed drawer number (#1485)');
 });
 
 test('#1485 mapping editor: choosing a taken connection swaps the two (never a duplicate); add/remove change the count; save PUTs drawer_slots; reset PUTs null; a refused save shows the server message', async () => {
@@ -429,7 +449,7 @@ test('#1485 mapping editor: choosing a taken connection swaps the two (never a d
   let t=tab(run('drawerHtml'));
   assert.match(t,/<div class="map-dirty">3 חריצים · השינוי עוד לא נשמר<\/div>/);
   assert.match(t,/slotEditCancel\('[^']+'\)">ביטול<\/button><button class="btn sm primary" type="button" onclick="slotEditSave\('[^']+'\)">שמירת החיבורים<\/button>/);
-  assert.match(t,/data-slot="1"><td><b>דיסק 1<\/b>[^]*?<option value="sata:3" selected>SATA 2<\/option>[^]*?S5Y2NX0R12345|data-slot="1"><td><b>דיסק 1<\/b>[^]*?<span class="n-chip d">נכשל/,'the red disk on SATA 2 is now disk 1');
+  assert.match(t,/data-slot="1"><td><b>דיסק 1<\/b>[^]*?<option value="sata:3" title="SATA 2" selected>דיסק 3<\/option>[^]*?S5Y2NX0R12345|data-slot="1"><td><b>דיסק 1<\/b>[^]*?<span class="n-chip w">נכשל בשיכפול הקודם/,'the red disk on SATA 2 is now disk 1');
   run(`slotEditAdd('${enc}')`); assert.deepEqual(JSON.parse(run('JSON.stringify(SLOT_EDIT.slots)')),['sata:3','sata:2','sata:1','sata:4'],'add = next free SATA port');
   run(`slotEditRemove('${enc}')`); run(`slotEditRemove('${enc}')`); run(`slotEditRemove('${enc}')`);
   assert.deepEqual(JSON.parse(run('JSON.stringify(SLOT_EDIT.slots)')),['sata:3']);

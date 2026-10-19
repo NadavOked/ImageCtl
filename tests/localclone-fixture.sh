@@ -4,6 +4,7 @@
 #
 #   localclone-fixture.sh setup <dir>      source + targets; "<name> <dev>" in <dir>/devs
 #   localclone-fixture.sh setup-tail <dir> <fill MiB>  #1202: a full C:, a 2M-smaller target
+#   localclone-fixture.sh setup-esp <dir>  a disk with one FAT32 ESP (direct send, #1574)
 #   localclone-fixture.sh files <dev> <dir> [idx:fs ...]  sha256 of every file on <dev>, by partition
 #   localclone-fixture.sh teardown <dir>   loops detached, mounts released
 #
@@ -79,6 +80,18 @@ setup-tail)
         && head -c $((fill * 1048576)) /dev/urandom > "$dir/m/data/fill.bin" \
         && printf 'tail shift\n' > "$dir/m/data/hello.txt" && sync && umount "$dir/m" || exit 1
     mkimg near 398M "$dir" > /dev/null || exit 1
+    ;;
+setup-esp)
+    # direct send (#1574): one GPT disk, one FAT32 ESP with files and a boot
+    # loader at a BOOTCA_PATHS path -- so boot_ca really mounts it and says so.
+    mkdir -p "$dir" && : > "$dir/devs" || exit 1
+    src=$(mkimg src 96M "$dir") || exit 1
+    sgdisk -n 1:2048:+64M -t 1:ef00 -c 1:"EFI system partition" "$src" > /dev/null || exit 1
+    blockdev --rereadpt "$src"; udevadm settle 2>/dev/null; sleep 1
+    mkfs.vfat -F 32 -s 1 -n EFI "${src}p1" > /dev/null || exit 1
+    put "${src}p1" vfat esp || exit 1
+    mkdir -p "$dir/m"; mount -t vfat "${src}p1" "$dir/m" && mkdir -p "$dir/m/EFI/BOOT" \
+        && head -c 65536 /dev/urandom > "$dir/m/EFI/BOOT/bootx64.efi" && sync && umount "$dir/m" || exit 1
     ;;
 files)
     # $2 = disk, $3 = dir, $4 = the file partitions (idx:fs ..., the default

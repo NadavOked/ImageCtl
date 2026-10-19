@@ -507,6 +507,28 @@ static double hero(G *g, const DcuiFrame *f, double x, double y, double w, int d
     return h;
 }
 
+/* #1363: a tile is never cut through a row. Its rows are measured first; when
+ * they do not all fit the height it was given (1280x768 with problem cards in
+ * the hero), the rows that fit are drawn whole and the last line says how many
+ * are not shown and names them with their state -- red when one of them is a
+ * failure, orange when a warning (principle 5: "not shown" is not "fine").
+ * TILE_PAD_B keeps the last row off the border. */
+#define TILE_PAD_B 8
+
+static double tile_head(G *g, const DcuiTile *tl, Text *h2) {
+    *h2 = rtl(g, 13, 600, tl->title, 0);
+    return fmax(h2->h, tl->pill[0] ? 24 : 0);
+}
+
+static double tile_need(G *g, const DcuiTile *tl, double w) {
+    Text h2; double y = 1 + 14 + tile_head(g, tl, &h2) + 4;
+    text_free(&h2);
+    const double px = 18;
+    RowBox b = { 0, w - 2 - 2 * px, g->sm ? 118 : 150, px };
+    for (int i = 0; i < tl->nrows; i++) y += row_draw(g, &tl->rows[i], b, 0, i == 0, 0);
+    return y + TILE_PAD_B + 1;
+}
+
 static void tile(G *g, const DcuiTile *tl, Rect r) {
     const Theme *t = g->t;
     draw_fill_rrect(g->cr, r, 8, t->hair);
@@ -515,14 +537,45 @@ static void tile(G *g, const DcuiTile *tl, Rect r) {
     draw_rrect_path(g->cr, (Rect){ r.x + 1, r.y + 1, r.w - 2, r.h - 2 }, 7); cairo_clip(g->cr);
     const double px = 18;
     double x = r.x + 1 + px, w = r.w - 2 - 2 * px, y = r.y + 1 + 14;
-    Text h2 = rtl(g, 13, 600, tl->title, 0);
-    double hh = fmax(h2.h, tl->pill[0] ? 24 : 0);
+    Text h2;
+    double hh = tile_head(g, tl, &h2);
     put_r(g, &h2, x + w, y + (hh - h2.h) / 2, t->muted);
     if (tl->pill[0]) pill(g, x, y + hh / 2, tl->pill_kind, tl->pill);
     text_free(&h2);
     y += hh + 4;
     RowBox b = { x, w, g->sm ? 118 : 150, px };
-    for (int i = 0; i < tl->nrows; i++) y += row_draw(g, &tl->rows[i], b, y, i == 0, 1);
+    const double bottom = r.y + r.h - 1 - TILE_PAD_B;
+    double rh[DCUI_MAX_ROWS], sum = 0;
+    for (int i = 0; i < tl->nrows; i++) sum += rh[i] = row_draw(g, &tl->rows[i], b, 0, i == 0, 0);
+    int shown = tl->nrows;
+    Text more = { 0 };
+    if (y + sum > bottom) {                                     /* not all fit: room for the line */
+        char names[512] = "";
+        for (int pass = 0; pass < 2 && shown > 0; pass++) {     /* the line can grow when it wraps */
+            double used = 0;
+            shown = 0;
+            while (shown < tl->nrows && y + used + rh[shown] + (more.layout ? more.h + 8 : 24) <= bottom)
+                used += rh[shown++];
+            size_t n = 0; names[0] = 0;
+            for (int i = shown; i < tl->nrows && n < sizeof names - 1; i++)
+                n += snprintf(names + n, sizeof names - n, "%s%s%s%s", i > shown ? " · " : "",
+                              tl->rows[i].label, tl->rows[i].pill[0] ? " " : "", tl->rows[i].pill);
+            char line[640];
+            snprintf(line, sizeof line, "לא נכנסו למסך (%d): %s", tl->nrows - shown, names);
+            text_free(&more);
+            more = rtl(g, 12.5, 600, line, w);
+        }
+    }
+    for (int i = 0; i < shown; i++) y += row_draw(g, &tl->rows[i], b, y, i == 0, 1);
+    if (more.layout) {
+        int bad = 0, warn = 0;
+        for (int i = shown; i < tl->nrows; i++) {
+            bad |= !strcmp(tl->rows[i].tone, "bad"); warn |= !strcmp(tl->rows[i].tone, "warn");
+        }
+        hline(g, x, y, w, t->hair);
+        put_r(g, &more, x + w, y + 6, bad ? t->danger : warn ? t->warn : t->muted);
+        text_free(&more);
+    }
     cairo_restore(g->cr);
 }
 
@@ -530,11 +583,18 @@ static void main_body(G *g, const DcuiFrame *f, Rect page) {
     const double gap = g->sm ? 12 : 16;
     double y = page.y;
     if (f->hero_kind[0]) y += hero(g, f, page.x, y, page.w, 1) + gap;
-    double th = page.y + page.h - y, tw = (page.w - gap) / 2, rh = (th - gap) / 2;
+    double th = page.y + page.h - y, tw = (page.w - gap) / 2, avail = th - gap;
+    double rh[2] = { avail / 2, avail / 2 };
+    if (f->ntiles > 2) {                                        /* #1363: a row of tiles that needs */
+        double need[2] = { 0, 0 };                              /* more takes what the other spares */
+        for (int i = 0; i < f->ntiles && i < 4; i++) need[i / 2] = fmax(need[i / 2], tile_need(g, &f->tiles[i], tw));
+        for (int k = 0; k < 2; k++)
+            if (need[k] > rh[k] && need[!k] < rh[!k]) { rh[k] = fmin(need[k], avail - need[!k]); rh[!k] = avail - rh[k]; }
+    }
     for (int i = 0; i < f->ntiles && i < 4; i++) {              /* RTL grid: 0 top-right, 1 top-left ... */
         double tx = (i % 2 == 0) ? page.x + page.w - tw : page.x;
-        double ty = y + (i / 2) * (rh + gap);
-        tile(g, &f->tiles[i], (Rect){ tx, ty, tw, f->ntiles > 2 ? rh : th });
+        double ty = y + (i / 2) * (rh[0] + gap);
+        tile(g, &f->tiles[i], (Rect){ tx, ty, tw, f->ntiles > 2 ? rh[i / 2] : th });
     }
 }
 

@@ -43,7 +43,9 @@ lc_gui_state() {
         done | sort -t'|' -k1,1n -k2,2n -k3,3n | sed 's/^[01]|[0-9]*|/lc_disk=/' >> "$_gs_n"
         _gs_src=$(cat "$LC/source" 2>/dev/null)
         if [ -n "$_gs_src" ]; then
-            printf 'lc_src=%s|%s\n' "$_gs_src" "$(cut -d'|' -f1 "$LC/measure/$_gs_src" 2>/dev/null)" >> "$_gs_n"
+            # #1443: + copy|why -- the bytes the copy moves (lcsize.sh); -1|why = not measured, empty = not yet
+            printf 'lc_src=%s|%s|%s\n' "$_gs_src" "$(cut -d'|' -f1 "$LC/measure/$_gs_src" 2>/dev/null)" \
+                "$(cat "$LC/measure/$_gs_src.copy" 2>/dev/null || echo '|')" >> "$_gs_n"
             for _gs_f in "$LC"/inv/*.line; do
                 [ -f "$_gs_f" ] || continue
                 _gs_d=$(basename "$_gs_f" .line); [ "$_gs_d" = "$_gs_src" ] && continue
@@ -64,11 +66,14 @@ lc_gui_run() {
     _gr_t0=$(cat "$_gr_r/started" 2>/dev/null); _gr_t1=$(cat "$_gr_r/ended" 2>/dev/null)
     case "$_gr_t0" in ''|*[!0-9]*) _gr_t0=$_gr_now ;; esac
     case "$_gr_t1" in ''|*[!0-9]*) _gr_t1=$_gr_now ;; esac
-    # #1484: not there = not started, said so -- src.base is written when the first
-    # partition ends, bytes.raw when one begins (lccopy.sh). Not a read that failed.
-    _gr_b0=0; [ -f "$_gr_r/src.base" ] && _gr_b0=$(_last_number "$_gr_r/src.base")
-    _gr_b1=0; [ -f "$_gr_r/bytes.raw" ] && _gr_b1=$(_last_number "$_gr_r/bytes.raw")
-    _gr_cp=$(( ${_gr_b0:-0} + ${_gr_b1:-0} ))
+    # #1484: no counter file yet = not started, said as 0 -- not a read that failed.
+    # #1619: one file per partition (bytes.<idx>, lccopy.sh), each read once and
+    # only ever growing: the sum cannot count a finished partition twice.
+    _gr_cp=0
+    for _gr_f in "$_gr_r"/bytes.[0-9]*; do
+        [ -f "$_gr_f" ] || continue   # no match leaves the pattern itself
+        _gr_n=$(_last_number "$_gr_f"); _gr_cp=$((_gr_cp + ${_gr_n:-0}))
+    done
     _gr_cur=$(cat "$_gr_r/cur" 2>/dev/null)
     # #1477: the shrink's path as lc_shrink_source wrote it (snapshot|refused);
     # anything else is empty -- the screen does not guess it.
@@ -88,8 +93,9 @@ lc_gui_run() {
             if cat "$_gr_r/source.sha" "$_gr_r/swaps" 2>/dev/null | awk -F'|' -v i="$_gr_i" '$1 == i { f = 1 } END { exit !f }'; then _gr_st="done"
             elif [ "$_gr_cur" = "$_gr_i|copy" ]; then _gr_st=copy
             elif [ "$_gr_cur" = "$_gr_i|failed" ]; then _gr_st=failed; fi
-            _gr_in=0; [ "$_gr_st" = copy ] && _gr_in=${_gr_b1:-0}
-            printf 'lc_part=%s|%s|%s|%s|%s|%s|%s\n' "$_gr_i" "$(_lc_part_label "$_gr_role")" "$_gr_fs" "$_gr_b" "$_gr_z" "$_gr_st" "$_gr_in"
+            _gr_in=0
+            if [ "$_gr_st" = copy ] && [ -f "$_gr_r/bytes.$_gr_i" ]; then _gr_in=$(_last_number "$_gr_r/bytes.$_gr_i"); fi
+            printf 'lc_part=%s|%s|%s|%s|%s|%s|%s\n' "$_gr_i" "$(_lc_part_label "$_gr_role")" "$_gr_fs" "$_gr_b" "$_gr_z" "$_gr_st" "${_gr_in:-0}"
         done
     fi
     for _gr_d in $(cat "$_gr_r/targets" 2>/dev/null); do

@@ -115,8 +115,8 @@ def test_proxy_answers_legacy_bios_as_well_as_uefi():
     """‏#40: בענף ה-proxy הייתה תשובת PXE ל-UEFI בלבד. מחשבי השיכפול הם
     Legacy BIOS ‏(#38) — בלי שורת x86PC הם לא מקבלים תשובה כלל."""
     text = render_proxy(MIXED)
-    assert 'pxe-service=tag:if-eth1.101,tag:bios,x86PC,"ImageCtl",grub/i386-pc/core.0' in text
-    assert ('pxe-service=tag:if-eth1.101,tag:efi-x86_64,x86-64_EFI,"ImageCtl",bootx64.efi'
+    assert 'pxe-service=tag:if-eth1.101,tag:bios,x86PC,"ImageSrv",grub/i386-pc/core.0' in text
+    assert ('pxe-service=tag:if-eth1.101,tag:efi-x86_64,x86-64_EFI,"ImageSrv",bootx64.efi'
             in text)
     assert "dhcp-match=set:bios,option:client-arch,0" in text
 

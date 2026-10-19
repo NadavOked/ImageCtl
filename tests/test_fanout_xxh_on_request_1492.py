@@ -52,8 +52,8 @@ def test_the_stream_xxh64_update_in_main_is_guarded_by_dash_h():
 
 def test_the_sha256_update_stays_guarded_by_dash_s():
     """The same rule on the other hash, so a refactor cannot swap one leak for another."""
-    calls = [line for line in _main_body().splitlines() if "sha_update(&sha," in line]
-    assert calls and all(re.match(r"^\s*if \(sha_path\) sha_update\(&sha,", line)
+    calls = [line for line in _main_body().splitlines() if "update(&sha," in line]  # #1596: the engine
+    assert calls and all(re.match(r"^\s*if \(sha_path\) sha_engine_update\(&sha,", line)
                          for line in calls), calls
 
 

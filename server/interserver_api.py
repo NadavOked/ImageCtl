@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
-from . import auth, interserver_auth, storage_nodes
+from . import auth, disk_reserve, interserver_auth, storage_nodes
 from .db import journal, now_iso
 
 log = logging.getLogger("imagectl.interserver")
@@ -97,7 +97,7 @@ def _require_protocol(version: str) -> None:
 
 def _require_secondary(conn) -> None:
     if storage_nodes.role(conn) != storage_nodes.ROLE_SECONDARY:
-        raise PairError(409, "כניסה בין-שרתית מותרת רק על שרת משני (secondary)")
+        raise PairError(409, "כניסה בין-שרתית מותרת רק על שרת משנה (secondary)")
 
 
 # --- pair-begin -------------------------------------------------------------
@@ -118,7 +118,7 @@ def pair_begin(conn, handles: dict, peer: TlsPeer, body: dict, *,
     # הצמדה הדדית: הראשי מצהיר איזה SPKI הוא מצפה שלמשני יש. אם אינו
     # תואם את שלנו — הראשי מדבר עם המכונה הלא נכונה. נדחה לפני הקוד.
     if not interserver_auth.verify_pinned_spki_value(ident["server_spki"], expected):
-        raise PairError(400, "expected_secondary_spki אינו תואם את זהות המשני")
+        raise PairError(400, "expected_secondary_spki אינו תואם את זהות שרת המשנה")
 
     primary_spki = interserver_auth.spki_sha256(peer.cert_der)
     primary_ref = interserver_auth.certificate_ref(peer.cert_der)
@@ -265,6 +265,9 @@ def authenticate_parent(conn, peer: TlsPeer, *, token: str, protocol_version: st
                  cred["parent_id"])
         cred = dict(cred)
         cred["bound_cert_ref"] = new_ref
+    # #1564: every parent request converges here after TLS, protocol, role,
+    # SPKI/certificate binding and token authentication have all succeeded.
+    storage_nodes.record_parent_contact(conn)
     return cred
 
 
@@ -497,6 +500,7 @@ def image_file_plan(ctx, peer: TlsPeer, *, token: str, protocol_version: str,
 
 def receive_image_precheck(ctx, peer: TlsPeer, *, token: str, protocol_version: str,
                            image_id: str, content_length: object,
+                           location_id: str = "loc_local",
                            has_console_cookie: bool = False) -> ReceivePlan:
     """כל מה שאפשר לדחות **לפני** קריאת הגוף."""
     from .images import valid_image_id
@@ -513,18 +517,79 @@ def receive_image_precheck(ctx, peer: TlsPeer, *, token: str, protocol_version: 
         raise PairError(411, "נדרש Content-Length מספרי")
     if length <= 0:
         raise PairError(411, "נדרש Content-Length חיובי")
-    root = Path(library.root)
+    from . import storage_locations
+    location = storage_locations.get(ctx.conn, location_id)
+    if location is None and location_id == storage_locations.LOCAL_ID:
+        # תאימות ל-contexts ישנים/מבודדים; בשרת מלא ensure_local יצר שורה.
+        root = Path(library.root)
+    elif location is None:
+        raise PairError(404, f"מיקום האחסון {location_id!r} לא קיים במשני")
+    elif not storage_locations.location_writable(ctx.conn, location_id):
+        raise PairError(409, f"מיקום האחסון {location_id!r} אינו זמין לקליטה")
+    else:
+        if location_id != storage_locations.LOCAL_ID \
+                and not Path(location["mount_point"]).is_dir():
+            raise PairError(409, f"מיקום האחסון {location_id!r} אינו מעוגן")
+        root = storage_locations.images_dir(location)
     root.mkdir(parents=True, exist_ok=True)
     try:
         free = shutil.disk_usage(root).free
     except OSError as exc:
         # לא הצלחנו לבדוק ≠ יש מקום (עיקרון 5).
         raise PairError(507, f"לא ניתן לקרוא את המקום הפנוי בספרייה: {exc}")
-    need = length * FREE_SPACE_FACTOR + FREE_SPACE_MARGIN
+    # ‏#1737: ועוד הרזרבה למערכת — האימג' לא ייכנס אם ישאיר פחות ממנה.
+    keep = disk_reserve.reserve()
+    need = length * FREE_SPACE_FACTOR + FREE_SPACE_MARGIN + keep
     if free < need:
-        raise PairError(507, f"אין די מקום פנוי במשני: נדרשים {need} בייטים, "
-                             f"פנויים {free}")
+        raise PairError(507, _space_refusal(ctx, library, location_id,
+                                            need=need, keep=keep, free=free))
     return ReceivePlan(image_id=image_id, content_length=length, root=root)
+
+
+def _space_refusal(ctx, library, location_id: str, *, need: int, keep: int,
+                   free: int) -> str:
+    """‏#1697: ה-507 אומר כמה נדרש, כמה פנוי **בכל** מיקום אחסון במשני, ולאן כן
+    אפשר להעביר. ההודעה עוברת כמו שהיא לשורת ההעברה בקונסולת הראשי — שם
+    המפעיל בוחר את המיקום, ובלי הרשימה הוא רואה "אין מקום" בזמן שבדף האחסון
+    של המשני יש דיסק פנוי. אין בחירה אוטומטית: היעד נשאר מה שהמפעיל בחר.
+    מיקום שלא נמדד נקוב כ"לא נמדד" ואינו מוצע (עיקרון 5)."""
+    from . import storage_locations as sl
+    rows = sl.list_rows(ctx.conn) if ctx.conn is not None else []
+    if not any(r["id"] == sl.LOCAL_ID for r in rows):
+        # אותו מקרה כמו ב-precheck: אין שורה ל-loc_local — הוא ``--images``.
+        rows.insert(0, {"id": sl.LOCAL_ID, "name": sl.LOCAL_NAME, "type": "local",
+                        "mount_point": str(library.root), "state": "connected"})
+    gb = disk_reserve.gb
+    parts, fits, selected = [], [], location_id
+    for row in rows:
+        label = f'"{row["name"]}" ({row["id"]})'
+        if row["id"] == location_id:
+            selected = label
+            room: int | str = free
+        elif row["state"] != "connected":
+            room = f"לא מחובר ({sl.STATE_LABELS.get(row['state'], row['state'])})"
+        elif row["type"] != "local" and not Path(row["mount_point"]).is_dir():
+            room = "לא מעוגן"
+        else:
+            target = sl.images_dir(row)
+            try:
+                room = shutil.disk_usage(target if target.is_dir()
+                                         else row["mount_point"]).free
+            except OSError as exc:
+                room = f"לא נמדד: {exc}"
+        if isinstance(room, str):
+            parts.append(f"{label} — {room}")
+        elif room >= need:
+            parts.append(f"{label} — פנויים {gb(room)}, מספיק")
+            fits.append(label)
+        else:
+            parts.append(f"{label} — פנויים {gb(room)}, חסרים {gb(need - room)}")
+    advice = (f"אפשר להעביר אל: {', '.join(fits)} — פתחו העברה חדשה ובחרו אותו."
+              if fits else "אין בשרת המשנה מיקום שהאימג' נכנס אליו — יש לפנות מקום או "
+                           "לחבר לשרת המשנה מיקום אחסון גדול יותר.")
+    return (f"אין די מקום פנוי בשרת המשנה במיקום {selected}: נדרשים {need} בייטים "
+            f"({gb(need)}, מתוכם {gb(keep)} נשמרים למערכת), פנויים {free} בייטים "
+            f"({gb(free)}). פנוי בכל מיקום בשרת המשנה: {' · '.join(parts)}. {advice}")
 
 
 class _BodyTooLong(Exception):
@@ -662,6 +727,9 @@ CONSOLE_GETS: tuple[tuple[str, type], ...] = (
 #: (כיבוי 8443 במשני מנתק אותו מהראשי — ואין דרך להדליק בחזרה מכאן), מחיקת אימג'/
 #: מכונה וכל העלאה.
 CONSOLE_WRITES: tuple[tuple[str, str], ...] = (
+    # שליטת הראשי בסבב של המשני (הכרעת נדב 17/10): פתיחה ועצירה בלבד.
+    # start/wake/answer/poweroff אינם נפתחים אגב כך — הרשימה היא (שיטה, נתיב).
+    ("POST", r"/room"), ("POST", r"/room/close"),
     ("POST", r"/users"), ("PUT", r"/users/[^/]+"), ("DELETE", r"/users/[^/]+"),
     ("POST", r"/settings"),
     # רשת: כרטיסים ו-DHCP (‏/net/interfaces) וכתובות (‏/net/config). שינוי כתובת שמנתק
@@ -672,7 +740,17 @@ CONSOLE_WRITES: tuple[tuple[str, str], ...] = (
     ("POST", r"/net/config/[^/]+/preview"), ("PUT", r"/net/config/[^/]+"),
     ("PUT", r"/net/config/[^/]+/deploy"), ("PUT", r"/net/config/[^/]+/second"),
     ("POST", r"/net/config/confirm"),
+    # ‏#1776 (נדב 19/10: "אני מתל אביב רוצה לעדכן את חיפה"): לשונית העדכון של המשני בעץ
+    # של הראשי — בדיקה והחלה, במסלול החתום של המשני עצמו (server-upgrade.sh מסרב לתג
+    # שאינו חתום, והסיבה חוזרת ב-GET /update/status). ‏/update/revert אינו כאן: הוא דורש
+    # את שם השרת **של המשני**, והקונסולה של הראשי שולחת את שם הראשי.
+    ("POST", r"/update/check"), ("POST", r"/update/apply"),
 )
+#: ‏#1776: תקרת בקשה ארוכה מ-``REQUEST_TIMEOUT`` (15 ש') לכתיבות שהמשני עונה עליהן
+#: לאט מטבען. ‏``/update/check`` מריץ אצלו ls-remote (20 ש') + הורדת התג ובדיקת החתימה
+#: (60+60 ש'); ‏``/update/apply`` ממתין ל-systemd-run (15 ש') ולקריאת הגרסה. בלי זה
+#: הראשי היה מכריז "לא ידוע אם בוצעה" על בדיקה תקינה שפשוט לוקחת דקה.
+CONSOLE_WRITE_TIMEOUTS: dict[str, float] = {"/update/check": 180.0, "/update/apply": 60.0}
 #: תקרה לגוף בקשת כתיבה מהראשי — טופס, לא קובץ.
 MAX_CONSOLE_WRITE_BODY = 64 * 1024
 #: כותרות תשובה שהעמודים קוראים (זמן מדידה, "החיפוש נקטע") — עוברות בשמן.
@@ -765,7 +843,7 @@ def _run_console(app, method: str, path: str, query: str, user: str,
         return 500, {}, {"detail": f"תשובת הקונסולה גדולה מ-{MAX_CONSOLE_BODY} בייטים"}
     start = next((m for m in sent if m["type"] == "http.response.start"), None)
     if start is None:
-        return 500, {}, {"detail": "הקונסולה של המשני לא החזירה תשובה"}
+        return 500, {}, {"detail": "הקונסולה של שרת המשנה לא החזירה תשובה"}
     raw = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
     headers = {k.decode("latin-1").lower(): v.decode("latin-1")
                for k, v in start.get("headers", [])}
@@ -782,7 +860,7 @@ def console_get(ctx, app, peer: TlsPeer, *, path: str, query: str, acting_user: 
     authenticate_parent(ctx.conn, peer, token=token, protocol_version=protocol_version,
                         has_console_cookie=has_console_cookie)
     if app is None:
-        raise PairError(503, "הקונסולה של המשני אינה מחוברת לערוץ הבין-שרתי")
+        raise PairError(503, "הקונסולה של שרת המשנה אינה מחוברת לערוץ הבין-שרתי")
     if console_get_type(path) is None:
         raise PairError(404, "הנתיב אינו מורשה בערוץ הבין-שרתי")
     if not _QUERY.fullmatch(query or ""):
@@ -803,7 +881,7 @@ def console_write(ctx, app, peer: TlsPeer, *, method: str, path: str, query: str
     authenticate_parent(ctx.conn, peer, token=token, protocol_version=protocol_version,
                         has_console_cookie=has_console_cookie)
     if app is None:
-        raise PairError(503, "הקונסולה של המשני אינה מחוברת לערוץ הבין-שרתי")
+        raise PairError(503, "הקונסולה של שרת המשנה אינה מחוברת לערוץ הבין-שרתי")
     if not console_write_allowed(method, path):
         raise PairError(404, "הפעולה אינה מורשית בערוץ הבין-שרתי")
     if len(body or b"") > MAX_CONSOLE_WRITE_BODY:
@@ -999,7 +1077,7 @@ def create_interserver_app(ctx, tls_peer_provider):
     service מאחורי routes של FastAPI, לבדיקות ולתיעוד הצורה."""
     from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 
-    app = FastAPI(title="ImageCtl interserver", docs_url=None, redoc_url=None)
+    app = FastAPI(title="ImageSrv interserver", docs_url=None, redoc_url=None)
     app.state.ctx = ctx
     app.state.handles = {}
     router = APIRouter(prefix="/api/interserver/v1")
@@ -1100,6 +1178,7 @@ def create_interserver_app(ctx, tls_peer_provider):
             plan = receive_image_precheck(
                 ctx, peer, image_id=image_id,
                 content_length=request.headers.get("content-length"),
+                location_id=request.headers.get("imagectl-location-id") or "loc_local",
                 **_creds(request))
         except PairError as exc:
             raise _http(exc)
@@ -1179,17 +1258,6 @@ def _body_chunks(conn, rest: bytes, length: int, chunk_size: int = 1024 * 1024):
             return
         got += len(chunk)
         yield chunk
-
-
-def _read_http_request(conn):
-    """גרסת "הכול בזיכרון" — לבקשות JSON קטנות. ``None`` = החיבור נסגר."""
-    head = _read_http_head(conn)
-    if head is None:
-        return None
-    method, path, headers, rest = head
-    length = int(headers.get("content-length", "0"))
-    body = b"".join(_body_chunks(conn, rest, length))
-    return method, path, headers, body
 
 
 def _http_response(status: int, payload: object, *, close: bool = False,
@@ -1376,6 +1444,7 @@ class InterserverTLSServer:
             plan = receive_image_precheck(
                 self.ctx, peer, image_id=_image_id_of(path),
                 content_length=headers.get("content-length"),
+                location_id=headers.get("imagectl-location-id") or "loc_local",
                 token=_bearer(headers),
                 protocol_version=headers.get("imagectl-protocol-version", ""),
                 has_console_cookie="imagectl_session" in headers.get("cookie", ""))

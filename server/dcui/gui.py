@@ -171,8 +171,17 @@ def _rollback_left(runtime) -> int:
     return max(0, int(marker.deadline - time.time())) if marker else 0
 
 
+def local_now() -> datetime:
+    """#1447: the zone is read again for every frame. The console changes it
+    (timedatectl) under a DCUI that keeps running, and glibc's localtime_r
+    keeps the zone it read first until tzset() -- the screen stayed UTC."""
+    if hasattr(time, "tzset"):
+        time.tzset()
+    return datetime.now()
+
+
 def frame_now(runtime) -> str:
-    now = datetime.now()
+    now = local_now()
     return view.render(runtime, time.monotonic(), time.time(), now.strftime("%H:%M"), now,
                        _rollback_left(runtime))
 

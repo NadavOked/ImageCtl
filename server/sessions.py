@@ -154,9 +154,14 @@ class SessionStore:
         if kind == MULTICAST and replaces is None:
             self._claim_broadcast_slot(opened_by)
         if roster is not None:
+            # ‏17/10: גל של חדר השיכפולים (קבוצה בתפקיד `cloner`) מקבל בבחירה כל מחשב
+            # שיכפול, מכל קבוצת שיכפול — הבחירה של הסבב היא `target_slots` (#1555);
+            # כל קבוצה אחרת — רק את המחשבים שלה, כמו קודם.
             registered = {
                 row["mac"] for row in self.conn.execute(
-                    "SELECT mac FROM machines WHERE group_id = ?", (group_id,)
+                    "SELECT m.mac FROM machines m JOIN groups g ON g.id = m.group_id"
+                    " WHERE m.group_id = ? OR (g.role = 'cloner' AND"
+                    " (SELECT role FROM groups WHERE id = ?) = 'cloner')", (group_id, group_id)
                 )
             }
             roster = sorted(set(roster))
@@ -537,8 +542,15 @@ class SessionStore:
         return True
 
     def starts_in_seconds(self, session: sqlite3.Row) -> int:
-        deadline = session["last_join_at"] + session["wait_seconds"]
-        return max(0, int(deadline - self.now()))
+        now = self.now()
+        last_join = session["last_join_at"]
+        # A wall-clock correction must not pin an open session until a
+        # persisted future epoch catches up.  Treat a future anchor as an
+        # already-expired wait; normal past anchors retain the old deadline.
+        if last_join > now:
+            return 0
+        deadline = last_join + session["wait_seconds"]
+        return max(0, int(deadline - now))
 
     def view(self, session: sqlite3.Row, library) -> dict:
         """הסבב כפי שהמסך מציג אותו. המימוש ב-`session_view.py`."""

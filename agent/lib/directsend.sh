@@ -35,7 +35,8 @@ direct_udp_send() {
     # shellcheck disable=SC2086 # --max-bitrate <value> הוא זוג מילים מכוון
     udp-sender --interface "$IFACE" --portbase "$1" \
         --min-receivers "$2" --max-wait "$3" --start-timeout "$4" \
-        --retries-until-drop "$5" --nokbd ${6:+--max-bitrate "$6"}
+        --retries-until-drop "$5" --rexmit-hello-interval 200 \
+        --nokbd ${6:+--max-bitrate "$6"}   # 200 = HELLO_INTERVAL_MS (server/sender.py, #1694)
 }
 
 _direct_failed() {
@@ -92,8 +93,8 @@ direct_send_one() {
     # compresses exactly as pass 1 did, hashes what goes on the wire, and
     # sends. 0 only when udp-sender exited 0, actually transferred, and the
     # wire hash equals the manifest hash.
-    _do_node=$(partition_node "$1" "$2"); _do_pcl=$(partclone_for_fs "$3")
-    _do_ignore=""; [ "$3" = ntfs ] && _do_ignore="-I"
+    _do_node=$(lc_src_node "$1" "$2"); _do_pcl=$(partclone_for_fs "$3")   # #1171: the view pass 1 read, if it made one
+    _do_ignore=$(capture_pcl_flags "$_do_pcl" "$3")   # pass 1's own flags (#1574)
     _do_log="$RUN_DIR/dsend.$2.log"; _do_fifo="$RUN_DIR/dfeed.$2.fifo"
     # #957: the first partition waits for the wave to start; the later ones
     # wait for the slowest drawer in the room, and their udp-sender carries
@@ -212,6 +213,22 @@ direct_send_run() {
     _dr_sent=0; STREAMED_PARTITIONS=0
     while IFS='|' read -r _dr_idx _dr_g _dr_role _dr_fs _dr_st _dr_sz _dr_f _dr_sha _dr_e _dr_ug _dr_uu _dr_attrs <&3; do
         case "$_dr_f" in ''|null) continue ;; esac
+        # #1432: the hello that opened the wave is only a snapshot. A drawer
+        # that failed on partition 1 must not remain in partition 2's
+        # --min-receivers. Ask the server immediately before every stream;
+        # it also turns zero live targets into a failed session instead of
+        # returning a value that would broadcast to nobody.
+        if ! send_hello \
+                || [ "$(json_get "$RESP" ".task.id")" != "$1" ] \
+                || [ "$(json_get "$RESP" ".task.direct.session_state")" != "running" ]; then
+            _direct_failed "$2" "השרת עצר את ההפצה הישירה לפני מחיצה $_dr_idx"
+            return 1
+        fi
+        _dr_minr=$(json_get "$RESP" ".task.direct.multicast.min_receivers")
+        case "$_dr_minr" in ''|0|*[!0-9]*)
+            _direct_failed "$2" "מספר המקבלים למחיצה $_dr_idx אינו תקין: '$_dr_minr'"
+            return 1 ;;
+        esac
         # The first stream waits for the operator; every later one waits for
         # the drawers still writing the previous partition (#957).
         _dr_w="$_dr_maxw"; _dr_t="$_dr_startt"
@@ -239,23 +256,23 @@ direct_send_task() {
     echo "  Do not power off."
     progress_loop "" "$MAC" "$SERVER" "$1" &
     _dt_ppid=$!
-    if direct_send_run "$1" "$_dt_disk"; then
+    direct_send_run "$1" "$_dt_disk"; _dt_rc=$?
+    shrink_restore_source "$_dt_disk" || :   # #1171: the tail's RAM view, after both reads; not released = a warning in error
+    if [ "$_dt_rc" -eq 0 ]; then
         echo "done" > "$RUN_DIR/state"
         report_final "$_dt_ppid" "" "$MAC" "$SERVER" "$1" \
             || { hold_unheard "" "$1"; return 1; }
-        ui_clear; ui_header
-        echo "  Direct deployment complete. The drawers were written."
-        [ "${IMAGECTL_TEST:-0}" = "1" ] && exit 0
-        sleep 20
-        finish_and_stop
-        # #1222/#1483: returns only when it stayed on (WoL, or poweroff came back) -- still done.
-        task_done_stays_on "Direct deployment complete. The drawers were written."
+        # #1560 (Nadav 17/10): asked like the end of a capture -- not a silent
+        # 20 s and a power-off. The build menu keeps the GUI up; none = power off.
+        build_end_ask send-end "ההפצה הישירה הושלמה: לכבות או לחזור לתפריט" "direct send complete" \
+            "Direct deployment complete. The drawers were written."
         return 0
     fi
     echo "failed" > "$RUN_DIR/state"
     report_final "$_dt_ppid" "" "$MAC" "$SERVER" "$1" \
         || { hold_unheard "" "$1" \
              "direct deployment did not complete, and the server was not told"; return 1; }
+    HOLD_YIELD_TASK="$1"   # #1575: the source was only read -- a new task ends the hold
     ui_error_hold "direct deployment did not complete" hold_beat
     return 1
 }

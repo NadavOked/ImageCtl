@@ -376,20 +376,68 @@ def test_revert_without_a_previous_version_is_404(update_server):
 def test_revert_uses_the_version_saved_before_the_last_apply(update_server):
     admin = update_server["admin"]
     _enable(admin)
-    saved = admin.post("/api/console/settings", json={"server_name": "imagectl-tlvserver"})
-    assert saved.status_code == 200
-    assert admin.get("/api/console/me").json()["server_name"] == "imagectl-tlvserver"
     admin.post("/api/console/update/apply",
               json={"tag": "v0.25.0"})
     update_server["state"]["current"] = "v0.25.0"   # אחרי ה-restart המדומה
-    hostname = admin.get("/api/console/me").json()["server_name"]
-    wrong = admin.post("/api/console/update/revert",
-                       json={"confirm_name": "127.0.0.1"})
-    assert wrong.status_code == 403
-    r = admin.post("/api/console/update/revert",
-                   json={"confirm_name": hostname})
-    assert r.status_code == 200
+    r = admin.post("/api/console/update/revert", json={})
+    assert r.status_code == 200, r.text
     assert r.json()["tag"] == "v0.24.0"
+    # הסקריפט המנותק קיבל את הגרסה **הקודמת** — זה מה שמוריד גרסה בפועל.
+    assert update_server["calls"]["run"] == 2
+    assert update_server["calls"]["run_args"] == ("/repo", "v0.24.0")
+    # החזרה הפיכה בעצמה: הגרסה שממנה חזרנו היא עכשיו "הקודמת" (#1192).
+    assert admin.get("/api/console/update").json()["previous"] == "v0.25.0"
+    status = admin.get("/api/console/update/status").json()
+    assert status["state"] == "running" and status["tag"] == "v0.24.0"
+    assert status["from"] == "v0.25.0"
+
+
+def test_revert_needs_no_typed_name_and_ignores_a_stale_one(update_server):
+    """‏#1778 (הכרעת #1270): "חזור ל-…" הוא חלון אישור עם כפתור אדום, בלי הקלדה —
+    כמו "החל עדכון" (#1192), כי גם החזרה הפיכה. השרת אינו בודק `confirm_name`:
+    קונסולה ישנה ששולחת שם שהתיישן (POST /hostname אחרי טעינת /me) אינה נדחית
+    ב-403 "השם שהוקלד אינו תואם" על שם שאיש לא הקליד."""
+    admin = update_server["admin"]
+    _enable(admin)
+    admin.post("/api/console/update/apply", json={"tag": "v0.25.0"})
+    update_server["state"]["current"] = "v0.25.0"
+    r = admin.post("/api/console/update/revert", json={"confirm_name": "not-this-server"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "started": True, "tag": "v0.24.0"}
+    assert update_server["calls"]["run_args"] == ("/repo", "v0.24.0")
+
+
+def test_revert_without_a_body_is_accepted(update_server):
+    """הקונסולה שולחת `post("/update/revert")` — גוף ריק הוא `{}` (post() ב-console.js)."""
+    admin = update_server["admin"]
+    _enable(admin)
+    admin.post("/api/console/update/apply", json={"tag": "v0.25.0"})
+    update_server["state"]["current"] = "v0.25.0"
+    r = admin.post("/api/console/update/revert")
+    assert r.status_code == 200, r.text
+    assert r.json()["tag"] == "v0.24.0"
+
+
+def test_revert_keeps_its_guards_404_when_off_409_when_a_round_is_open(update_server):
+    """הסרת ההקלדה אינה מסירה את השומרים: מתג כבוי = 404, סבב פתוח = 409, ואף
+    אחד מהם אינו מגיע ל-systemd-run."""
+    admin = update_server["admin"]
+    _enable(admin)
+    admin.post("/api/console/update/apply", json={"tag": "v0.25.0"})
+    update_server["state"]["current"] = "v0.25.0"
+    conn = update_server["app"].state.ctx.conn
+    image_id = admin.get("/api/console/images").json()[0]["id"]
+    conn.execute("INSERT INTO groups (id, label, role) VALUES ('g', 'g', 'classroom')")
+    conn.execute(
+        "INSERT INTO sessions (id, group_id, image_id, prefix, expected_clients,"
+        " wait_seconds, state, opened_by, created_at, last_join_at, kind)"
+        " VALUES ('s1', 'g', ?, 'ROOM', 2, 300, 'running', 'nadav', ?, 0.0, 'multicast')",
+        (image_id, "2026-09-16T00:00:00+00:00"))
+    conn.commit()
+    assert admin.post("/api/console/update/revert", json={}).status_code == 409
+    assert admin.post("/api/console/settings", json={"update_enabled": False}).status_code == 200
+    assert admin.post("/api/console/update/revert", json={}).status_code == 404
+    assert update_server["calls"]["run"] == 1
 
 
 def test_deploy_user_cannot_reach_update_endpoints(update_server, images_root, clock, tmp_path):
@@ -444,8 +492,7 @@ def test_revert_while_an_update_is_running_is_409(update_server):
     admin = update_server["admin"]
     _enable(admin)
     admin.post("/api/console/update/apply", json={"tag": "v0.25.0"})
-    hostname = admin.get("/api/console/me").json()["server_name"]
-    r = admin.post("/api/console/update/revert", json={"confirm_name": hostname})
+    r = admin.post("/api/console/update/revert", json={})
     assert r.status_code == 409, r.text
     assert update_server["calls"]["run"] == 1
     assert admin.get("/api/console/update/status").json()["state"] == "running"

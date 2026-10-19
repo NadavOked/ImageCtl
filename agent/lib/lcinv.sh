@@ -76,7 +76,7 @@ lc_inv_disk() {
     _li_sec=$(cat "$SYSROOT/sys/block/$1/size" 2>/dev/null); case "$_li_sec" in ''|*[!0-9]*) _li_sec=0 ;; esac
     _li_size=$((_li_sec * 512))
     _li_smart=$(smart_probe "$1"); _li_sr=$(smart_field "$1" 2)
-    if _li_cause=$(disk_failure_cause "$1" 2>/dev/null); then _li_smart=failed_last; _li_sr=$_li_cause; fi
+    [ "$_li_smart" != fail ] && _li_cause=$(disk_failure_cause "$1" 2>/dev/null) && { _li_smart=failed_last; _li_sr=$_li_cause; }   # #1580: red SMART wins
     _li_os=""; _li_n=0; _li_used=0; _li_need=-1; _li_ok=0; _li_why=""
     _li_ss=$(logical_block_size "$_li_node")
     _li_sch=$(disk_scheme "$_li_node")
@@ -146,6 +146,16 @@ lc_inv_field() {
 }
 
 lc_measure() {
+    # $1 = source disk: will a smaller drawer take it (_lc_measure_fit), then
+    # how many bytes the copy moves (lc_copy_size, lcsize.sh, #1443). The
+    # return code is the fit's; the copy's size has its own file.
+    rm -f "$LC/measure/$1.copy"
+    _lc_measure_fit "$1"; _lm_rc=$?
+    lc_copy_size "$1"
+    return "$_lm_rc"
+}
+
+_lc_measure_fit() {
     # $1 = source disk. $LC/measure/$1: state|need_min|reason. state: none (no
     # drawer is smaller than the layout -- nothing to measure), done (need_min
     # = the bytes a target needs once the source is shrunk), failed (reason).
@@ -245,7 +255,9 @@ lc_min_free() {
         _fm_b=$(awk -F'|' -v i="$_fm_i" '$1 == i { print $2; exit }' "$LC/inv/$1.used" 2>/dev/null)
         case "$_fm_b" in ''|*[!0-9]*) _fm_b=null ;; esac
         _fm_r=$(lc_role "$1" "$_fm_i" "$_fm_t")
-        [ "$_fm_r" != unchecked ] || { echo "unchecked|מחיצה $_fm_i: לא הצלחנו לבדוק אם היא מחיצת המערכת"; return 0; }
+        # #1591: a role that is not one of the known ones (empty: its resolver was missing) is "not
+        # checked" -- not "no system partition", which min_free_check answers with ok.
+        case "$_fm_r" in esp|msr|recovery|linux|swap|windows|data) ;; *) echo "unchecked|מחיצה $_fm_i: לא הצלחנו לבדוק אם היא מחיצת המערכת"; return 0 ;; esac
         _fm_p="$_fm_p{\"index\":$_fm_i,\"type_guid\":\"$_fm_t\",\"role\":\"$_fm_r\",\"fs\":null,\"start_sector\":$_fm_f,\"size_bytes\":$((_fm_s * 512)),\"used_bytes\":$_fm_b,\"file\":null,\"sha256\":null,\"expandable\":false},"
     done < "$3"
     printf '{"sector_size":512,"partitions":[%s]}\n' "${_fm_p%,}" > "$_fm_m"

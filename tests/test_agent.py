@@ -184,6 +184,7 @@ def fake_machine(tmp_path):
     (blk / "sda").mkdir(parents=True)
     (blk / "sda/size").write_text("500118192\n")          # סקטורים של 512
     (blk / "sda/removable").write_text("0\n")
+    (blk / "sda/ro").write_text("0\n")   # #1742: לכל התקן בלוק יש אותו; בלעדיו "לא נבדק"
     (blk / "sda/queue").mkdir()
     # גודל הסקטור הלוגי — ממנו נגזר איפה יושבת כותרת ה-GPT (‏#126).
     # לכל כונן אמיתי יש את הקובץ הזה, ולכן גם למכונה המזויפת.
@@ -451,7 +452,7 @@ def test_mac_stays_canonical(fake_machine):
 
 def test_progress_matches_the_interface(tmp_path):
     run = tmp_path / "run"
-    for dev, state, base, raw, total in [
+    for dev, state, finished, current, total in [
         ("sda", "writing", 1000, "500\n2500\n", 57982058496),
         ("sdb", "done", 57982058496, "", 57982058496),
         ("sdc", "failed", 0, "4194304\n", 57982058496),
@@ -459,8 +460,8 @@ def test_progress_matches_the_interface(tmp_path):
         t = run / "targets" / dev
         t.mkdir(parents=True)
         (t / "state").write_text(state)
-        (t / "base").write_text(str(base))
-        (t / "bytes.raw").write_text(raw)
+        (t / "bytes.0").write_text(str(finished))
+        (t / "bytes.1").write_text(current)
         (t / "total").write_text(str(total))
     (run / "targets/sdc/error").write_text("I/O error at sector 8419328")
     (run / "state").write_text("writing")
@@ -1168,25 +1169,28 @@ def run_expand(tmp_path, plan, disk_sectors, override=None):
 def tail_n(idx, sectors, end=976773168 - 34):
     """#1467: `_move_to_tail` -- start aligned down to 2048, size exact."""
     start = (end - sectors + 1) // 2048 * 2048
-    return f"-a 1 -n {idx}:{start}:{start + sectors - 1}", start
+    return f"-n {idx}:{start}:{start + sectors - 1}", start
+
+
+def one_call(calls):
+    """#1714: the expansion -- the tail's move and the candidate's rebuild -- is
+    ONE sgdisk call (each writing sgdisk sleeps 1s in gdisk's DiskSync)."""
+    assert len(calls) == 1, calls
+    return calls[0]
 
 def test_a_trailing_swap_is_rebuilt_at_the_tail_and_the_root_takes_the_rest(tmp_path):
     """‏256→500 עם swap אחרונה: ה-swap נמחקת, נבראת מחדש בזנב בגודל
     שהמניפסט מצהיר, והשורש נמתח עד תחילתה (#46)."""
     rc, calls, marker = run_expand(tmp_path, DEBIAN_PLAN, disk_sectors=976773168)
     assert rc == "rc=0"
-    assert calls[0] == f"-d 3 {test_dev(tmp_path)}/sda"
-    # ‏-<סקטורים> = כך וכך סקטורים לפני סוף השטח הפנוי; ‏0 = סופו. ערך
-    # שלילי ולא סקטור מפורש כדי לא לעקוף את יישור ה-2048 של sgdisk.
-    assert calls[1] == (
-        f"{tail_n(3, SWAP_SECTORS)[0]} -t 3:0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "
-        f"-u 3:33333333-3333-3333-3333-333333333333 {test_dev(tmp_path)}/sda"
-    )
-    assert calls[2] == (
-        "-a 1 -d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+    # מחיקת הזנב, בנייתו בסוף הכונן, ואז המועמד עד תחילתו — באותו סדר
+    # שבו רצו שלוש הקריאות הנפרדות לפני #1714. ‏0 = סוף השטח הפנוי.
+    assert one_call(calls) == (
+        f"-a 1 -d 3 {tail_n(3, SWAP_SECTORS)[0]} -t 3:0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "
+        "-u 3:33333333-3333-3333-3333-333333333333 "
+        "-d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     )
-    assert len(calls) == 3
     assert marker == "2|ext4"
 
 
@@ -1196,8 +1200,8 @@ def test_expansion_preserves_attributes_on_the_candidate_and_moved_tail(tmp_path
     plan = [line + f"||{attrs}" for line in DEBIAN_PLAN]
     rc, calls, _marker = run_expand(tmp_path, plan, disk_sectors=976773168)
     assert rc == "rc=0"
-    assert any(f"-A 2:=:0x{attrs}" in call for call in calls), calls
-    assert any(f"-A 3:=:0x{attrs}" in call for call in calls), calls
+    assert f"-A 2:=:0x{attrs}" in one_call(calls), calls
+    assert f"-A 3:=:0x{attrs}" in one_call(calls), calls
 
 
 def test_the_room_check_counts_the_swap_that_comes_back(tmp_path):
@@ -1235,9 +1239,9 @@ def test_an_unmarked_debian_manifest_is_expanded_all_the_same(tmp_path):
     rc, calls, marker = run_expand(tmp_path, unmarked(DEBIAN_PLAN),
                                    disk_sectors=976773168)
     assert rc == "rc=0"
-    assert calls[0] == f"-d 3 {test_dev(tmp_path)}/sda"
-    assert calls[2] == (
-        "-a 1 -d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+    assert one_call(calls).startswith("-a 1 -d 3 ")
+    assert one_call(calls).endswith(
+        " -d 2 -n 2:206848:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     )
     assert marker == "2|ext4"
@@ -1249,8 +1253,8 @@ def test_an_unmarked_windows_manifest_picks_the_system_partition(tmp_path):
     rc, calls, marker = run_expand(tmp_path, unmarked(WINDOWS_PLAN),
                                    disk_sectors=976773168)
     assert rc == "rc=0"
-    assert calls[0] == f"-d 4 {test_dev(tmp_path)}/sda"
-    assert calls[2].startswith("-a 1 -d 3 -n 3:649216:0 ")
+    assert one_call(calls).startswith("-a 1 -d 4 ")
+    assert " -d 3 -n 3:649216:0 " in one_call(calls)
     assert marker == "3|ntfs"
 
 
@@ -1287,9 +1291,9 @@ def test_a_manifest_that_marks_exactly_one_partition_overrides_the_choice(tmp_pa
                                    disk_sectors=976773168)
     assert rc == "rc=0"
     assert marker == "2|ext4", "הסימון המפורש לא גבר על הבחירה האוטומטית"
-    assert calls[0] == f"-d 3 {test_dev(tmp_path)}/sda"
-    assert calls[2] == (
-        "-a 1 -d 2 -n 2:616448:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+    assert one_call(calls).startswith("-a 1 -d 3 ")
+    assert one_call(calls).endswith(
+        " -d 2 -n 2:616448:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     )
 
@@ -1313,7 +1317,7 @@ def test_an_old_agent_that_never_sets_the_override_behaves_exactly_as_before(tmp
     rc, calls, marker = run_expand(tmp_path, WINDOWS_PLAN, disk_sectors=976773168)
     assert rc == "rc=0"
     assert marker == "3|ntfs"
-    assert calls[0] == f"-d 4 {test_dev(tmp_path)}/sda"
+    assert one_call(calls).startswith("-a 1 -d 4 ")
 
 
 def test_an_explicit_auto_override_matches_the_default(tmp_path):
@@ -1321,7 +1325,7 @@ def test_an_explicit_auto_override_matches_the_default(tmp_path):
                                    override="auto")
     assert rc == "rc=0"
     assert marker == "3|ntfs"
-    assert calls[0] == f"-d 4 {test_dev(tmp_path)}/sda"
+    assert one_call(calls).startswith("-a 1 -d 4 ")
 
 
 def test_none_disables_expansion_even_on_a_huge_target(tmp_path):
@@ -1341,9 +1345,9 @@ def test_a_manual_override_picks_a_different_partition_than_auto_would(tmp_path)
                                    disk_sectors=976773168, override="2")
     assert rc == "rc=0"
     assert marker == "2|ext4"
-    assert calls[0] == f"-d 3 {test_dev(tmp_path)}/sda"
-    assert calls[2] == (
-        "-a 1 -d 2 -n 2:616448:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
+    assert one_call(calls).startswith("-a 1 -d 3 ")
+    assert one_call(calls).endswith(
+        " -d 2 -n 2:616448:0 -t 2:0FC63DAF-8483-4772-8E79-3D69D8477DE4 "
         f"-u 2:22222222-2222-2222-2222-222222222222 {test_dev(tmp_path)}/sda"
     )
 
@@ -1356,7 +1360,7 @@ def test_an_override_for_a_partition_not_in_this_manifest_falls_back_to_auto(tmp
                                    override="9")
     assert rc == "rc=0"
     assert marker == "3|ntfs"
-    assert calls[0] == f"-d 4 {test_dev(tmp_path)}/sda"
+    assert one_call(calls).startswith("-a 1 -d 4 ")
 
 
 def test_a_trailing_recovery_moves_to_the_tail_and_windows_takes_the_rest(tmp_path):
@@ -1366,10 +1370,9 @@ def test_a_trailing_recovery_moves_to_the_tail_and_windows_takes_the_rest(tmp_pa
     rc, calls, marker = run_expand(tmp_path, WINDOWS_PLAN, disk_sectors=976773168)
     assert rc == "rc=0"
     assert calls == [
-        f"-d 4 {test_dev(tmp_path)}/sda",
-        f"{tail_n(4, RECOVERY_SECTORS)[0]} -t 4:DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "
-        f"-u 4:44444444-4444-4444-4444-444444444444 {test_dev(tmp_path)}/sda",
-        "-a 1 -d 3 -n 3:649216:0 -t 3:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "
+        f"-a 1 -d 4 {tail_n(4, RECOVERY_SECTORS)[0]} -t 4:DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "
+        "-u 4:44444444-4444-4444-4444-444444444444 "
+        "-d 3 -n 3:649216:0 -t 3:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "
         f"-u 3:33333333-3333-3333-3333-333333333333 {test_dev(tmp_path)}/sda",
     ]
     assert marker == "3|ntfs"
@@ -1395,16 +1398,15 @@ def test_the_tail_keeps_its_order_on_the_disk_not_its_order_in_the_list(tmp_path
     rc, calls, marker = run_expand(tmp_path, CROSSED_TAIL_PLAN,
                                    disk_sectors=976773168)
     assert rc == "rc=0"
-    # שתי המחיקות בסדר כלשהו, ואז בנייה מהסוף פנימה: ה-recovery — האחרונה
-    # על הדיסק — נבראת ראשונה, ורק אחריה ה-swap שלפניה.
-    assert sorted(calls[:2]) == [f"-d 4 {test_dev(tmp_path)}/sda", f"-d 5 {test_dev(tmp_path)}/sda"]
-    assert calls[2] == (
-        f"{tail_n(4, RECOVERY_SECTORS)[0]} -t 4:DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "
-        f"-u 4:44444444-4444-4444-4444-444444444444 {test_dev(tmp_path)}/sda"
-    )
-    assert calls[3] == (
+    # שתי המחיקות, ואז בנייה מהסוף פנימה: ה-recovery — האחרונה על הדיסק —
+    # נבראת ראשונה, ורק אחריה ה-swap שלפניה; ואז המועמד (#1714: קריאה אחת).
+    assert one_call(calls) == (
+        f"-a 1 -d 4 -d 5 {tail_n(4, RECOVERY_SECTORS)[0]} -t 4:DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "
+        "-u 4:44444444-4444-4444-4444-444444444444 "
         f"{tail_n(5, 4294967296 // 512, end=tail_n(4, RECOVERY_SECTORS)[1] - 1)[0]} -t 5:0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "
-        f"-u 5:55555555-5555-5555-5555-555555555555 {test_dev(tmp_path)}/sda"
+        "-u 5:55555555-5555-5555-5555-555555555555 "
+        "-d 3 -n 3:649216:0 -t 3:EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "
+        f"-u 3:33333333-3333-3333-3333-333333333333 {test_dev(tmp_path)}/sda"
     )
     assert marker == "3|ntfs"
 
@@ -1673,10 +1675,13 @@ def test_every_lib_file_is_loaded_and_packed():
     ‏used_bytes ואת שם המחשב בלי מילה. שני השערים נבדקים כאן: הבנאי
     אורז את `lib/*.sh` בגלוב (ולכן קובץ חדש נתפס מאליו), אבל הטעינה
     ב-`imagectl-agent` היא **רשימה מפורשת** — ורשימה מפורשת שוכחת."""
-    agent_src = (AGENT / "imagectl-agent").read_text(encoding="utf-8")
+    # A lib file is loaded by imagectl-agent, or by init when it must run
+    # before the agent exists (initmods.sh, #1702); still one of the two.
+    agent_src = ((AGENT / "imagectl-agent").read_text(encoding="utf-8")
+                 + (AGENT / "init").read_text(encoding="utf-8"))
     missing = [p.name for p in sorted((AGENT / "lib").glob("*.sh"))
                if f'. "$LIB_DIR/{p.name}"' not in agent_src]
-    assert missing == [], f"קבצי lib שאינם נטענים ב-imagectl-agent: {missing}"
+    assert missing == [], f"קבצי lib שאינם נטענים ב-imagectl-agent או ב-init: {missing}"
 
     builder = (REPO / "tools" / "build_initramfs.sh").read_text(encoding="utf-8")
     assert '"$AGENT_DIR"/lib/*.sh' in builder, \

@@ -676,7 +676,7 @@ def _retry_load(command: str, label: str, *, fallback_local: bool) -> str:
         fi
     done
     if [ -z "${variable}" ]; then
-        echo "ImageCtl: {label} could not be loaded after 3 attempts."
+        echo "ImageSrv: {label} could not be loaded after 3 attempts."
         echo "Falling back after a short delay."
         sleep --interruptible 3
 {failure}
@@ -808,7 +808,7 @@ insmod tftp
 # GRUB fills net_default_mac from the interface that PXE-booted, already in
 # lowercase-with-colons form -- the canonical format from the interface spec.
 if [ -z "$net_default_mac" ]; then
-    echo "ImageCtl: no network interface reported."
+    echo "ImageSrv: no network interface reported."
     sleep --interruptible 3
     try_local
 fi
@@ -844,7 +844,7 @@ done
 # about its own MAC, so it cannot know it is a cloning machine -- and with
 # the server down there is nobody to ask. $grub_platform is the one thing
 # it does know (#323).
-echo "ImageCtl: server $imagectl_server unreachable."
+echo "ImageSrv: server $imagectl_server unreachable."
 sleep --interruptible 3
 try_local
 """)
