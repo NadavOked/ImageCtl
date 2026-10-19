@@ -87,13 +87,17 @@ lc_manifest() {
     _mf_sec=$(cat "$SYSROOT/sys/block/$1/size" 2>/dev/null); case "$_mf_sec" in ''|*[!0-9]*) return 1 ;; esac
     _mf_dg=$(sgdisk -p "$DEVROOT/$1" 2>> "$LOG_FILE" | awk -F': ' '/Disk identifier/ { print $2 }' | awk '{print $1}')
     valid_guid "$_mf_dg" || { LC_ERROR="לא הצלחנו לקרוא את ה-GUID של דיסק המקור"; return 1; }
+    # #1662: used_bytes -- the run's total, lc_part -- is the copy's measurement
+    # (lcsize.sh), the number the screen said; else df's, all of them, aloud.
+    if _mf_uf=$(lc_copy_used "$1" "$2"); then log "local clone: the run counts partclone's used blocks, as shown before the start (#1662)"
+    else log "local clone: the run counts df's used bytes, not the copy's measurement -- $_mf_uf (#1662)"; _mf_uf="$LC/inv/$1.used"; fi
     while IFS='|' read -r _mf_i _mf_t _mf_u _mf_f _mf_s; do
         _mf_n=$(partition_node "$1" "$_mf_i"); _mf_fs=$(_fs_of "$_mf_n"); _mf_role=$(lc_role "$1" "$_mf_i" "$_mf_t")   # #1369/#1354: as the inventory checked it
         [ "$_mf_fs" = swap ] && _mf_role=swap
         [ "$_mf_role" != unchecked ] || { LC_ERROR="מחיצה $_mf_i: לא הצלחנו לבדוק אם היא מחיצת המערכת"; return 1; }
         _mf_uuid=$(_uuid_of "$_mf_n"); if [ -n "$_mf_uuid" ]; then _mf_uuid="\"$_mf_uuid\""; else _mf_uuid=null; fi
         _mf_file="\"local:p$_mf_i\""; [ "$_mf_role" = swap ] && _mf_file=null
-        _mf_used=$(awk -F'|' -v i="$_mf_i" '$1 == i { print $2; exit }' "$LC/inv/$1.used" 2>/dev/null)
+        _mf_used=$(awk -F'|' -v i="$_mf_i" '$1 == i { print $2; exit }' "$_mf_uf" 2>/dev/null)
         case "$_mf_used" in ''|*[!0-9]*) _mf_used=null ;; esac
         _mf_j="$_mf_j{\"index\":$_mf_i,\"type_guid\":\"$_mf_t\",\"unique_guid\":\"$_mf_u\",\"attrs\":\"$(lc_entry "$_mf_i" 3)\",\"uuid\":$_mf_uuid,\"role\":\"$_mf_role\",\"fs\":\"$_mf_fs\",\"start_sector\":$_mf_f,\"size_bytes\":$((_mf_s * 512)),\"used_bytes\":$_mf_used,\"file\":$_mf_file,\"sha256\":null,\"expandable\":false$(shrink_json_extra "$_mf_i" "$_mf_f" "$_mf_s" 512)},"
     done < "$2"
@@ -105,10 +109,13 @@ lc_manifest() {
 lc_set_names() {
     # $1 = target. The partition names ("Basic data partition", ...): apply_gpt
     # does not carry them, and a table that is "identical" carries them.
+    # #1714: every name in ONE sgdisk call (a writing sgdisk sleeps 1s). Names
+    # hold spaces, so `set --`, with the target saved first (#1418).
+    _sn_dev="$DEVROOT/$1"; set --
     while IFS='|' read -r _sn_i _sn_name _sn_a; do
-        [ -n "$_sn_name" ] || continue
-        sgdisk -c "$_sn_i:$_sn_name" "$DEVROOT/$1" >> "$LOG_FILE" 2>&1 || return 1
-    done < "$LC/run/entries"
+        [ -z "$_sn_name" ] || set -- "$@" -c "$_sn_i:$_sn_name"
+    done < "$LC/run/entries" || return 1
+    [ "$#" -eq 0 ] || sgdisk "$@" "$_sn_dev" >> "$LOG_FILE" 2>&1
 }
 
 _tc_v() { printf '%s\n' "$_tc_info" | awk -F': ' -v k="$1" '$1 == k { print $2; exit }' | awk '{print $1}'; }

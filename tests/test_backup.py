@@ -64,7 +64,7 @@ def test_archive_has_db_manifest_sums_and_no_images(tmp_path: Path):
     conn.execute("CREATE TABLE settings (k TEXT, v TEXT)")
     conn.commit()
     payload, name = backup_mod.build_archive(conn, data, "v0.53.3")
-    assert name.startswith("imagectl-settings-") and name.endswith(".tar.gz")
+    assert name.startswith("imagesrv-settings-") and name.endswith(".tar.gz")
     members = _members(payload)
     assert set(members) == {"data/imagectl.db", "data/netcfg/servers.conf",
                             "data/console.pem", "MANIFEST.txt", "SHA256SUMS"}
@@ -108,7 +108,7 @@ def test_download_restores_to_a_database_with_the_users(server):
     r = admin.get("/api/console/update/backup")
     assert r.status_code == 200, r.text
     assert r.headers["content-type"] == "application/gzip"
-    assert 'filename="imagectl-settings-' in r.headers["content-disposition"]
+    assert 'filename="imagesrv-settings-' in r.headers["content-disposition"]
     assert r.headers["cache-control"] == "no-store"
     members = _members(r.content)
     restored = sqlite3.connect(":memory:")

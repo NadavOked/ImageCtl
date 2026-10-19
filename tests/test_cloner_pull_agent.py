@@ -20,9 +20,10 @@ from pathlib import Path
 
 import pytest
 
+import hygiene
 from native import requires_native
 from test_cloner_gui import BASH, posix
-from test_local_clone_agent import LIBS as LC_LIBS, LIB, REPO
+from test_local_clone_agent import GUI_UP, LIBS as LC_LIBS, LIB, REPO
 
 pytestmark = requires_native(("bash", BASH))
 
@@ -31,7 +32,7 @@ LIBS = LC_LIBS + ("lcpull",)
 #: three drawers, disk numbers by the drawer mapping -- sdc is disk 1 (as on cloner 2)
 DRAWERS = ('list_drawers() { echo sda; echo sdb; echo sdc; }; '
            'disk_port() { case "$1" in sda) echo 2;; sdb) echo 3;; sdc) echo 1;; *) echo 0;; esac; }; ')
-BOOT = DRAWERS + 'D_ROLE=cloner; sleep 300 & _gui_pid=$!; '
+BOOT = DRAWERS + 'D_ROLE=cloner; ' + GUI_UP
 
 
 def run(tmp_path: Path, script: str, timeout: int = 60, **env):
@@ -40,9 +41,14 @@ def run(tmp_path: Path, script: str, timeout: int = 60, **env):
     pre = f'export RUN_DIR={posix(run_dir)!r} IMAGECTL_TEST=1 MAC=aa:bb:cc:dd:ee:ff SERVER=http://10.0.0.1:8080; '
     pre += "".join(f'export {k}={v!r}; ' for k, v in env.items())
     pre += "".join(f'. {posix(LIB)}/{name}.sh; ' for name in LIBS)
-    return subprocess.run([BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + pre + script],
-                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
-                          stdin=subprocess.DEVNULL, cwd=str(REPO))
+    # #1579: lc_pull_session starts the hello beat (attended_start: a background
+    # `while :; sleep 1` subshell) and its caller in the agent stops it. The test
+    # is that caller: without this trap the beat outlived every test that opens
+    # the session, for good, holding the run dir. attended_stop kills its own pid.
+    pre += "trap 'attended_stop' EXIT; "
+    return hygiene.run_group([BASH, "-c", 'export PATH="/usr/bin:$PATH"; ' + pre + script],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                             stdin=subprocess.DEVNULL, cwd=str(REPO))
 
 
 # --- the boot choice -------------------------------------------------------------------
@@ -76,7 +82,7 @@ def test_no_touch_is_still_the_server(tmp_path):
 
 
 def test_with_one_disk_local_is_refused_and_pull_is_not(tmp_path):
-    out = run(tmp_path, 'list_drawers() { echo sda; }; D_ROLE=cloner; sleep 300 & _gui_pid=$!; local_clone_arm; '
+    out = run(tmp_path, 'list_drawers() { echo sda; }; D_ROLE=cloner; ' + GUI_UP + 'local_clone_arm; '
               '( sleep 1; echo local > "$LC/boot.decision"; sleep 2; echo pull > "$LC/boot.decision" ) & '
               'lc_session() { echo LOCAL; }; lc_pull_session() { echo PULL; LC_END=opened; }; '
               'local_clone_offer; kill $_gui_pid', LC_BOOT_S="20")
@@ -256,3 +262,26 @@ def test_the_kiosk_and_the_agent_both_load_lcpull():
     libs = bridge[bridge.index("gui_libs() {"):bridge.index("gui_main() {")]
     assert '"$LIB_DIR/lcpull.sh"' in libs and '"$LIB_DIR/drawers.sh"' in libs   # list_drawers in the kiosk
     assert '"$LIB_DIR/lcpull.sh"' in (REPO / "agent" / "imagectl-agent").read_text(encoding="utf-8")
+
+
+@requires_native(("/proc", Path("/proc/self").is_dir()), posix=True, why="the check reads /proc")
+def test_a_session_leaves_no_process_behind(tmp_path):
+    """#1579: the session starts a background beat; what run() starts is gone after it.
+    A process is "left" when /proc holds a command line naming this test's run dir."""
+    out = run(tmp_path, 'sleep 300 & _gui_pid=$!; mkdir -p "$LC"; lc_pull_images() { :; }; lc_pull_nonce() { :; }; '
+              '( sleep 1; echo back > "$LC/end.req" ) & lc_pull_session; echo "end=$LC_END"; kill $_gui_pid')
+    assert out.returncode == 0 and "end=back" in out.stdout, out.stdout + out.stderr
+    mine = str(tmp_path).encode()
+    deadline = time.monotonic() + 5
+    while True:   # a killed process leaves /proc a moment after the kill returns
+        left = []
+        for cmd in Path("/proc").glob("[0-9]*/cmdline"):
+            try:
+                if mine in cmd.read_bytes():
+                    left.append(f"{cmd.parent.name}: {cmd.read_bytes()[-200:]!r}")
+            except OSError:   # the process ended between the glob and the read
+                pass
+        if not left or time.monotonic() > deadline:
+            break
+        time.sleep(0.2)
+    assert not left, left

@@ -191,7 +191,9 @@ def test_a_successor_wave_is_adopted_and_not_duplicated(room_server, monkeypatch
     wave1 = _wave_done(room_server, target=6)
     monkeypatch.setattr(ctx.conn, "execute", boom)
 
-    cloner_hello(anon, CLONER1, ["S1", "S2"])          # הדופק שנקטע
+    # דופק לא-מצטרף: ‏hello **מצטרף** מריץ דופק שני אחרי ההצטרפות (#1703),
+    # והוא כבר היה מאמץ את היורש באותה בקשה — כאן נבדק הדופק הבא בנפרד.
+    cloner_hello(anon, CLONER1, ["S1", "S2"], joining=False)   # הדופק שנקטע
     assert boom.fired == 1, "התקלה לא נורתה — הטסט לא בדק דבר"
     orphan = _actives(ctx)
     assert len(orphan) == 1 and orphan[0]["id"] != wave1, \
@@ -382,7 +384,9 @@ def test_hello_never_starts_a_room_wave(room_server):
     גם כשהמצטרפים מכסים את המספר שהוצהר וגם כשהטיימר פקע.
     """
     ctx = room_server["ctx"]
-    _open_round(room_server, target=2, drawers={CLONER1: ["S1", "S2"]})
+    # ‏#1703: hello שמכסה את היעד מוציא את הגל בעצמו (`room.tick`, לא
+    # `maybe_start`) — לכן כאן CLONER2 עוד בדרך, והגל נשאר פתוח.
+    _open_round(room_server, target=4)
     cloner_hello(room_server["anon"], CLONER1, ["S1", "S2"])
     wave = ctx.store.active()
     assert wave is not None and wave["state"] == "open"

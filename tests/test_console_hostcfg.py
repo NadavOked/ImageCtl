@@ -226,6 +226,56 @@ def test_upload_replaces_the_pair_keeps_the_previous_and_restarts(host):
     assert status["covers_hostname"] is False
 
 
+def reissue(client):
+    return client.post("/api/console/tls/reissue")
+
+
+def test_reissue_makes_a_new_self_signed_pair_keeps_the_previous_and_restarts(host):
+    """נדב 17/10: "הנפקת תעודה חדשה" — עצמית, ה-SAN נשמר, הזוג הקודם ב-.prev, ואתחול."""
+    old_cert = (host["dir"] / "console.crt").read_bytes()
+    old_sans = set(console_tls.cert_sans(old_cert))
+    r = reissue(host["admin"])
+    assert r.status_code == 200, r.text
+    assert r.json()["restarting"] is True
+    new_cert = (host["dir"] / "console.crt").read_bytes()
+    assert new_cert != old_cert
+    assert (host["dir"] / "console.crt.prev").read_bytes() == old_cert
+    assert (host["dir"] / "console.key.prev").exists()
+    assert old_sans <= set(console_tls.cert_sans(new_cert))
+    assert console_tls.cert_details(new_cert)["subject"] == console_tls.COMMON_NAME == "imagesrv-console"
+    assert console_tls.cert_details(new_cert)["self_signed"] is True
+    assert host["machine"].restarts == 1
+    assert events(host["ctx"], "console_tls_reissued")
+    # התהליך עדיין רץ עם הישנה עד האתחול — נאמר, לא מוסתר.
+    assert host["admin"].get("/api/console/tls").json()["pending_restart"] is True
+
+
+def test_reissue_refuses_a_ca_signed_cert_and_touches_nothing(host):
+    cert, key, _ = make_pair(issuer_cn="College CA")
+    console_tls.install_upload(host["dir"].parent, cert, key)
+    r = reissue(host["admin"])
+    assert r.status_code == 400
+    assert "חתומה" in r.json()["detail"]
+    assert (host["dir"] / "console.crt").read_bytes() == cert
+    assert host["machine"].restarts == 0
+    assert events(host["ctx"], "console_tls_refused")
+    assert not events(host["ctx"], "console_tls_reissued")
+
+
+def test_reissue_waits_while_a_round_is_running(host):
+    open_round(host["ctx"])
+    before = (host["dir"] / "console.crt").read_bytes()
+    assert reissue(host["admin"]).status_code == 409
+    assert (host["dir"] / "console.crt").read_bytes() == before
+    assert host["machine"].restarts == 0
+
+
+def test_reissue_restart_that_was_not_scheduled_is_a_failure(host):
+    host["machine"].restart_error = "systemd-run: not found"
+    r = reissue(host["admin"])
+    assert r.status_code == 500 and "נכתבה" in r.json()["detail"]
+
+
 def test_a_refused_upload_touches_nothing(host):
     before = (host["dir"] / "console.crt").read_bytes()
     cert, _key, _ = make_pair()
@@ -277,7 +327,7 @@ def test_upload_is_refused_when_the_console_runs_without_tls(tmp_path: Path, ima
     app.state.ctx.sender.stop()
 
 
-@pytest.mark.parametrize("method,path", [("get", "/api/console/tls"), ("post", "/api/console/tls"),
+@pytest.mark.parametrize("method,path", [("get", "/api/console/tls"), ("post", "/api/console/tls"), ("post", "/api/console/tls/reissue"),
                                          ("get", "/api/console/hostname"),
                                          ("post", "/api/console/hostname")])
 def test_deploy_user_gets_403(host, method, path):

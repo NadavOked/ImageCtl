@@ -87,6 +87,7 @@ shrink_plan() {
             return 1 ;;
         esac
         _sp_new=$(_shrink_target "$_sp_min" "$_sp_cur")
+        [ "${CAPTURE_SINK:-upload}" != discard ] || _sp_new=$_sp_cur   # #1171: a direct send takes the tail only
         [ "$_sp_new" -lt "$_sp_cur" ] || log "partition $_sp_idx: $_sp_cur bytes, minimum $_sp_min -- nothing to shrink"
         printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$_sp_idx" "$_sp_guid" "$_sp_uguid" "$_sp_start" "$_sp_size" "$_sp_cur" "$_sp_new" "$_sp_min" >> "$_sp_m"
     done 3< "$RUN_DIR/shrink.cand"
@@ -127,6 +128,9 @@ shrink_question() {
         [ -n "$_sq_i" ] || continue
         _sq="$_sq${_sq:+, }מחיצה $_sq_i מ-$(_shrink_gb "$_sq_cur") ל-$(_shrink_gb "$_sq_new")"
     done < "$1"
+    if [ "${CAPTURE_SINK:-upload}" = discard ]; then   # #1171: the direct send's question
+        printf 'ההפצה הישירה תכווץ בעותק בזיכרון, והמקור לא ייכתב: %s — כווץ ושלח / שלח בלי כיווץ' "$_sq"; return
+    fi
     printf '%sהקליטה תכווץ במחשב הזה: %s — המשך/ביטול' "${CAPTURE_SPACE_WARNING:+$CAPTURE_SPACE_WARNING — }" "$_sq"
 }
 

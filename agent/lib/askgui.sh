@@ -29,13 +29,13 @@ gui_ask_answers() {
     # $1 = kind. The answers that kind accepts, one word list.
     case "$1" in
         growback) echo "restore leave" ;;
-        capture-end) echo "poweroff menu" ;;
+        capture-end|send-end|round-end) echo "poweroff menu" ;;   # #1560: task.sh build_end_ask
         *) return 1 ;;
     esac
 }
 
 gui_ask_choice() {
-    # $1 = kind, $2 = subject (a disk name, or seconds), $3 = rows file
+    # $1 = kind, $2 = subject (a disk name, or the epoch of the power-off), $3 = rows file
     # (idx|now|orig|table|fs; "" for none), $4 = ceiling in seconds.
     # stdout = the answer; non-zero = the GUI could not answer.
     _ag_ok=$(gui_ask_answers "$1") || return 1
@@ -70,7 +70,7 @@ gui_ask_choice() {
     fi
     mv "$GUI_DIR/ask-request.next" "$GUI_DIR/ask-request" || { gui_ask_clear; return 1; }
     _ag_waited=0
-    while kill -0 "$_gui_pid" 2>/dev/null; do
+    while kill -0 "$_gui_pid" 2>/dev/null && [ -e "$GUI_DIR/ask-request" ]; do   # #1726: a bridge that died took the question with it
         attended_power_check
         if [ -s "$GUI_DIR/ask-decision" ]; then
             IFS='|' read -r _ag_nonce_back _ag_answer < "$GUI_DIR/ask-decision" || {

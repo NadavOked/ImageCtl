@@ -34,6 +34,7 @@ def _standby_record(tmp_path: Path, smart: str, hello: dict | None) -> list[str]
     sysroot = tmp_path / "sysroot"
     (sysroot / "sys/block/sda/device").mkdir(parents=True)
     (sysroot / "sys/block/sda/size").write_text("1000\n", newline="\n")
+    (sysroot / "sys/block/sda/ro").write_text("0\n", newline="\n")   # #1742: unread = not checked
     _sata(sysroot)
     (run / "smart").mkdir()
     (run / "smart/sda.v").write_text(smart + "\n", newline="\n")      # verdict reason realloc pending uncorr crc

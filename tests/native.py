@@ -42,6 +42,19 @@ DECLARED_PREFIX = "תחנת פיתוח בלבד"
 DECLARED_TAG = "declared-skips"
 
 
+#: ספריות ה-sbin. הסוכן רץ כ-root ושם הן ב-PATH; משתמש רגיל בדביאן (‏`test`
+#: על ה-Testrunner) מקבל PATH בלעדיהן, ואז `which("sgdisk")` ריק וכל טסט
+#: של sgdisk אמיתי דילג בשקט — ורגרסיה של rc5 לא נראתה (#1594).
+SBIN = ("/usr/local/sbin", "/usr/sbin", "/sbin")
+
+
+def with_sbin(path: str, isdir=os.path.isdir) -> str:
+    """‏PATH של POSIX ובסופו כל ספריית sbin שקיימת וחסרה בו. בסוף ולא
+    בהתחלה: מה שהמשתמש כבר מצא קודם נשאר קודם."""
+    parts = [p for p in path.split(":") if p]
+    return ":".join(parts + [d for d in SBIN if d not in parts and isdir(d)])
+
+
 def native_required() -> bool:
     """נקרא בכל פעם מחדש, ולא נקבע ביבוא — הטסטים מזיזים את הדגל."""
     return os.environ.get(ENV_FLAG, "").strip().lower() not in ("", "0", "no", "false")
@@ -131,8 +144,17 @@ class SkipAudit:
         self.skipped: dict[str, str] = {}
 
     def record(self, report) -> None:
-        if report.skipped:
+        if report.skipped and not self._ran_and_failed_as_predicted(report):
             self.skipped.setdefault(report.nodeid, skip_reason(report))
+
+    @staticmethod
+    def _ran_and_failed_as_predicted(report) -> bool:
+        """pytest reports a failed ``xfail`` as outcome *skipped* with ``wasxfail``
+        set. That test RAN and failed as predicted (and ``strict=True`` turns an
+        unexpected pass into a failure), so it is not a test that did not run.
+        Only the ``call`` phase counts: ``xfail(run=False)`` is skipped in
+        ``setup`` and never ran -- that one stays on the audit."""
+        return hasattr(report, "wasxfail") and getattr(report, "when", "") == "call"
 
     def declared(self) -> dict[str, str]:
         """הדילוגים שהוצהרו מראש — כלי תחנת-פיתוח שאינו כאן במכוון."""

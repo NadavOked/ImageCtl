@@ -33,6 +33,9 @@ import pytest
 
 pytest.importorskip("cryptography")
 
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+
 import server.main
 from server import console_tls
 from test_console_bind import run_main
@@ -55,6 +58,9 @@ def test_first_start_creates_cert_and_0600_key_with_the_management_sans(tmp_path
     assert tls.cert_path.is_file() and tls.key_path.is_file()
     assert b"BEGIN CERTIFICATE" in tls.cert_path.read_bytes()
     assert b"PRIVATE KEY" in tls.key_path.read_bytes()
+    cert = x509.load_pem_x509_certificate(tls.cert_path.read_bytes())
+    common_names = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    assert [item.value for item in common_names] == ["imagesrv-console"]
     if os.name == "posix":
         assert stat.S_IMODE(tls.key_path.stat().st_mode) == 0o600
     assert set(tls.sans) == {"10.0.0.1", "imagectl-srv"}

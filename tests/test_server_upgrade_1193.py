@@ -182,7 +182,10 @@ def test_empty_commit_answers_are_not_the_same_commit(tmp_path, bindir):
     data = tmp_path / "data"
     _seed_db(data)
     repo = _fake_repo(tmp_path, live_ok=True)
-    fake_tool(bindir, "git", _git_shim(head="", tag_commit=""))
+    # ‏#1546: לפני ה-checkout ה-HEAD נקרא (יעד החזרה); הריקים — רק אחריו.
+    fake_tool(bindir, "git", _git_shim(
+        checkout='touch "$FAKE_LOG.co"',
+        head='$([ -e "$FAKE_LOG.co" ] || echo fake-commit-before)', tag_commit=""))
     fake_tool(bindir, "systemctl", "exit 0")
     fake_tool(bindir, "curl", "exit 0")
 
@@ -191,6 +194,24 @@ def test_empty_commit_answers_are_not_the_same_commit(tmp_path, bindir):
     assert proc.returncode != 0
     status = _rolled_back_to_previous(tmp_path, data)
     assert "v0.53.0" in status["error"]
+
+
+def test_an_unreadable_head_before_the_upgrade_refuses_without_touching_the_tree(tmp_path, bindir):
+    """‏#1546: יעד החזרה הוא ה-HEAD של לפני הריצה. בלי ראיה מהו — לא משדרגים."""
+    data = tmp_path / "data"
+    _seed_db(data)
+    repo = _fake_repo(tmp_path, live_ok=True)
+    fake_tool(bindir, "git", _git_shim(head=""))
+    fake_tool(bindir, "systemctl", "exit 0")
+    fake_tool(bindir, "curl", "exit 0")
+
+    proc = _run(tmp_path, bindir, repo, data)
+
+    assert proc.returncode != 0
+    assert not [row for row in calls(tmp_path) if " checkout " in f" {row} "]
+    assert not [row for row in calls(tmp_path) if row.startswith("systemctl restart")]
+    status = _status(data)
+    assert status and status["state"] == "failed" and "אין יעד חזרה" in status["error"]
 
 
 def test_unit_install_failure_returns_to_the_previous_tag_in_name(tmp_path, bindir):

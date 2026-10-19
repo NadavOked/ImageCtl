@@ -43,7 +43,10 @@ def box(tmp_path: Path, crc_before: int) -> tuple[str, Path]:
                   newline="\n")
     subprocess.run([BASH, "-c", f'chmod +x {posix(sc)!r}'], check=True,
                    stdin=subprocess.DEVNULL)
-    base = env(run, dev, smartctl=posix(sc)) + PRELUDE
+    # ‏#1742: ‏/sys/block/sda/ro = 0 -- כתיב; ro שלא נקרא היה "לא נבדק", לא "ok"
+    blk = tmp_path / "sysro" / "sys" / "block" / "sda"; blk.mkdir(parents=True)
+    (blk / "ro").write_text("0\n", newline="\n")
+    base = env(run, dev, sysroot=tmp_path / "sysro", smartctl=posix(sc)) + PRELUDE
     out = sh(base + 'target_init sda 1000; smart_probe sda')
     assert out.returncode == 0 and out.stdout.strip() == "ok", out.stderr
     return base, tmp_path

@@ -170,3 +170,21 @@ def test_the_boot_paths_come_from_bootca_sh(tmp_path):
 
     paths = vmdisk._boot_paths(Host(), tmp_path / "run")
     assert "/EFI/Microsoft/Boot/bootmgfw.efi" in paths and "/EFI/BOOT/bootx64.efi" in paths
+
+
+# --- ‏#1491: תקציב העותק של הכיווץ — `_lc_relocs` של הסוכן, דרך הגשר -------------
+
+#: מה ש-ntfsresize v2022.10.3 הדפיס ב-Testrunner (17/10) — ‏-n על C: של
+#: ‏`test_vmupdate_integration`, ליעד 2.16GB ול-1GB.
+RELOCS_NONE = "Collecting resizing constraints ...\nNeeded relocations : 0 (0 MB)\n"
+RELOCS_SOME = "Collecting resizing constraints ...\nNeeded relocations : 3277 (14 MB)\n"
+
+
+@pytest.mark.parametrize("said,mb", [(RELOCS_NONE, "0"), (RELOCS_SOME, "14"), ("", "")])
+def test_the_bridge_reads_the_relocations_the_way_the_agent_does(tmp_path, said, mb):
+    """‏`view_budget` קורא ל-`_lc_relocs` דרך הגשר — הוא חייב להיטען שם (‏lcsnap.sh),
+    ו-0 הוא מספר שנמדד, לא "לא נמדד". פלט בלי השורה = ריק (‏view_budget נכשל)."""
+    out = tmp_path / "relocs.txt"
+    out.write_text(said, encoding="utf-8", newline="\n")
+    got = call(tmp_path, "_lc_relocs", posix(out))
+    assert got.out.strip() == mb, got

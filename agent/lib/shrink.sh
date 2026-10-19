@@ -31,9 +31,10 @@
 # שם, ‏ntfsfix רק `-d`: ‏`-b` היה מוחק את רשימת הקלאסטרים הפגומים של דיסק
 # הבנייה ($BadClus).
 #
-# מה שאסור: כיווץ NTFS מהובר/מלוכלך (השער של #651 רץ לפני הקורא הזה),
-# ושידור ישיר (‏CAPTURE_SINK=discard, ‏#715) -- הקריאה השנייה שם משווה sha256
-# לראשונה, ועותק שנבנה פעמיים אינו מובטח להיות אותם בייטים.
+# מה שאסור: כיווץ NTFS מהובר/מלוכלך (השער של #651 רץ לפני הקורא הזה).
+# שידור ישיר (‏CAPTURE_SINK=discard, ‏#715) מכווץ רק את הזנב, על עותק **אחד**
+# שנבנה פעם אחת ונקרא פעמיים (‏_shrink_direct, ‏#1171) -- הקריאה השנייה שם
+# משווה sha256 לראשונה, ועותק שנבנה פעמיים אינו מובטח להיות אותם בייטים.
 #
 # כל צעד נבדק בקוד יציאה ובקריאה חוזרת (עיקרון 5): "לא הצלחנו לכווץ"
 # הוא כשל גלוי של הקליטה, לא "כווצנו". ‏SHRINK_ERROR נושא את הסיבה אל
@@ -85,7 +86,7 @@ shrink_before_capture() {
     # ו-$2 כבר מתאר את הפריסה המצומצמת; ‏1 = הקליטה נעצרת, SHRINK_ERROR אומר למה.
     SHRINK_ERROR=""
     rm -f "$RUN_DIR/targets/$1/shrunk" "$RUN_DIR/parts.orig.txt"
-    [ "${CAPTURE_SINK:-upload}" = discard ] && return 0
+    [ "${CAPTURE_SINK:-upload}" = discard ] && { _shrink_direct "$1" "$2" "$3"; return; }
     shrink_plan "$1" "$2" "$3" || return 1
     _sb_plan="$RUN_DIR/shrink.plan"; [ -s "$_sb_plan" ] || return 0
     # ‏#926: לפי זיכרון השרת (ה-hello שהביא את המשימה) הדיסק כבר מכווץ מקליטה
@@ -110,6 +111,39 @@ shrink_before_capture() {
     # dm, אין מקום, טבלה שלא נקראה בחזרה): הקליטה **נעצרת** בשם ועם המספרים;
     # ‏"בלי כיווץ" בשאלה הוא הדרך לאימג' בגודל מלא, והוא לא כותב דבר.
     [ "$3" = 512 ] || { SHRINK_ERROR="סקטור של $3 בייט: העותק בזיכרון נבנה על סקטורים של 512 בלבד — המקור לא נכתב והקליטה נעצרה; קלטו בלי כיווץ"; return 1; }
+    _shrink_view "$1" "$2"; _sb_rc=$?
+    [ "$_sb_rc" != 3 ] || SHRINK_ERROR="אין עותק לקריאה בלבד לכיווץ: $LC_SNAP_WHY — המקור לא נכתב והקליטה נעצרה; לאימג' בגודל מלא קלטו שוב ובחרו בלי כיווץ"
+    [ "$_sb_rc" = 0 ]
+}
+
+_shrink_direct() {
+    # $1 disk $2 parts file $3 sector size. ‏#1171: שידור ישיר (CAPTURE_SINK=discard)
+    # מכווץ **רק את הזנב** של #1202 (‏shrink_plan בלי המרווח הרגיל), אחרי אישור
+    # בדיאלוג של הקליטה (נדב 17/10: לא בשקט). "כווץ ושלח" = כיווץ; "שלח בלי
+    # כיווץ", ביטול או **בלי תשובה** (אין גואי, פקיעה) = הפריסה בגודלה המלא --
+    # כמו בקליטה ובשיכפול המקומי, שום דבר לא מכווץ בלי אדם שאמר כן, אבל
+    # השידור עצמו אינו נעצר: יעד קטן נפסל בשמו ובכמה (disk_fits). עותק **אחד**,
+    # ושתי הקריאות קוראות אותו -- אותם בייטים, ולכן אותו sha256; הוא משוחרר
+    # ב-direct_send_task אחרי השנייה. אין זנב או אין עותק: גם כן גודל מלא, וביומן למה.
+    # ‏0 = יוצאים לדרך (‏$2 מצומצם או כפי שהיה); ‏1 = SHRINK_ERROR.
+    if ! shrink_plan "$1" "$2" "$3"; then
+        log "direct send: no tail -- $SHRINK_ERROR; the layout is sent at its full size"; SHRINK_ERROR=""; return 0
+    fi
+    [ -s "$RUN_DIR/shrink.plan" ] || return 0
+    [ "$3" = 512 ] || { log "direct send: no tail -- $3-byte sectors (the RAM view is 512 only); the layout is sent at its full size"; return 0; }
+    _sd_q=$(shrink_question "$RUN_DIR/shrink.plan")
+    _sd_dec=$(attended "$_sd_q" shrink_ask "$RUN_DIR/shrink.plan")
+    [ "$_sd_dec" = continue ]         || { log "direct send: no tail -- the shrink was not confirmed ($_sd_dec; no answer is cancel); the layout is sent at its full size"; return 0; }
+    _shrink_view "$1" "$2"; _sd_rc=$?
+    [ "$_sd_rc" = 3 ] || return "$_sd_rc"
+    log "direct send: no tail -- no RAM view ($LC_SNAP_WHY); the layout is sent at its full size"
+}
+
+_shrink_view() {
+    # $1 disk $2 parts file; התוכנית ב-$RUN_DIR/shrink.plan. ‏0 = כווץ על העותק,
+    # ‏$2 מתאר את הפריסה המצומצמת ו-partclone קורא את העותק (lc_src_node);
+    # ‏3 = אין עותק (‏LC_SNAP_WHY), ולא נשאר ממנו דבר; ‏1 = SHRINK_ERROR.
+    _sb_plan="$RUN_DIR/shrink.plan"
     LC_SNAP_RUN="$RUN_DIR/capsnap"; rm -rf "$LC_SNAP_RUN"
     { mkdir -p "$LC_SNAP_RUN" && cp "$_sb_plan" "$LC_SNAP_RUN/shrink.plan" && cp "$2" "$LC_SNAP_RUN/parts.txt"; } \
         || { SHRINK_ERROR="לא הצלחנו להכין את העותק בזיכרון — המקור לא נכתב"; return 1; }
@@ -120,8 +154,7 @@ shrink_before_capture() {
         0) cp "$LC_SNAP_RUN/parts.txt" "$2" || { SHRINK_ERROR="לא הצלחנו לכתוב את הפריסה המצומצמת — המקור לא נכתב"; return 1; }
            log "partitions shrunk on a RAM view of $1 -- the source disk is not written"
            while IFS='|' read -r _sb_idx _sb_rest; do cd_state "$_sb_idx" waiting 2>/dev/null || :; done < "$_sb_plan" ;;
-        3) SHRINK_ERROR="אין עותק לקריאה בלבד לכיווץ: $LC_SNAP_WHY — המקור לא נכתב והקליטה נעצרה; לאימג' בגודל מלא קלטו שוב ובחרו בלי כיווץ"
-           return 1 ;;
+        3) return 3 ;;
         *) SHRINK_ERROR="${LC_ERROR:-הכיווץ של העותק נכשל — המקור לא נכתב}"; return 1 ;;
     esac
 }

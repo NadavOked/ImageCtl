@@ -153,6 +153,7 @@ class Box:
             f'SERVER=http://10.44.12.10:8080 MAC=b4:2e:99:07:1a:c4 {env}; '
             f'. {posix(AGENT)}/lib/common.sh; . {posix(AGENT)}/lib/jsonq.sh; '
             f'. {posix(AGENT)}/lib/restore.sh; . {posix(AGENT)}/lib/hostname.sh; '
+            f'. {posix(AGENT)}/lib/hostname_linux.sh; . {posix(AGENT)}/lib/linuxdrivers.sh; '
             f'. {posix(AGENT)}/lib/bootstorage.sh; . {posix(AGENT)}/lib/postdeploy.sh; '
             f'manifest_plan() {{ printf \'%s\\n\' {plan!r}; return {plan_rc}; }}; '
             f'partition_node() {{ echo /dev/fake; }}; '
@@ -257,9 +258,13 @@ def test_a_server_that_does_not_answer_is_failed(tmp_path):
 
 
 def test_a_linux_image_is_skipped_by_name(tmp_path):
-    box = Box(tmp_path, plan=LINUX_PLAN)
+    # ‏#1331: ה-initramfs נבדק (`drivers.linux`, ‏test_linuxdrivers.py) — כאן
+    # העיגון נכשל, וה-staging עצמו נשאר skipped/not_windows.
+    box = Box(tmp_path, plan=LINUX_PLAN, stubs={"mount": "exit 32"})
     _, result = box.stage()
-    assert result == {"state": "skipped", "packages": [], "reason": "not_windows"}
+    assert {k: v for k, v in result.items() if k != "linux"} == {
+        "state": "skipped", "packages": [], "reason": "not_windows"}
+    assert result["linux"]["state"] == "failed"
     assert box.calls() == []
 
 

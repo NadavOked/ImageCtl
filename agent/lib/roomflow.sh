@@ -37,7 +37,40 @@ room_open() {
         return 1
     fi
     log "cloning room round opened from the build machine: $_img x$_target"
+    # #1560: its end is asked on this machine (room_end_watch below)
+    _ro_id=$(json_get "$RUN_DIR/room_open_resp.json" ".id")
+    case "$_ro_id" in room_*) ;; *) _ro_id="" ;; esac
+    case "${_ro_id#room_}" in ''|*[!A-Za-z0-9]*) _ro_id="" ;; esac
+    if [ -n "$_ro_id" ]; then printf '%s|%s\n' "$_ro_id" "$(date +%s)" > "$RUN_DIR/room.watch"
+    else log "room round: no round id in the answer -- its end will not be asked"; fi
     return 0
+}
+
+room_end_watch() {
+    # #1560 (Nadav 17/10): the end of a round opened here is asked like the
+    # end of a capture. The kiosk sees it -- the round in room.watch is no
+    # longer on the server's room -- and hands room.ended to the agent
+    # (task.sh build_round_end). A round that failed or is being closed by a
+    # person is not "finished": the watch is dropped, nothing asked. A room
+    # that could not be read is no answer at all (principle 5): non-zero --
+    # and not forever (security review 17/10: the watch also holds off the
+    # idle power-off, idle.sh): no "active" for ROOM_WATCH_MAX_S drops it, aloud.
+    IFS='|' read -r _rw_id _rw_seen < "$RUN_DIR/room.watch" || return 1
+    case "$_rw_seen" in ''|*[!0-9]*) _rw_seen=0 ;; esac
+    if gui_get room "$GUI_DIR/room-watch.json" &&
+        _rw=$(jq -r --arg id "$_rw_id" 'if type != "object" or (has("round") | not) then error("bad room")
+            elif (.round | type) == "object" and .round.id == $id then (.round.state // "unknown")
+            else "gone" end' "$GUI_DIR/room-watch.json"); then :
+    elif [ $(( $(date +%s) - _rw_seen )) -ge "${ROOM_WATCH_MAX_S:-600}" ]; then
+        rm -f "$RUN_DIR/room.watch"
+        log "room round $_rw_id: not confirmed for ${ROOM_WATCH_MAX_S:-600}s -- no longer watched (the idle power-off counts again)"
+        return 1
+    else return 1; fi
+    case "$_rw" in
+        active) printf '%s|%s\n' "$_rw_id" "$(date +%s)" > "$RUN_DIR/room.watch" ;;
+        gone) mv "$RUN_DIR/room.watch" "$RUN_DIR/room.ended" ;;
+        *) rm -f "$RUN_DIR/room.watch" ;;
+    esac
 }
 
 # The GUI's `slots=<mac>@<port>,<port>/<mac>@<port>` record value (a MAC has
@@ -91,8 +124,16 @@ room_open_extra() {
 
 room_action() {
     # $1 = "wake" or "start". The server answers 200 or says why not, and
-    # "no answer" is not "it worked".
-    echo '{}' > "$RUN_DIR/room_empty.json"
+    # "no answer" is not "it worked". $2 (wake) = the picked cloners,
+    # "<mac>,<mac>" (Nadav 17/10): only they wake. None is refused here --
+    # an empty pick is never "the whole room", which has a cloner that must
+    # not be woken remotely.
+    if [ "$1" = wake ]; then
+        case "$2" in ''|*[!0-9a-f:,]*) log "room wake: no valid cloner picked"; return 1 ;; esac
+        printf '%s' "$2" | jq -R '{macs: split(",")}' > "$RUN_DIR/room_empty.json" || return 1
+    else
+        echo '{}' > "$RUN_DIR/room_empty.json"
+    fi
     _code=$(console_post "room/$1" "$RUN_DIR/room_empty.json" \
         "$RUN_DIR/room_action.json") || return 1
     if [ "$_code" != "200" ]; then
@@ -132,4 +173,17 @@ room_poweroff_all() {
     jq -n --arg c "$1" --argjson lc "$_lc" '{confirm_name:$c,confirm_local_copy:$lc}' > "$RUN_DIR/room_poweroff.json" || return 1
     _code=$(console_post "room/poweroff" "$RUN_DIR/room_poweroff.json" "$RUN_DIR/room_action.json") || return 1
     [ "$_code" = 200 ] || { console_say "$_code" "The room was not asked to power off"; return 1; }
+}
+
+room_drawer_cancel() {
+    # #1386 "cancel this disk" from the build machine's distribution screen: $1 = the
+    # cloner's mac, $2 = its drawer's dev, from the confirmed window. The same
+    # POST as the console, with the signed-in user's session; the server checks
+    # again that the drawer is writing in the live wave. 200 only.
+    case "$2" in ''|*[!a-z0-9]*) return 1 ;; esac
+    jq -n --arg m "$1" --arg d "$2" '{mac: $m, dev: $d}' > "$RUN_DIR/gui-action.json" || return 1
+    _rc=$(console_post room/drawer/cancel "$RUN_DIR/gui-action.json" "$RUN_DIR/gui-result.json") || return 1
+    [ "$_rc" = 200 ] && { log "drawer cancel asked from the GUI: $1 $2"; return 0; }
+    _why=$(jq -r '.detail // empty' "$RUN_DIR/gui-result.json" 2>/dev/null)   # the server's words; none = say so
+    gui_error "הביטול נדחה: ${_why:-סיבה לא ידועה} (http $_rc)" "drawer cancel refused (http $_rc)"
 }

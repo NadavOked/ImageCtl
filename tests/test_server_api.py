@@ -631,11 +631,16 @@ def test_the_console_settings_screen_wires_the_class_deploy_switch():
     js = (static / "console.js").read_text(encoding="utf-8")
     # ‏#954 גל 6: מסך ההגדרות הוא טבלת שורות (`SETTING_ROWS`); המתג הוא שורה
     # מסוג switch, הקריאה/כתיבה משותפות לכל המתגים ("true"/"false" כמחרוזת).
-    assert '{ key: "class_deploy_enabled", card: "general", label:' in js
+    # ‏#1685 (cc2ece3f, עמוד ההגדרות לפי המוקאפ): המתג עבר לכרטיס "deploy",
+    # ומתג נשמר מיד בלחיצה (`settingsSwitch`) — לא בטופס השמירה של הכרטיס.
+    assert '{ key: "class_deploy_enabled", card: "deploy", label:' in js
     rows = js[js.index("const SETTING_ROWS"):js.index("];", js.index("const SETTING_ROWS"))]
-    assert 'key: "class_deploy_enabled"' in rows and 'type: "switch"' in rows
-    assert 'if (r.type === "switch") return r.defaultOn ? v !== "false" : v === "true";' in js
-    assert 'else if (r.type === "switch") body[r.key] = v ? "true" : "false";' in js
+    row = next(line for line in rows.splitlines() if 'key: "class_deploy_enabled"' in line)
+    assert 'type: "switch"' in row
+    assert 'if (r && r.type === "switch") return r.defaultOn ? v !== "false" : v === "true";' in js
+    switch = js[js.index("function settingsSwitch("):]
+    switch = switch[:switch.index("\n}\n")]
+    assert 'await post("/settings", { [key]: want ? "true" : "false" });' in switch
     page = (static / "index.html").read_text(encoding="utf-8")
     versions = {tuple(int(x) for x in v.split(".")) for v in re.findall(r"\?v=([0-9.]+)", page)}
     assert versions and min(versions) >= (4, 9), versions

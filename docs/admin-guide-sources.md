@@ -81,7 +81,64 @@
 | ללא תקרה כברירת מחדל; תקרה בקונסולה | בריף נדב 16/10, ענף `feat/wave-rate-by-machine` — **לא בריפו** |
 | עדכון רק בתג חתום, חזרה אוטומטית | `tools/server-upgrade.sh:162-170` (‏`verify-release-tag.py`), ‏`rollback` לאורך הסקריפט |
 | בלי מקור apt חי | הכרעת נדב 15/10 ב-#1411 (תגובה ב-Issue) |
-| ‏`deb.debian.org` ב-vmupdate-host | `install/vmupdate-host.sh:17-24,42,57-71` (‏#1371) |
+| ‏`deb.debian.org` הוסר מ-vmupdate-host | `install/vmupdate-host.sh` (‏#1459); נאכף ב-`tests/test_no_live_apt_source.py` |
 | אין SSH בייצור | `install/firewall-rules.md` §1 (‏#1148, ‏#1266) |
+
+## מחשבי השיכפול והבנייה (פרק 9, ‏#1563)
+
+מדידות הברזל כאן הן מ-17/10/2026, ממחשב שיכפול אחד וממחשב בנייה אחד במעבדה.
+דוחות המעבדה אינם בריפו. הנתיב שלהם מצוין כאן כמקור, ולא במדריך עצמו.
+
+| טענה | מקור |
+|---|---|
+| ‏`Remote Wakeup Boot Source = Remote Server`: עם ברירת המחדל (דיסק), WoL ב-06:01:56 UTC — לוגו ואחריו מסך שחור, בלי DHCP (תצפית של נדב). אחרי השינוי: DHCP תוך 12ש', ודיווח לשרת (hello) תוך 43ש' ו-37ש' | ברזל 17/10, ‏HP Compaq 8100 (‏e1000e): ‏`C:\ImageCtl-Lab\evening-1015\metal-1017-poweroff.md`, הרצות 1b, ‏3, ‏4, והצעה ב'. נבדק על דגם אחד בלבד |
+| "legacy עם דיסק GPT נתקע" | הסבר המנגנון — מ-#1563 ומהנחיית @מנהל-צוות. מה שנצפה הוא הסימפטום (לוגו, מסך שחור, בלי DHCP), לא המנגנון |
+| כל מסלולי הכיבוי (קונסולה, מסך, אוטומטי) עוברים ב-`safe_poweroff`, שדורך WoL וקורא בחזרה לפני `poweroff -f`, ולא מכבה אם הדריכה נכשלה | `agent/lib/common.sh:54` (‏`arm_wol`), ‏`:94-117` (‏`safe_poweroff`); קוראים: `agent/lib/idle.sh:38,53`, ‏`agent/lib/localclone.sh:270`, ‏`agent/lib/lcwait.sh:46`, ‏`agent/lib/common.sh:147`, ‏`agent/monitor.c:602`; "כיבוי כל המשכפלים": `server/static/console.js:4468-4479` |
+| כיבוי בכפתור עלול לשבור את ה-WoL הבא | תצפית מעבדה 16–17/10 (‏#1563, ‏#1562). **לא ניסוי מבוקר**, והמנגנון לא ידוע |
+| ‏WoL לא מעיר את מחשב הבנייה (‏Realtek RTL8168h, ‏`r8169`) | ‏#1562 (ברזל 17/10). בקרה חיובית באותה רשת: מחשב השיכפול התעורר (‏`metal-1017-poweroff.md` הרצות 3, ‏4; ‏`C:\ImageCtl-Lab\evening-1015\metal-1017-results.md`) |
+| ה-watchdog: רק במחשב שיכפול, 600ש' בלי התקדמות → אתחול | `agent/lib/watchdog.sh:35,50,103` |
+| ה-watchdog לא מכסה כיבוי שנתקע | קרנל v6.12: ‏`drivers/watchdog/iTCO_wdt.c:592` (‏`watchdog_stop_on_reboot`), ‏`drivers/watchdog/watchdog_core.c:158-176` (‏`watchdog_reboot_notifier` עוצר על `SYS_POWER_OFF` לפני `device_shutdown()`); ‏`metal-1017-poweroff.md` ס' "למה ה-watchdog לא אתחל"; הערה ב-`agent/lib/watchdog.sh:4-6` |
+| מסלול הכיבוי 4/4 על ברזל; תקיעה אחת לא שוחזרה | ‏`metal-1017-poweroff.md`, הרצות 1–4 וס' "ניתוח" 1 (הכרעה: ‏`poweroff -f` נשאר, הצעה א') |
+| ‏1Gb ≈ ‏110MB/s; נמדד 106MB/s (17/09) | `docs/imagectl-spec.md:113-115` |
+| קליטה: ‏74MB/s ל-NVMe מול 54MB/s ל-HDD, אותו מקור, אימג' וקו | `docs/research/R10-server-storage-and-capacity.md:22,38-42` (ברזל, 05/09) |
+| סבב למגירה אחת: רשת 75MB/s (תקרה 600m), דיסק 202MB/s, 19.5GB | ‏`metal-1017-results.md` (בדיקה 8, ‏17/10, ‏08:24–08:30 UTC) |
+| 202MB/s = ‏97% מ-209MB/s של בדיקת הכתיבה; המעבד 67% עסוק (usr+sys+sirq) ועוד 17% iowait; הדיסק הוא הגבול | ‏`C:\ImageCtl-Lab\evening-1015\cloner-pipeline-perf.md` ס' 0 ו-1.1 (‏@מנהל-ביצועים, ‏17/10; ‏#1571). מעבד i5-650, שתי ליבות פיזיות |
+| המעבד כגבול בכמה מגירות | אותו מסמך, ס' 0 סעיף 3 — **הערכה**, לא מדידה |
+| קצב הסבב: פתיחה 60% / גג 90% מהכרטיס (600m/900m ב-1Gb), ‏+100m אחרי סבב נקי, ‏×0.75 מעל 0.1% שידורים חוזרים, רצפה רבע מהפתיחה, לפי המכונה האיטית, לא משתנה באמצע | `server/drive_rates.py:1-24` (תיעוד), ‏`:92,98,102,104,106,111,125-126` (קבועים), ‏`:253-254` (ירידה), ‏`:312` (המכונה האיטית), ‏`:400` (רצפה). הסף 0.1% מסומן בקוד "ניחוש מנומק, לא מדידה" (‏`:107-110`) |
+| 600m עם 228,044 שידורים חוזרים (~1.7%) → הסבב הבא 450m | יומן שרת המעבדה 17/10: ‏`450m basis=down ... 600m rexmits=228044`, כפי שצוטט ב-`cloner-pipeline-perf.md` ס' 0 |
+
+## המסכים של המוצר (פרק 13, v0.76.0)
+
+שורות נכונות לענף `integration/v0760-rc6` (‏`fdbbca8c`, ‏18/10/2026). כל מה שכאן נקרא בקוד;
+**לא הורץ בדפדפן ולא על ברזל** אלא אם נאמר אחרת.
+
+| טענה | מקור |
+|---|---|
+| קבוצות ושורות ההגדרות, טווחים, מתגים מסוכנים (`confirmOff`), "לא נקרא" | `server/static/console.js:6984` (‏`SETTING_GROUPS`), ‏`:6992` (‏`SETTING_ROWS`), ‏`:7103` (‏`settingsSwitch`), ‏`:7170` (‏`settings`); הודעת הקומיט `cc2ece3f` (#1685) |
+| כל שינוי נשמר מיד ונרשם ביומן | `server/static/console.js:7103-7112` (`post("/settings")` ואחריו toast "נשמר — נרשם ביומן") |
+| ההפעלה מחדש האוטומטית: כבוי / כל יום / פעם בשבוע | `server/static/console.js:7154` (‏`autoRebootSheet`) |
+| לשונית "שרתי משנה": רק admin, ורק בראשי/עצמאי | `server/static/console.js:7167` (‏`settingsSecondariesAllowed`); `server/static/branches.js:486` (‏`settingsSecondariesTab`); הקומיט `99010d76` |
+| תגי המצב `מחובר` / `לא ענה` / `בודק חיבור…` / `מושבת` | `server/static/branches.js` (‏`branchPillHtml`) |
+| רישום משני בשני שלבים (כתובת → SPKI → קוד) | `server/static/branches.js:556` (‏`openEnrollSheet`) |
+| F4 במשני: קוד 8 תווים ל-10 דקות; ‏F2 "Primary-Visible Address" | מסירת 17/10 §1.1 (מ-CHANGELOG v0.75.0); `haifa-pairing-1017.md` "צעדים לנדב בבוקר" ב-`C:\ImageCtl-Lab\evening-1015\`. **הקוד של `dcui/` לא נקרא במסמך הזה** |
+| "בטל דיסק זה": הנתיב, ההרשאות, הסירובים, "ביטול אינו כשל" | `server/room.py:1696` (‏`POST /drawer/cancel`); `server/drawer_cancel.py`; הקומיט `88f26d5f` |
+| הסוכן מוחק GPT ראשי וגיבוי של הדיסק שנכתב, לפי מספר סידורי | `agent/lib/cancel.sh`, ‏`agent/lib/verdict.sh` (‏`cancel_drawer`); הקומיט `bd7183e9` |
+| חלון הביטול בגואי: "המשך לכתוב" (Esc), "בטל את דיסק N" (Del, לא Enter), ‏X במחשב הבנייה | `native-gui/src/canceldlg.c`; הקומיט `6f940f76` |
+| כפתור "בטל…" בקונסולה, `sheet()` רגיל בלי הקלדת מילה | `server/static/console.js` (הקומיט `188d3bcf`); #1270 |
+| אזור זמן: `timedatectl`, קריאה חוזרת, ‏DB ב-UTC, שדה בהתקנה | `server/timezone.py`; `server/static/console.js:7145` (‏`timezoneSheet`); `installer/lib/zones.txt`; הקומיט `c3b2e8f1` (#1447) |
+| הנפקת תעודה: `POST /tls/reissue`, ‏`CN=imagesrv-console`, ‏`console.crt.prev`, התנתקות | `server/console_hostcfg.py:134`; `server/static/console.js:7223` (‏`tlsReissueSheet`), ‏`:7208` (‏`tlsDetailsSheet`) |
+| ספירת 20 שניות: `END_POWEROFF_S=20`, ‏`END_HOLD_S=300`, "כבה עכשיו" (Enter), "עצור את הספירה" (Esc) | `agent/lib/idle.sh:108-109,125` (‏`end_countdown`); `native-gui/src/main.c:931-942`; ‏`native-gui/src/screens_ask.c:159` |
+| מחשב הבנייה שואל "כבה" / "חזרה לתפריט"; שיכפול מקומי שנעצר חוזר לבחירה | `CHANGELOG.md` סקשן `[Unreleased]` (#1560); זיכרון `no-black-screen-gui-always` (הכרעות 17/10 12:45) |
+| צבעי הדיסק: אדום SMART תקול ("כתוב בכל זאת", דלג כברירת מחדל), כתום "נכשל קודם", ירוק "עצירה" | `CHANGELOG.md` `[Unreleased]` (#1580, "צבעי הדיסק בשיכפול לפי הכרעת נדב 17/10"); `server/smart_ask.py:22`; `server/disk_events.py:24-26` |
+| דיסק איטי = אדום (סף 50MB/s או פחות מחצי מהחציון של האחרים) | `agent/lib/writecheck.sh:22,40,138-156` |
+| CRC מעל הסף = כתום; ברירת מחדל `0` (כבוי) | `server/static/console.js:6992+` (שורת `crc_warn_threshold`); #1366 |
+| מה שעוצר BIOS של HP על F1 = כתום | `agent/lib/smart.sh:32,121` (#1366) |
+| שליפת מגירה = `removed` = ירוק | `CHANGELOG.md` `[Unreleased]` ("מגירה שנשלפה באמצע הכתיבה אינה צובעת את הדיסק כתום") |
+| השאלה בלי תשובה נסגרת אחרי חצי שעה; "השידור ממתין לתשובה על דיסק" | `CHANGELOG.md` `[Unreleased]` ("השידור נכשל אחרי 180 שניות…", #1581) |
+| שורת הדרייברים: מצבים, צבעים, `BOOT_RISK_HE` | `server/static/console.js:4496-4530` (‏`driversOutcomeText`, ‏`driversTone`, ‏`bootStorageText`) |
+| עמוד הדרייברים: לשוניות, ייבוא `tar`, אימות sha256, מחיקה | `server/static/drivers.js:1-8`; `server/static/console.js:7461`; `docs/driver-packages.md` |
+| `drivers.linux`: בודק ולא משנה | הקומיט `886a6628` (#1331 T8); `agent/lib/linuxdrivers.sh` |
+| `Start=0`/`StartOverride=0` רק כשחבילה הונחה (הכרעת נדב 17/10) | זיכרון `night-1017-autonomous` (הכרעות ~21:00); `agent/lib/bootstorage.sh`; #1711 (ניסוי ה-VM) |
+| הספירה במשכפל נראתה על ברזל (rc2, שיכפול מקומי, 17/10); אחרי כשל — כיבוי תוך <80ש', הספירה לא נצפתה | ‏`C:\ImageCtl-Lab\evening-1015\metal-1017-results.md`, ס' "rc2" |
 
 </div>

@@ -89,6 +89,16 @@ def station(tmp_path, sha: str, stubs: dict, env: str = "") -> tuple[Path, str, 
     return run, out, time.monotonic() - started
 
 
+def counted(target: Path) -> int:
+    """What target_bytes (progress.sh) reports: the sum of the per-partition
+    counters `bytes.<N>`, the last numeric line of each (#1657 -- no `base`)."""
+    total = 0
+    for counter in sorted(target.glob("bytes.[0-9]*")):
+        numbers = [ln.strip() for ln in counter.read_text().splitlines() if ln.strip().isdigit()]
+        total += int(numbers[-1]) if numbers else 0
+    return total
+
+
 def test_the_station_hash_and_counter_are_the_files_fanout_writes(tmp_path):
     """Negative control: on the old pipeline sha.out was sha256sum's
     "<hex>  -" and bytes.raw was pv's (the stub's 65536), so both fail."""
@@ -96,8 +106,8 @@ def test_the_station_hash_and_counter_are_the_files_fanout_writes(tmp_path):
     assert out.strip().endswith("rc=0"), out + log_of(run)
     target = run / "targets" / "sda"
     assert (target / "sha.out").read_bytes() == GOOD_SHA.encode() + b"\n"
-    # The -P counter, folded into `base` when the partition is done.
-    assert (target / "base").read_text().strip() == str(len(PAYLOAD))
+    # The -P counter, kept as the partition's bytes.<N> when it is done (#1657).
+    assert counted(target) == len(PAYLOAD)
     assert not (target / "feed").exists() and not (target / "shafifo").exists()
 
 
@@ -184,8 +194,8 @@ def test_the_wire_hash_and_counter_are_the_files_fanout_writes(tmp_path):
     assert out.strip().endswith("rc=0"), out + log_of(run)
     assert (run / "dsha.1").read_bytes() == \
         hashlib.sha256(DIRECT_BYTES).hexdigest().encode() + b"\n"
-    # The -P counter, folded into `base` when the partition is done.
-    assert (run / "targets" / "sda" / "base").read_text().strip() == str(len(DIRECT_BYTES))
+    # The -P counter, kept as the partition's bytes.<N> when it is done (#1657).
+    assert counted(run / "targets" / "sda") == len(DIRECT_BYTES)
 
 
 def test_a_wire_hash_that_was_never_written_fails_the_send_by_name(tmp_path):

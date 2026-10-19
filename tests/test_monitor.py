@@ -276,6 +276,45 @@ def test_admin_proxy_carries_raw_rfb_bytes(server):
     assert machine.closed is True
 
 
+def test_proxy_retries_while_booting_monitor_has_not_bound_5900(server, monkeypatch):
+    """The first hello precedes monitor_start: two refused connects are startup,
+    not a terminal 4502.  Before the fix this closes on the first refusal."""
+    machine = prepare_secret_machine(server)
+    attempts = []
+    monkeypatch.setattr(monitor, "MONITOR_CONNECT_BACKOFF", (0,))
+
+    async def connector(host, port):
+        attempts.append((host, port))
+        if len(attempts) < 3:
+            raise ConnectionRefusedError("5900 is not listening yet")
+        return machine, machine
+
+    client = monitor_client(server, "admin", connector)
+    with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
+        browser_handshake(websocket)
+        assert websocket.receive_bytes() == SERVER_INIT
+
+    assert attempts == [(IP, monitor.MONITOR_PORT)] * 3
+
+
+def test_proxy_caps_startup_retry_and_reports_the_last_reason(server, monkeypatch):
+    prepare_secret_machine(server)
+    monkeypatch.setattr(monitor, "MONITOR_CONNECT_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(monitor, "MONITOR_CONNECT_BACKOFF", (0,))
+
+    async def connector(_host, _port):
+        raise ConnectionRefusedError("5900 עדיין לא מאזין")
+
+    client = monitor_client(server, "admin", connector)
+    with pytest.raises(WebSocketDisconnect) as caught:
+        with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
+            websocket.receive_bytes()
+
+    assert caught.value.code == 4502
+    assert "שירות המוניטור במכונה אינו זמין לאחר 15 שניות" in caught.value.reason
+    assert "המכונה סירבה לחיבור" in caught.value.reason
+
+
 def test_monitor_client_does_not_require_a_subprotocol():
     """‏#690: הלקוח פותח WebSocket **בלי** לבקש subprotocol.
 
@@ -513,6 +552,33 @@ def test_proxy_forwards_bytes_that_arrived_with_the_handshake(server):
     assert b"".join(machine.writes[3:]) == b"\x01" + FB_REQUEST
 
 
+def test_input_sent_before_the_version_is_what_closes_unexpected_security_type(server):
+    """rc6, 18/10 (משכפל 2): "שגיאה: סוג אבטחה לא צפוי". הסיבה הזאת נכתבת
+    רק **אחרי** שהפרוקסי הזדהה מול המכונה (סוד ישן היה נסגר 4512 לפני כן),
+    והיא אומרת שהבייט ה-13 מהדפדפן אינו 1. כך בדיוק נראה זרם שבו monitor.js
+    שלח PointerEvent בזמן "מתחבר…" (‏#1686: עד 15 ש' כשהמכונה עולה) — הבייטים
+    האלה הם מה ש-monitor_client.test.cjs תפס לפני התיקון. הלקוח הוא שתוקן
+    (קלט רק אחרי לחיצת היד); הפרוקסי נשאר קפדן, וזה מה שהטסט הזה מקבע."""
+    machine = prepare_secret_machine(server)
+
+    async def connector(_host, _port):
+        return machine, machine
+
+    client = monitor_client(server, "admin", connector)
+    with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
+        websocket.send_bytes(b"\x05\x00\x00\x0a\x00\x0a")   # עכבר, לפני הגרסה
+        assert websocket.receive_bytes() == b"RFB 003.008\n"
+        websocket.send_bytes(b"RFB 003.008\n")
+        assert websocket.receive_bytes() == b"\x01\x01"
+        websocket.send_bytes(b"\x01")
+        with pytest.raises(WebSocketDisconnect) as closed:
+            websocket.receive_bytes()
+    assert closed.value.code == 1002
+    assert closed.value.reason == "סוג אבטחה לא צפוי"
+    assert machine.writes[:3] == [b"RFB 003.008\n", b"\x02", KNOWN_HMAC], (
+        "the machine side had authenticated: the secret was not the cause")
+
+
 def test_proxy_never_falls_back_to_none_security(server):
     """מוניטור ישן (או מתחזה) שמציע רק None: הפרוקסי סוגר ב-4512 ואינו
     שולח `\\x01` לעולם — אחרת סוכן שלא שודרג היה פותח מסלול לא מאומת."""
@@ -730,7 +796,10 @@ def test_the_console_translates_only_the_agent_fixed_prompts():
     static = Path(__file__).resolve().parent.parent / "server" / "static"
     js = (static / "console.js").read_text(encoding="utf-8")
     assert 'menu: "תפריט"' in js and 'signin: "כניסה"' in js
-    assert "PROMPT_HE[m.prompt]" in js
+    # #1713 (f1fef165) removed the uncalled waitingHtml, which read PROMPT_HE[m.prompt];
+    # the prompt is shown through promptHe(m.prompt), whose first step is the fixed word.
+    assert "if (PROMPT_HE[p]) return PROMPT_HE[p];" in js
+    assert "promptHe(m.prompt)" in js
     page = (static / "index.html").read_text(encoding="utf-8")
     versions = {tuple(int(x) for x in v.split(".")) for v in re.findall(r"\?v=([0-9.]+)", page)}
     assert len(versions) == 1 and min(versions) >= (6, 1), versions
@@ -843,11 +912,14 @@ def test_power_token_over_the_websocket_is_refused_and_never_reaches_the_machine
     assert journal_rows(server, "monitor_closed") == [(f"{MAC} refused", "noc")]
 
 
-@pytest.mark.parametrize("header", [
-    b"\x06\x00\x00\x00" + struct.pack(">I", 1 << 30),     # רגיל: 1GB "בדרך"
-    b"\x06\x00\x00\x00" + struct.pack(">i", -(1 << 30)),  # מורחב, ענק
+@pytest.mark.parametrize("header, close_code, close_reason", [
+    (b"\x06\x00\x00\x00" + struct.pack(">I", 1 << 30),
+     monitor.WS_FORBIDDEN, monitor.POWER_OVER_WS_REFUSED),   # רגיל: 1GB "בדרך"
+    (b"\x06\x00\x00\x00" + struct.pack(">i", -(1 << 30)),
+     1009, "הודעת RFB גדולה מדי"),                          # מורחב, ענק
 ])
-def test_client_cut_text_is_refused_on_its_header_not_after_its_body(server, header):
+def test_client_cut_text_is_refused_on_its_header_not_after_its_body(
+        server, header, close_code, close_reason):
     """‏#1392: ההחלטה על ClientCutText נופלת כשהאורך ידוע (8 בייטים), ולא
     אחרי שכל הגוף הגיע — אורך שמבטיח 1GB אינו משאיר את הגשר ממתין ובולע
     (רגיל → ‏4403 כמו תמיד; מורחב ענק → ‏1009 בשם)."""
@@ -861,8 +933,11 @@ def test_client_cut_text_is_refused_on_its_header_not_after_its_body(server, hea
         browser_handshake(websocket)
         assert websocket.receive_bytes() == SERVER_INIT
         websocket.send_bytes(header)
-    # לא `receive_bytes` — בלי התיקון הגשר אינו סוגר והקריאה הייתה נתקעת.
-    # היומן מכריע: "refused" = הגשר סגר; "browser" = הדפדפן יצא והגשר עוד חיכה.
+        # המתנה לסגירת השרת מוכיחה שהכותרת לבדה הכריעה, וגם מונעת מהיציאה
+        # מה-context להתחרות בקריאת הכותרת ולרשום ניתוק רגיל של הדפדפן.
+        with pytest.raises(WebSocketDisconnect) as caught:
+            websocket.receive_bytes()
+    assert (caught.value.code, caught.value.reason) == (close_code, close_reason)
     assert journal_rows(server, "monitor_closed") == [(f"{MAC} refused", "noc")]
     assert not any(w.startswith(b"\x06") for w in machine.writes)
 
@@ -1010,6 +1085,26 @@ def test_monitor_connect_and_close_are_journaled_with_user_and_mac(server):
                 f"/api/console/monitor/{MAC}") as ws:
             ws.receive_bytes()
     assert len(journal_rows(server, "monitor_connected")) == 1
+
+
+def test_machine_socket_closing_mid_session_gets_a_distinct_browser_close(server):
+    """A dead machine must not leave its last framebuffer looking live."""
+    machine = prepare_secret_machine(server)
+
+    async def connector(_host, _port):
+        return machine, machine
+
+    client = monitor_client(server, "admin", connector)
+    with client.websocket_connect(f"/api/console/monitor/{MAC}") as websocket:
+        browser_handshake(websocket)
+        assert websocket.receive_bytes() == SERVER_INIT
+        machine._reply(b"")
+        with pytest.raises(WebSocketDisconnect) as caught:
+            websocket.receive_bytes()
+
+    assert (caught.value.code, caught.value.reason) == (
+        monitor.WS_MACHINE_GONE, monitor.MACHINE_GONE_REASON)
+    assert journal_rows(server, "monitor_closed") == [(f"{MAC} machine", "noc")]
 
 
 def test_idle_bridge_closes_both_sides_and_releases_the_machine(server, monkeypatch):

@@ -199,7 +199,8 @@ def test_uptime_and_deploy_ip_come_from_me_and_null_is_named():
     fn = js[js.index("function home("):js.index("function deploy(")]
     assert 'UI.soon("זמן פעילות")' not in fn
     # ‏#1300: משנה הכותרת היא סיכום; זהות השרת (כולל זמן פעילות וכתובת ההפצה) — בכרטיס "שירותים"
-    card = js[js.index("function homeServerCard("):js.index("function homeBranchWhen(")]
+    start = js.index("function homeServerCard(")
+    card = js[start:js.index("\n}\n", start)]   # the services card (נדב 18/10: no branches card after it)
     assert "homeUptime()" in card and "homeDeployIp()" in card
     assert "ME.uptime_seconds" in js and "ME.deploy_ip" in js
     assert "זמן פעילות לא נבדק" in js and "רשת הפצה לא הוגדרה" in js
@@ -279,23 +280,24 @@ def test_static_includes_are_at_9_9():
     שדות סיסמה LTR + "הצג" אחד, ותיקוני הגואי הנייטיבי = ‏11.12;
     #1263 (כרטיס רשת בשלושה אופנים, חלון רשת הפצה, בלי קבצי dnsmasq) = ‏11.13; #1268/#1270/מתאים לדיסק/בלי זכירת MFA = ‏11.15.
     #1267 (פורטים לפי רשת, שירותים בבריאות) + #1264 (bond בהפצה) + #1269 (דרייברים לפי דיסק) + שלב 3 של המוקאפ = ‏11.16; בחירת דיסקים לסבב בקונסולה (#1275) = ‏11.17; יישור סופי למוקאפ + מוניטור מוטמע = ‏11.18; עץ כמו במוקאפ, TLS/שם מארח, #1273/#1274 = ‏11.19; פערי API (#977/#980), #1281 = ‏11.20; חיפוש גלובלי, זרימת הפצה, קצב לומד, שרת משני, שמות חריצים = ‏11.21.
-    #1266 (SSH יצא מהמוצר — בלי מתג, בלי שורת 22, בלי טביעת מפתח) על gate-1011g = ‏11.22; התקדמות על פני גלים (#989) = ‏11.23; קצב אוטומטי = ‏11.24; חתימת גרסאות בבדיקת העדכון (#1277) = ‏11.25; סקירה/אימג'ים/מגירות/בריאות/הגדרות/משתמשים כמו המוקאפ (#1300) = ‏11.26; הגדרות/משתמשים/רשת אחד-לאחד + מוניטור מהמגירה (#1300, אחרי הדחיפה) = ‏11.27; פס האייקונים (#1300) = ‏11.29; הסקירה לפי הצעה ג' (#1300) = ‏11.27 בענף המקביל feat/1300-overview; איחוד gate-1013a (#1311/#1309/#1303/#1277/#1302/#1304/#1300) + לוגו ImageSrv בקונסולה (#1302 שלב ב׳) = ‏11.30; מסך העדכון (#1301) ובדיקת מהירות קישור (#432) = ‏11.31 בענפים מקבילים; שירותים לכל כרטיס רשת (#705) = ‏11.32; בדיקת הכתיבה לפני הגל, F1 כתום וסף CRC (#1366) = ‏11.34 (‏11.33 תפוס ב-#1357 המקביל); מינימום מקום פנוי אחרי שחזור (#1354) + איחוד gate-1014a = ‏11.35; gate-1014b (סבב חדש, מוניטור מנוטרל עם סיבה, #1417–#1422) = ‏11.36; תקרת קצב לפי כרטיס ההפצה (15/10) = ‏11.37; מהירות כרטיס לכל מכונה ותקרה לפי המשכפל האיטי (15/10 ב׳) = ‏11.38; קצב, ETA וזמן אימות בהעברה בין אתרים (#1462) = ‏11.40 (‏11.39 תפוס ב-#1463 המקביל); קצב הגל לפי מחשב השיכפול (#1471) והגבלת קצב בין אתרים (#1473) = ‏11.41 (‏11.39/11.40 תפוסים ב-#1463/#1462 המקבילים); קליטה מאמתת ברקע — מצב "מאמת" (#1470) = ‏11.39 בענף המקביל perf/capture-verify; כרטיס לעדכוני VM ומסך הרשת של ה-VM (#1468) = ‏11.39 בענף המקביל feat/vm-own-mac; איחוד integration/v0743-speed (#1469/#1482/#1476/#1489/#1490/#1498/#1486/#1479/#1481) = ‏11.42; אימג׳ שכלל המקום הפנוי אינו ניתן לבדיקה עליו מושבת בחלון הסבב (#1494) = ‏11.39 בענף המקביל fix/old-image-used-bytes; ערכת נושא אחת למשתמש, ברירת מחדל בהירה (#1499) = ‏11.39 בענף המקביל fix/gui-user-theme; דפי משכפלים/בנייה לפי המוקאפ ומיפוי חיבורי הדיסקים (#1485) = ‏11.39 בענף המקביל feat/sata-slot-mapping; פירוט קליטה חי בקונסולה (#1505) = ‏11.39 בענף המקביל feat/console-capture-detail; איחוד integration/v0743-speed סבב 2 (#1507/#1511/#1501/#1510/#1506/#1503/#1509/#1505) = ‏11.43; ביקורת לחיצות (#1016) — שגיאות בעברית, ביטול קליטה נגיש, מחיקת כיתה = ‏11.47 (‏11.46 שמור לענף הצימוד).
+    #1266 (SSH יצא מהמוצר — בלי מתג, בלי שורת 22, בלי טביעת מפתח) על gate-1011g = ‏11.22; התקדמות על פני גלים (#989) = ‏11.23; קצב אוטומטי = ‏11.24; חתימת גרסאות בבדיקת העדכון (#1277) = ‏11.25; סקירה/אימג'ים/מגירות/בריאות/הגדרות/משתמשים כמו המוקאפ (#1300) = ‏11.26; הגדרות/משתמשים/רשת אחד-לאחד + מוניטור מהמגירה (#1300, אחרי הדחיפה) = ‏11.27; פס האייקונים (#1300) = ‏11.29; הסקירה לפי הצעה ג' (#1300) = ‏11.27 בענף המקביל feat/1300-overview; איחוד gate-1013a (#1311/#1309/#1303/#1277/#1302/#1304/#1300) + לוגו ImageSrv בקונסולה (#1302 שלב ב׳) = ‏11.30; מסך העדכון (#1301) ובדיקת מהירות קישור (#432) = ‏11.31 בענפים מקבילים; שירותים לכל כרטיס רשת (#705) = ‏11.32; בדיקת הכתיבה לפני הגל, F1 כתום וסף CRC (#1366) = ‏11.34 (‏11.33 תפוס ב-#1357 המקביל); מינימום מקום פנוי אחרי שחזור (#1354) + איחוד gate-1014a = ‏11.35; gate-1014b (סבב חדש, מוניטור מנוטרל עם סיבה, #1417–#1422) = ‏11.36; תקרת קצב לפי כרטיס ההפצה (15/10) = ‏11.37; מהירות כרטיס לכל מכונה ותקרה לפי המשכפל האיטי (15/10 ב׳) = ‏11.38; קצב, ETA וזמן אימות בהעברה בין אתרים (#1462) = ‏11.40 (‏11.39 תפוס ב-#1463 המקביל); קצב הגל לפי מחשב השיכפול (#1471) והגבלת קצב בין אתרים (#1473) = ‏11.41 (‏11.39/11.40 תפוסים ב-#1463/#1462 המקבילים); קליטה מאמתת ברקע — מצב "מאמת" (#1470) = ‏11.39 בענף המקביל perf/capture-verify; כרטיס לעדכוני VM ומסך הרשת של ה-VM (#1468) = ‏11.39 בענף המקביל feat/vm-own-mac; איחוד integration/v0743-speed (#1469/#1482/#1476/#1489/#1490/#1498/#1486/#1479/#1481) = ‏11.42; אימג׳ שכלל המקום הפנוי אינו ניתן לבדיקה עליו מושבת בחלון הסבב (#1494) = ‏11.39 בענף המקביל fix/old-image-used-bytes; ערכת נושא אחת למשתמש, ברירת מחדל בהירה (#1499) = ‏11.39 בענף המקביל fix/gui-user-theme; דפי משכפלים/בנייה לפי המוקאפ ומיפוי חיבורי הדיסקים (#1485) = ‏11.39 בענף המקביל feat/sata-slot-mapping; פירוט קליטה חי בקונסולה (#1505) = ‏11.39 בענף המקביל feat/console-capture-detail; איחוד integration/v0743-speed סבב 2 (#1507/#1511/#1501/#1510/#1506/#1503/#1509/#1505) = ‏11.43; ביקורת לחיצות (#1016) — שגיאות בעברית, ביטול קליטה נגיש, מחיקת כיתה = ‏11.47 (‏11.46 שמור לענף הצימוד); stripTags גם ב-vmupdate.js וב-nicsvc.js (#1535) = ‏11.48; ברירת המחדל של "הגדר כרשת הפצה" אינה כרטיס הקונסולה (#1556) = ‏11.50; צבעי הדיסק (#1580: SMART תקול אדום עם אישור מפורש, נכשל בשיכפול הקודם כתום) = ‏11.50 בענף המקביל fix/smart-rescue-failed-last; ענף הניסיון rc2 (integration/v0760-rc1) = ‏11.52; מסך הסבב בקונסולה (#1376) = ‏11.53, עצת Fast Startup (#1504) = ‏11.54 ושלב "packages" במסך העדכון (#1411) = ‏11.55 בענפים מקבילים; ענף הניסיון rc4 = ‏11.56; ענף הניסיון rc5 (כולל "בטל דיסק זה", #1386) = ‏11.57; תיקוני rc5 (סיבה "המגירה נשלפה", כותרת קומפקטית לחדר ההפצה) = ‏11.58; הטקסט של שני כרטיסי ההפצה לפי המדידה (#1264, 17/10) = ‏11.57 בענף המקביל fix/1264-alb-measured; ענף הניסיון rc6 (עמוד ההגדרות #1689, מוניטור #1686/#1698, #1264, ImageSrv #1716, קוד מת #1713) = ‏11.59, ‏monitor.js = ‏3.35; שורת הדרייברים לפי המוקאפ (#1331) = ‏11.57 בענף המקביל feat/1331-drivers-mockup-v2, ועל rc6 (feat/1331-drivers-on-rc6) = ‏11.60; שורת הדרייברים של יעד לינוקס (drivers.linux, #1331 T8) = ‏11.61; דיסק אדום לעולם אינו יעד (#1732) באיחוד על rc6 = ‏11.62; רזרבת מקום למערכת בכרטיס האחסון (#1737) באיחוד על rc6 = ‏11.63; דיסק לקריאה בלבד אדום (#1742) = ‏11.64; אייקון ל"סניפים" בעץ, רישום משני לפי IP ו"+ קבוצה חדשה…" ברישום (נדב 18/10) = ‏11.65; חלון שנפתח מתוך onSubmit אינו נסגר על ידי הקודם (שלב 2 של הרישום, rc6f) = ‏11.66; העץ בכניסה הראשונה (מלאי/תשתית/ניהול מקופלים) והזחת העץ של כל משני כמו TA (נדב 18/10) = ‏11.67; מתג "חיוב אימות דו-שלבי למנהלים" וביטול MFA עצמי (נדב 18/10) = ‏11.68; ניתוק אוטומטי: מתג + דקות (נדב 18/10) = ‏11.69; ביטול MFA עצמי עם סיסמה ומוגבל (סקירת אבטחה) = ‏11.70; "שרתי משנה" במקום "סניפים" ובלי כרטיס בסקירה (נדב 18/10) = ‏11.71; "שרת משנה" גם ביחיד (נדב 18/10) = ‏11.72; איפוס אימות דו-שלבי למשתמש אחר ו"דרוש אימות דו-שלבי" (נדב 18/10) = ‏11.73; העץ ההתחלתי ו"סקירה כללית" אחרי כל כניסה (נדב 18/10) = ‏11.74; נקודת מצב אחת לכל שרת בעץ (TA ושרתי משנה) מבדיקות /health, בלי הקופסה התחתונה (נדב 18/10) = ‏11.75; בלי מידע על דיסקים ב"דורש טיפול" של הסקירה (נדב 18/10) = ‏11.76; נקודת שרת משנה אינה נשארת אפורה כשהדגימה מודדת את TA (מרוץ, TA 18/10) = ‏11.77; המוניטור: קלט רק אחרי לחיצת היד, ניסיון חוזר גלוי, ושאלות השיכפול המקומי בעברית (#1766, rc6, 18/10) = ‏11.74 בענף fix/monitor-security-type, ובאיחוד על rc6 = ‏11.78, ‏monitor.js = ‏3.36; סבב הפצה לפי המוקאפ (#1769) באיחוד על rc6 = ‏11.79; עדכון שרת משנה מהלשונית שלו בעץ (#1776) = ‏11.80; "חזור ל-…" בלי שם שרת בגוף (#1778) = ‏11.80 בענף המקביל; איחוד rc7-cand (#1776/#1778/#1697) = ‏11.81; ועם #1761 (קצב לפי goodput) = ‏11.82.
     שוויון על כל ה-includes — bump חלקי הוא הבאג."""
 
     page = _index()
     versions = set(re.findall(r'\?v=(\d+\.\d+)"', page))
-    assert versions == {"11.47"}, versions
+    assert versions == {"11.82"}, versions
     # ביקורת 10/10: monitor.html מושך את אותם console.css ו-design-tokens.css — הם נשארו על 3.29 לנצח,
     # ולכן דפדפן שזכר אותם הציג את המוניטור בעיצוב ישן. monitor.js לבדו שומר על גרסה משלו (test_monitor).
     mon = (STATIC / "monitor.html").read_text(encoding="utf-8")
     shared = set(re.findall(r'(?:design-tokens|console)\.css\?v=(\d+\.\d+)"', mon))
-    assert shared == {"11.47"}, shared
+    assert shared == {"11.82"}, shared
+    assert 'monitor.js?v=3.36' in mon
 
 
-def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostname():
-    """‏#1192: apply הוא אישור הפיך, ולכן אין בו input/verify. חזרה עדיין
-    שומרת את האישור הקיים, אבל מקור שם השרת הוא /me.server_name (hostname
-    או ההגדרה), לא כתובת 8081. מחיקה ועצירת סבב נשארות עם שם היעד שלהן."""
+def test_update_apply_and_revert_are_red_button_sheets_without_a_name():
+    """‏#1192: apply הוא אישור הפיך, ולכן אין בו input/verify. ‏#1778 (הכרעת
+    #1270): גם "חזור ל-…" — חלון אישור עם כפתור אדום, בלי הקלדה ובלי שם שרת
+    בגוף הבקשה. מחיקה ועצירת סבב נשארות עם שם היעד שלהן."""
     js = _console_js()
     apply = js[js.index("function confirmUpdateApply("):js.index("function confirmUpdateRevert(")]
     assert "sheet({" in apply
@@ -307,9 +309,11 @@ def test_update_apply_is_a_sheet_without_text_verification_and_revert_uses_hostn
     assert 'status.state === "running"' in js
 
     revert = js[js.index("function confirmUpdateRevert("):js.index("function openNewUser(")]
-    assert 'const hostname = ME && ME.server_name || ""' in revert
-    assert "verify:" not in revert and "mustEqual" not in revert, "#1270: no typed word"
-    assert '{ confirm_name: hostname }' in revert
+    assert "sheet({" in revert and "danger: true" in revert
+    assert "verify:" not in revert and "mustEqual" not in revert and "<input" not in revert, "#1270: no typed word"
+    assert "prompt(" not in revert and "confirm(" not in revert
+    assert 'await post("/update/revert");' in revert, "#1778: no body — the server checks no name"
+    assert "confirm_name" not in revert and "server_name" not in revert and "hostname" not in revert
 
     delete = js[js.index("function deleteImage("):js.index("function openImageIngest(")]
     stop = js[js.index("function stopRound("):js.index("/* ---------- #954 גל 3: מחשבים")]
@@ -431,12 +435,18 @@ def test_deploy_page_is_the_cloners_room_from_the_api_only():
     SMART (כתום ממשיך, אדום מדלג) גלויה בדף; קצב הזרם ובלוקים ששודרו שוב —
     מ-`/room.round` (#989), ‏null = "לא נמדד"; מה שאין לו API — היסטוריה,
     דילוג מרחוק, תשובה מהקונסולה — "דורש API" בטקסט. הדף הישן
-    (סבבים / הצטרפות חיה, בקרת סבב, המגירה) איננו."""
+    (סבבים / הצטרפות חיה, בקרת סבב, המגירה) איננו.
+    ‏18/10 (נדב: "לא לפי המוקאפ"): הלשונית הראשונה אחד-לאחד לפי
+    docs/design/apple-mockups/console-full.html (P.deploy) — שלושה אריחים, כרטיס
+    "חדר המשכפלים" וכרטיס לכל משכפל (`roomMachHtml`); בלי סבב — מצב ריק. בורר מצב-הדוגמה
+    ומתג השינויים של המוקאפ אינם במוצר, וגם "תצוגה גדולה" (אינה במוקאפ)."""
     js = _console_js()
-    for needed in ("function deploy(tab = 0)", "function loadDeploy(", "function roomKpis(", "function roomGridCard(", "function roomNotes(",
+    for needed in ("function deploy(tab = 0)", "function loadDeploy(", "function roomKpis(r, pct)", "function roomGridCard(kids)", "function roomNotes(",
+                   "function roomMachHtml(", "function roundDskHtml(",
                    "function roomNewWindow(", "function stopRoom(", "function startWave(", "function imageFitReason(", "function deployClassView(",
                    'post("/room", body)', 'post("/room/start")', 'post("/room/close", { confirm_name: name })',
-                   "clonerCardHtml(m, admin, true)", "בלי תשובה הסוכן ממשיך לכתוב", "בלי תשובה הסוכן מדלג", "r.throughput_bps != null", "r.loss_blocks != null", "דורש API",
+                   'title: "חדר המשכפלים"', "כשל במחשב אחד לא עוצר את השאר", "עצירת הסבב…", "לא מחובר — לא הצטרף לסבב",
+                   "בלי תשובה הסוכן ממשיך לכתוב", "בלי תשובה הסוכן מדלג", "r.throughput_bps != null", "r.loss_blocks != null", "דורש API",
                    'deploy: { crumb: "סבב הפצה", title: "סבב הפצה", tabs: deployTabs(), render: deploy, load: loadDeploy, own: true }'):
         assert needed in js, needed
     block = js[js.index("/* ---------- #954 גל 4"):js.index("/* ---------- ספריית אימג'ים (#954 גל 2)")]
@@ -444,7 +454,8 @@ def test_deploy_page_is_the_cloners_room_from_the_api_only():
     assert 'disabled>' not in block.replace('${reason ? " disabled" : ""}', ""), "כפתור מנוטרל במקום 'דורש API' (README §8) — רק אפשרות אימג' שלא נכנסת (#953) מושבתת"
     assert "דלג בשניהם" not in block
     assert "prompt()" not in block and "confirm(" not in block, "prompt/confirm חסומים — רק sheet()"
-    for gone in ("הצטרפות חיה", "בקרת סבב", "async function openRoundDetail", "startSelectedRound", "openNewDeployment", "roundDrawerOpen", "deploy: [deploy, emptyDataCard]"):
+    for gone in ("הצטרפות חיה", "בקרת סבב", "async function openRoundDetail", "startSelectedRound", "openNewDeployment", "roundDrawerOpen", "deploy: [deploy, emptyDataCard]",
+                 "function toggleRoomBig(", "DEPLOY.big", "מצב לדוגמה", "הצג מה השתנה", "hint-demo", "data-round="):
         assert gone not in js, gone
     css = (STATIC / "console.css").read_text(encoding="utf-8")
     for sel in (".page .rnew{", ".page .rnotes{", ".page .rnew .radios{"):
@@ -475,7 +486,7 @@ def test_health_and_ports_pages_are_tables_from_the_api_and_ports_have_no_switch
     פרטים". המתגים של #996/#1015 יצאו מהדף, ומתג המוניטור בדף המוניטור.
     ‏#1266: SSH יצא מהמוצר — אין מתג SSH לשרת בחיבורים פיזיים ואין /ssh."""
     js = _console_js()
-    for needed in ("function health()", "function healthRows(", "function updateCard(", "async function loadHealthUpdate(",
+    for needed in ("function health()", "function healthRows(", "function updateActionsHtml(", "async function loadHealthUpdate(",
                    'unknown: ["unk", "לא נבדק"]', 'off: ["", "כבוי"]', '["agent_loop:", "לולאות אתחול", "agent_loops"]',
                    "function ports()", "function portCard(", "function portDetail(", "async function portCheckNow(",
                    '"מה לפתוח בחומת האש של המכללה"', 'const PORT_FW = { open: ["ok", "פתוח"], blocked: ["err", "חסום"] }',
@@ -507,7 +518,7 @@ def test_small_pages_are_own_tables_from_the_api_and_wol_is_per_machine():
     ו"אין WoL למחשב יחיד" הוחלפו ב-`wakeMachine` / `wakeGroup`; "נשלח" ≠
     "התעוררה". מתג זהות המכונה (#855) נשאר בהגדרות."""
     js, drivers, page = _console_js(), (STATIC / "drivers.js").read_text(encoding="utf-8"), _index()
-    for needed in ("function monitorPage()", "function monitorRowHtml(", "function settings()", "function settingSwitchHtml(", "function settingsValueSheet(", "async function saveSettings()",
+    for needed in ("function monitorPage()", "function monitorRowHtml(", "function settings()", "function settingSwitchHtml(", "function settingsValueSheet(", "function settingsSwitch(",
                    "function permissions()", "const ROLE_MATRIX = [", "function userDeleteSheet(", "function logs()", "function logBarHtml(", "function logMore()",
                    "async function wakeMachine(", "async function wakeGroup(", "function wolResultText(",
                    'key: "identity_check"', "WoL נשלח ל-", 'consoleUrl("/journal" + logQuery(last))', 'X-Journal-Search-Truncated',
@@ -754,3 +765,88 @@ def test_stage3_css_defines_the_segmented_control_the_settings_page_emits():
     js = _console_js()
     assert 'class="seg"' in js
     assert ".seg{" in css and ".seg button[aria-pressed=true]" in css
+
+
+def test_every_page_node_in_the_tree_carries_an_icon():
+    """נדב 18/10: "סניפים" היה הפריט היחיד בעץ בלי `ui-icon` — שורה בלי אייקון
+    בעמודה של אייקונים. כל `inventory-node` שהוא דף (`data-page`) נושא אחד."""
+    page = _index()
+    nodes = re.findall(r'<div class="inventory-node[^"]*"[^>]*data-page="([^"]+)"[^>]*>(.*?)</div>',
+                       page, flags=re.S)
+    assert len(nodes) >= 10, nodes
+    missing = [name for name, inner in nodes if 'class="ui-icon"' not in inner]
+    assert not missing, f"פריטי עץ בלי אייקון: {missing}"
+    assert "branches" in {name for name, _ in nodes}
+
+
+def test_the_register_window_builds_the_address_on_the_interserver_port():
+    """נדב 18/10: ברישום משני מקלידים רק IP, והקונסולה בונה https://<ip>:<פורט>.
+    ‏`INTERSERVER_PORT` ב-branches.js הוא הפורט הבין-שרתי של השרת — מוצמד כאן
+    ל-health.DEFAULT_OWN_PORTS ולברירת המחדל של ‎--interserver-port, כדי שלא ייסחף."""
+    from server import health
+    js = (STATIC / "branches.js").read_text(encoding="utf-8")
+    port = int(re.search(r"^const INTERSERVER_PORT = (\d+);$", js, flags=re.M).group(1))
+    assert port == health.DEFAULT_OWN_PORTS["interserver"]
+    main = (STATIC.parent / "main.py").read_text(encoding="utf-8")
+    assert f'"--interserver-port", type=int, default={port},' in main
+
+
+def test_a_secondary_root_is_indented_like_ta():
+    """נדב 18/10 (vCenter, כמה hosts): כל משני הוא צומת שורש אחרי TA, והעץ שלו מוזח
+    באותם צעדים כמו של TA (30/46/62). כללי ההזחה היו על `#srvTA` בלבד, ולכן הדפים
+    של משני נצמדו לשוליים ונראו כרשימה שטוחה."""
+    css = (STATIC / "console.css").read_text(encoding="utf-8")
+    nest = " .inventory-children"
+    for depth, pad in ((1, 30), (2, 46), (3, 62)):
+        ta = ".sidebar #srvTA" + nest * depth + " .inventory-node{padding-inline-start:%dpx}" % pad
+        sec = ".sidebar #secondaryServers > .inventory-children" + nest * depth + " .inventory-node{padding-inline-start:%dpx}" % pad
+        assert ta in css, ta
+        assert sec in css, sec
+
+
+def test_no_branch_word_on_any_console_screen():
+    """נדב 18/10: "סניפים" → "שרתי משנה", ו"סניף" → "שרת משנה" — בכל הממשק: תפריט, כותרות
+    ופירורים, לשוניות, כפתורים, הודעות, חלון הרישום, היומן, מסך השרת והגואי הנייטיבי.
+    המזהים (branches, ‏data-page="branches", שמות קבצים) אינם טקסט ונשארים."""
+    roots = [STATIC, STATIC.parent / "dcui", STATIC.parent.parent / "native-gui" / "src"]
+    hits = []
+    for root in roots:
+        for path in sorted(root.rglob("*")):
+            if path.suffix not in {".js", ".html", ".css", ".py", ".c", ".h"} or "vendor" in path.parts:
+                continue
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if "סניף" in line or "סניפ" in line:
+                    hits.append(f"{path.name}:{n}")
+    journal = (STATIC.parent / "journal_he.py").read_text(encoding="utf-8")
+    hits += [f"journal_he.py:{n}" for n, line in enumerate(journal.splitlines(), 1) if "סניף" in line or "סניפ" in line]
+    assert not hits, hits
+    js = _console_js()
+    assert 'branches: { crumb: "שרתי משנה", title: "שרתי משנה"' in js   # the page, one name with the settings tab
+
+
+def test_one_name_for_a_secondary_server_on_every_screen():
+    """נדב 18/10: שם אחד לדבר אחד — "שרת משנה" / "שרתי משנה" גם ביחיד: לא "שרת משני",
+    "השרת המשני", "המשני" או "משניים" — בקונסולה, במסך השרת, בגואי הנייטיבי, ובכל
+    מחרוזת שהשרת מחזיר או רושם (לא docstrings והערות פייתון). ‏"DNS משני" אינו שרת."""
+    import io
+    import tokenize
+    word = re.compile(r"(?<![א-ת])[ובלמשכה]{0,3}משני(ים)?(?![א-ת])")
+    allowed = ("DNS משני",)
+    clean = lambda text: [w for w in [text] if not any(a in text for a in allowed)]   # noqa: E731
+    hits = []
+    for root, exts in ((STATIC, {".js", ".html", ".css"}), (STATIC.parent / "dcui", {".py"}),
+                       (STATIC.parent.parent / "native-gui" / "src", {".c", ".h"})):
+        for path in sorted(root.rglob("*")):
+            if path.suffix not in exts or "vendor" in path.parts:
+                continue
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if word.search(line) and clean(line):
+                    hits.append(f"{path.name}:{n}")
+    for path in sorted(STATIC.parent.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        for tok in tokenize.generate_tokens(io.StringIO(path.read_text(encoding="utf-8")).readline):
+            if (tok.type == tokenize.STRING and word.search(tok.string)
+                    and not tok.string.lstrip("rbfuRBFU").startswith(('"""', "'''"))):
+                hits.append(f"{path.name}:{tok.start[0]}")
+    assert not hits, hits

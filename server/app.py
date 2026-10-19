@@ -28,17 +28,22 @@ from fastapi.staticfiles import StaticFiles
 from boot.grub_menu import GrubConfig
 from boot.http import create_boot_asgi, gui_initrd_path
 
-from . import auth, auto_reboot, boottrace, deploy_net, dhcp, drive_rates, registry
+from . import auth, auto_reboot, boottrace, deploy_net, dhcp, drive_rates, pulls, registry
+from . import timezone   # #1447
 from .api import ServerContext, create_agent_router
 from .console_api import create_console_router
 from .console_hostcfg import create_hostcfg_router
+from .console_timezone import create_timezone_router
 from .console_tls import ConsoleTLS
 from .console_storage import create_storage_router
 from .console_storage_locations import create_storage_locations_router
 from . import storage_locations
+from . import storage_heartbeat
+from . import housekeeping   # #1737
 from .db import journal
 from . import wol
 from . import direct
+from . import smart_ask
 from .sender import SenderEngine
 from .station import create_station_router
 from .console_library import create_library_router
@@ -56,10 +61,11 @@ from .db import connect
 from .health import create_health_router
 from .health import default_hooks as health_default_hooks
 from .update import (PUBLIC_UPDATE_URL, create_update_router, current_version, display_version,
-                     default_hooks as default_update_hooks, read_version)
+                     default_hooks as default_update_hooks, read_version,
+                     VersionRead)
 from .hello import make_resolver, off_deploy_vlan, self_probe
 from .images import ImageLibrary
-from .kiosk import create_kiosk_router
+from .kiosk import create_kiosk_router, mark_build_gui
 from .cloner_round import create_cloner_round_router
 from . import room
 from . import usedbackfill
@@ -174,6 +180,8 @@ class ServerRuntime:
     #: הקצב של שעון-הרקע של החדר (#456). ברירת המחדל היא הייצור; בדיקות
     #: מעבירות ערך קצר כדי שהלולאה תדגום מהר בלי להמתין 5ש'.
     room_clock_interval: float = ROOM_CLOCK_SECONDS
+    #: ‏#1564: קצב הדופק למשניים המצומדים. בדיקות מעבירות ערך קצר.
+    heartbeat_interval: float = storage_heartbeat.HEARTBEAT_SECONDS
     # ‏#703 (tracer 5): זהות ה-TLS של הקונסולה, כשהיא מוגשת ב-HTTPS. ``None``
     # = ‏``--console-tls off`` (loopback) או בדיקות — ואז העוגייה בלי
     # ``Secure`` ו-``/me`` מדווח ``tls: null``. ‏main מעביר ערך אמיתי.
@@ -192,6 +200,9 @@ class ServerRuntime:
     vm_host: "VmHost | None" = None
     auto_reboot_hook: object = auto_reboot.default_reboot
     auto_reboot_interval: float = auto_reboot.CHECK_SECONDS
+    #: ‏#1737: הסיבוב היומי (‏`housekeeping`) — מתי הראשון ובאיזה קצב. בדיקות מקצרות.
+    housekeeping_first: float = housekeeping.FIRST_RUN_S
+    housekeeping_every: float = housekeeping.EVERY_S
 
 
 async def _room_clock(rt: ServerRuntime, interval: float) -> None:
@@ -210,18 +221,53 @@ async def _room_clock(rt: ServerRuntime, interval: float) -> None:
 
     #1066: באותו תהליכון, כל `storage_check_interval` (ברירת מחדל 60ש')
     נבדקים מיקומי האחסון המחוברים/לא-נגישים. disconnected לא נבדק.
+
+    ‏#1737: ובאותו תהליכון, פעם ביום (‏`housekeeping.Schedule`), התקרה לכל מה
+    שאינו אימג' — טבלאות שגדלות ואזורי עבודה נטושים. ‏`housekeeping.run` לעולם
+    אינו זורק.
     """
     elapsed = 0.0
     storage_every = rt.storage_check_interval or storage_locations.CHECK_INTERVAL
+    chores = housekeeping.Schedule(rt.housekeeping_first, rt.housekeeping_every)
     while True:
         await asyncio.sleep(interval)
         await asyncio.to_thread(room.sweep, rt.conn, rt.store)
+        # ‏#1573: משיכה שנכשלה או שתקה נסגרת גם כשאיש אינו צופה.
+        await asyncio.to_thread(pulls.background_sweep, rt.store)
         elapsed += interval
         if elapsed >= storage_every:
             elapsed = 0.0
             hooks = rt.storage_hooks or storage_locations.default_hooks()
             await asyncio.to_thread(
                 storage_locations.poll, rt.conn, rt.library, hooks)
+        if chores.due(interval):
+            await asyncio.to_thread(housekeeping.run, rt.conn,
+                                    lambda: _library_roots(rt))
+
+
+def _library_roots(rt: ServerRuntime) -> list[Path]:
+    """‏#1737: השורשים שהסחיפה היומית עוברת עליהם — המקומי, ומיקום אחסון רק
+    כשהוא מחובר עכשיו (על מיקום שנפל אין מה לקרוא, וזה לא "ריק")."""
+    roots = [Path(rt.library.root)]
+    for loc in storage_locations.library_roots(rt.conn, rt.library.root):
+        if loc.get("available"):
+            roots.append(Path(loc["path"]))
+    return roots
+
+
+async def _storage_heartbeat(rt: ServerRuntime, interval: float) -> None:
+    """‏#1564: הדופק למשניים המצומדים, כל ``interval`` שניות.
+
+    משימה **נפרדת** משעון החדר, באותו `lifespan`: משני שלא עונה מעכב רק
+    את הדופק (עד ``storage_heartbeat.TIMEOUT_SECONDS`` לכל משני), לעולם
+    לא את `room.sweep`. כשל של משני נרשם על השורה שלו בתוך ``beat``; חריגה
+    שמגיעה לכאן (DB) נרשמת ביומן והלולאה ממשיכה לדופק הבא."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await asyncio.to_thread(storage_heartbeat.beat, rt.conn, rt.data_dir)
+        except Exception:                                    # noqa: BLE001
+            log.exception("הדופק לשרתי המשנה נכשל — ממשיכים לדופק הבא")
 
 
 def _install_room_clock(app: FastAPI, rt: ServerRuntime) -> None:
@@ -244,11 +290,16 @@ def _install_room_clock(app: FastAPI, rt: ServerRuntime) -> None:
     async def lifespan(_app: FastAPI):
         live["n"] += 1
         if live["n"] == 1:
+            if rt.vmupdate is not None:
+                # ‏#1649: שמירת VM שנקטעה באתחול משאירה עותק dm ושני loop
+                await asyncio.to_thread(rt.vmupdate.clear_leftovers)
             task = asyncio.create_task(_room_clock(rt, interval))
             reboot_task = asyncio.create_task(
                 auto_reboot.run(rt, rt.auto_reboot_hook, rt.auto_reboot_interval))
             rt.ctx.auto_reboot_task = reboot_task
-            live["tasks"] = (task, reboot_task)
+            heartbeat_task = asyncio.create_task(
+                _storage_heartbeat(rt, rt.heartbeat_interval))
+            live["tasks"] = (task, reboot_task, heartbeat_task)
         try:
             yield
         finally:
@@ -330,6 +381,11 @@ def create_runtime(
     # ‏#456: הקצב של שעון-הרקע של החדר. ברירת המחדל היא הייצור; בדיקות
     # מעבירות ערך קצר כדי שהלולאה תדגום מהר.
     room_clock_interval: float = ROOM_CLOCK_SECONDS,
+    # ‏#1564: ראו ``ServerRuntime.heartbeat_interval``.
+    heartbeat_interval: float = storage_heartbeat.HEARTBEAT_SECONDS,
+    # ‏#1737: ראו ``ServerRuntime.housekeeping_first``.
+    housekeeping_first: float = housekeeping.FIRST_RUN_S,
+    housekeeping_every: float = housekeeping.EVERY_S,
     # ‏#703 (tracer 5): ``None`` = הקונסולה בלי TLS (loopback/בדיקות).
     console_tls: ConsoleTLS | None = None,
     # ‏#1088: ראו ``ServerRuntime.deploy``.
@@ -359,6 +415,10 @@ def create_runtime(
     # ``main`` מדליק; בבדיקות תהליכון רקע שמריץ zstd על ספריית tmp היה כותב
     # ליומן בזמן לא צפוי.
     backfill_used_bytes: bool = False,
+    # ‏#1447: אזור הזמן של המערכת מיושר להגדרה בעלייה (``timedatectl``).
+    # ‏False כברירת מחדל מאותו טעם כמו ``sync_dnsmasq``: רק ``main`` מדליק —
+    # בבדיקות ברירת המחדל הייתה משנה את אזור הזמן של מכונת הבדיקות.
+    apply_timezone: bool = False,
 ) -> ServerRuntime:
     """בונה את המצב המשותף פעם אחת ומריץ את האתחול החד-פעמי.
 
@@ -396,6 +456,9 @@ def create_runtime(
     # ‏#1494: אימג' שנקלט לפני #1368 נושא `used_bytes: null`, וכלל המקום הפנוי
     # (‏#1354) מסרב לו בכל מגירה. ברקע: קריאת כותרת למחיצה מהירה, אבל מיקום
     # רשת שנפל לא יעכב את עליית השרת; כל קריאה תחומה בטיימר משלה.
+    if apply_timezone:
+        timezone.apply_on_start(conn, {**timezone.default_hooks(), **(host_hooks or {})})
+
     if backfill_used_bytes:
         threading.Thread(target=_backfill_used_bytes, args=(conn, library),
                          name="used-bytes-backfill", daemon=True).start()
@@ -445,7 +508,9 @@ def create_runtime(
         if session_id and event in ("send_done", "send_failed", "send_stopped"):
             # קצב אוטומטי (11/10): מה ש-udp-sender ספר בגל שהסתיים — הגל הבא
             # עולה רק על אפס שידורים חוזרים שנקראו כאן. לעולם אינו זורק.
-            drive_rates.record_stream(conn, session_id, sender.wave_outcome(session_id))
+            # ‏#1758: ואיך השולח סיים — גל שנכשל עם שידורים חוזרים הוא ההגנה.
+            drive_rates.record_stream(conn, session_id,
+                                      {**sender.wave_outcome(session_id), "ended": event})
         if event != "send_failed":
             return
         if session_id:
@@ -476,6 +541,9 @@ def create_runtime(
         # ‏#1430: `store` נבנה למטה (הוא צריך את `sender.stop`); הקריאה
         # היא מתהליכון השולח, הרבה אחרי שהפונקציה הזו סיימה.
         live_receivers=lambda session_id: store.live_count(session_id),
+        # ברזל 17/10: שאלת SMART פתוחה בגל עוצרת את שעון ה-180 של השולח.
+        # מכונה שחרגה מהתקרה (‏ASK_HOLD_MAX_SECONDS) משתחררת מהגל לבדה.
+        pending_asks=lambda session_id: smart_ask.waiting_in_wave(conn, session_id),
     )
     def wake_class(group_id: str, opener_mac: str | None,
                    roster: list[str] | None = None) -> None:
@@ -570,6 +638,8 @@ def create_runtime(
         known_macs_hooks=known_macs_hooks,
         repo_dir=repo_dir, update_hooks=update_hooks,
         room_clock_interval=room_clock_interval,
+        heartbeat_interval=heartbeat_interval,
+        housekeeping_first=housekeeping_first, housekeeping_every=housekeeping_every,
         console_tls=console_tls, deploy=deploy, host_hooks=host_hooks,
         vmupdate=engine, vm_host=host,
         auto_reboot_hook=auto_reboot_hook or auto_reboot.default_reboot,
@@ -684,7 +754,7 @@ def _boot_asgi(rt: ServerRuntime):
     return boot_asgi
 
 
-def _add_agent_routes(app: FastAPI, rt: ServerRuntime) -> None:
+def _add_agent_routes(app: FastAPI, rt: ServerRuntime, *, gui_channel: bool = True) -> None:
     """הצד שהסוכן (initramfs) והקושחה רואים: ‎/api/v1 (‏hello/login/pulls/
     progress/disk-event/images), ‏capture הסוכן, מסך התחנה, ומאזין ה-‎/boot.
 
@@ -705,8 +775,10 @@ def _add_agent_routes(app: FastAPI, rt: ServerRuntime) -> None:
     # ‏buildmenu.sh/roomflow.sh קוראים `$SERVER/api/console/{login,folders,
     # images,tasks/capture,room…}` על פורט הסוכן. אותה משפחה כמו #824:
     # allowlist מחשב הבנייה (בלי שום נתיב ניהול); `create_station_router` כלול בו.
+    # ‏#1576: מה שנכנס כאן הוא ערוץ הגואי של מחשב הבנייה -- השרת מסמן, לא הגוף.
     app.include_router(create_kiosk_router(rt.ctx, room_wake=_kiosk_room_wake(rt),
-                                           version=_server_version(rt)))
+                                           version=_server_version(rt)),
+                       dependencies=[Depends(mark_build_gui)] if gui_channel else [])
     app.mount("/boot", _boot_asgi(rt))
 
 
@@ -719,11 +791,19 @@ def _server_version(rt: ServerRuntime):
 
 
 def _kiosk_room_wake(rt: ServerRuntime):
-    """שליחת ה-WoL של חדר השיכפולים — אותה פונקציה בקונסולה ובסוכן."""
+    """שליחת ה-WoL של חדר השיכפולים — אותה פונקציה בקונסולה ובסוכן.
+    ‏`only` (נדב 17/10) — רק מחשבי השיכפול שנבחרו, כל אחד לפי ה-MAC שלו (הם כבר
+    אומתו כמחשבי שיכפול רשומים, בכל קבוצת שיכפול); ‏None = כל החדר."""
     conn = rt.conn
-    return lambda: wol.wake_group(
-        conn, CLONERS_GROUP, **({"send": rt.wol_send} if rt.wol_send else {})
-    )
+    kw = {"send": rt.wol_send} if rt.wol_send else {}
+
+    def wake(only=None):
+        if only is None:
+            return wol.wake_group(conn, CLONERS_GROUP, **kw)
+        each = [wol.wake_machine(conn, mac, **kw) for mac in sorted(only)]
+        return wol.WakeResult(sum(int(r) for r in each), [m for r in each for m in r.failed],
+                              [x for r in each for x in r.reasons])
+    return wake
 
 
 def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
@@ -740,7 +820,24 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
     update_hooks = {**default_update_hooks(), **(rt.update_hooks or {})}
     # ‏#1297: warm the per-HEAD cache at application startup.  Requests reuse
     # it; a checkout changes HEAD and therefore computes a fresh value.
-    display_version(update_hooks, repo_dir)
+    started_with = display_version(update_hooks, repo_dir)
+    # ‏#1546: ‏`/health/live` היא הראיה של server-upgrade.sh ש"החדש רץ" — ולכן
+    # היא הגרסה שהתהליך **טען**, לא מה שעל הדיסק עכשיו (שרת חיפה, 17/10: העץ
+    # על v0.75.0, תהליך של v0.74.2, ו-live אמר v0.75.0). הקריאה בעלייה היא
+    # זו שכבר חיממה את המטמון למעלה — לא קריאה שנייה ל-`describe`: גרסה
+    # ש"לא זמינה" נשמרת במטמון הזה פעם אחת, ו-`/agent/state` (#1252) חולק
+    # אותו. קריאה שנכשלה בעלייה אינה ננעלת — `read_version` רץ שוב בבקשה
+    # עד שהיא מצליחה (וכך גם הקטגוריה של `version_error`), ואז היא ננעלת.
+    live_version = [VersionRead(started_with.version, None, None)
+                    if started_with.version else None]
+
+    def running_version():
+        if live_version[0] is None:
+            read = read_version(update_hooks, repo_dir)
+            if read.version is None:
+                return read
+            live_version[0] = read
+        return live_version[0]
     # ‏#1073: למשתמש הפצה אין קונסולה — `deploy` מקבל 403 על **כל** נתיב
     # ניהול, גם עם עוגייה שפורט הסוכן הנפיק (אותו סוד). ה-dependency נוסף
     # כאן, בהרכבה, ולא בתוך הראוטרים: ‏`kiosk.py` בונה מהם עותקים משלו
@@ -782,12 +879,13 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
         ctx, rt.server_base, health_hooks,
         dnsmasq_apply=lambda what, user_id: console_dhcp.apply_dnsmasq(
             ctx, dhcp_hooks, rt.deploy, what, user_id),
-        version=lambda: read_version(update_hooks, repo_dir)))   # #1159
+        version=running_version))   # #1159, #1546
     include(create_update_router(
         ctx, repo_dir, rt.server_base, rt.update_hooks,
         public_url=PUBLIC_UPDATE_URL,
         vm_warning=rt.vm_host.warning if rt.vm_host else None))   # #1372
     include(create_hostcfg_router(ctx, rt.data_dir, rt.console_tls, rt.host_hooks))   # #153
+    include(create_timezone_router(ctx, rt.host_hooks))   # #1447
     # ‏#690: admin RFB proxy + settings — ה-HTTP שלו admin_only ממילא.
     app.include_router(create_monitor_router(ctx))
     # ‏#1334: ה-HTTP דרך include (console_only: deploy מקבל את הסירוב של #1073),
@@ -812,7 +910,8 @@ def _add_console_routes(app: FastAPI, rt: ServerRuntime) -> None:
 
 def create_agent_app(rt: ServerRuntime) -> FastAPI:
     """האפליקציה שהסוכן והקושחה מדברים איתה (‎:8080 בייצור)."""
-    app = FastAPI(title="ImageCtl agent", docs_url=None, redoc_url=None)
+    app = FastAPI(title="ImageSrv agent", docs_url=None, redoc_url=None)
+    setattr(app.state, auth.KIOSK_APP_FLAG, True)   # #1340
     app.state.ctx = rt.ctx
     app.state.runtime = rt
     app.state.data_dir = rt.data_dir
@@ -822,7 +921,8 @@ def create_agent_app(rt: ServerRuntime) -> FastAPI:
 
 def create_console_app(rt: ServerRuntime) -> FastAPI:
     """אפליקציית הקונסולה/הניהול (‎:8081 בייצור)."""
-    app = FastAPI(title="ImageCtl console", docs_url=None, redoc_url=None)
+    app = FastAPI(title="ImageSrv console", docs_url=None, redoc_url=None)
+    setattr(app.state, auth.CONSOLE_APP_FLAG, True)   # #1340
     app.state.ctx = rt.ctx
     app.state.runtime = rt
     app.state.data_dir = rt.data_dir
@@ -859,7 +959,7 @@ def create_app(
     הפרמטרים הם של `create_runtime` (ראה שם); מועברים דרך `**kwargs`
     כדי שמקור אמת אחד יגדיר אותם."""
     rt = create_runtime(data_dir, images_root, server_base, **kwargs)
-    app = FastAPI(title="ImageCtl", docs_url=None, redoc_url=None)
+    app = FastAPI(title="ImageSrv", docs_url=None, redoc_url=None)
     app.state.ctx = rt.ctx
     app.state.runtime = rt
     app.state.data_dir = rt.data_dir
@@ -867,7 +967,10 @@ def create_app(
     # והראשון מנצח. בבדיקות המשולבות (#1073) deploy נכנס דרך הסוכן (allowlist)
     # ומסורב על נתיבי ניהול (`console_only`). MFA והחלפה כפויה (#1085)
     # נבדקים על `create_console_app`, לא כאן — בייצור הם על שני פורטים.
-    _add_agent_routes(app, rt)
+    # ‏#1576: בלי סימון ערוץ הגואי -- כאן נתיבי הקיוסק מאפילים על אותם נתיבי
+    # קונסולה, וכל קליטה "מהקונסולה" בבדיקות הייתה מסומנת build_gui. הסימון
+    # נבדק על הפיצול האמיתי (`create_agent_app` + `create_console_app`).
+    _add_agent_routes(app, rt, gui_channel=False)
     _add_console_routes(app, rt)
     # ‏#824: נתיבי התחנה (`create_station_router`) מגיעים מ-`_add_agent_routes`
     # — לא נוספים כאן בנפרד. תוספת מפורשת למעטפת בלבד היא בדיוק מה שהסתיר

@@ -195,7 +195,7 @@ function deployCardsFields(name, nic) {
     { id: "card1", label: "כרטיס 1", type: "select", value: primary, options: [{ value: primary, label: label(primary) }],
       help: "כרטיס ההפצה — החלפתו דורשת התקנה מחדש" },
     { id: "second", label: "כרטיס 2 (רשות)", type: "select", value: current, options,
-      help: "שני הכרטיסים עובדים יחד על אותה כתובת: התעבורה מתחלקת ביניהם, ואם אחד נופל השני ממשיך בלי שירגישו" },
+      help: "שני הכרטיסים עובדים יחד על אותה כתובת: תעבורה למחשבים שונים מתחלקת ביניהם (סבב שיכפול יוצא בכרטיס אחד), ואם אחד נופל השני ממשיך — סבב שרץ נעצר לשניות ספורות ומסתיים כרגיל" },
   ] };
 }
 

@@ -34,9 +34,16 @@ def _history(ctx, serial, rate_bps, cap_bps=25 * MB, model="Drawer SSD"):
     ctx.conn.commit()
 
 
+def _clean_receivers() -> str:
+    """‏`wave_rates.drops` של גל ששני המקלטים דיווחו בו אפס זריקות (17/10)."""
+    return json.dumps({mac: {"rcvbuf": 0, "inerrors": 0} for mac in (CLONER1, CLONER2)})
+
+
 def _open_and_join(room_server):
     admin, anon = room_server["admin"], room_server["anon"]
-    assert admin.post("/api/console/room", json=room_body(room_server, 4, {
+    # יעד 5 מול ארבע מגירות: הגל נשאר `open` (מוצג `projected`) עד ההתחלה
+    # הידנית. ‏#1703: hello שמכסה את היעד מוציא את הגל בעצמו.
+    assert admin.post("/api/console/room", json=room_body(room_server, 5, {
         CLONER1: ["S1", "S2"], CLONER2: ["S3", "S4"]})).status_code == 200
     wave = cloner_hello(anon, CLONER1, ["S1", "S2"])["session"]["id"]
     cloner_hello(anon, CLONER2, ["S3", "S4"])
@@ -167,8 +174,15 @@ def test_the_end_of_the_stream_is_remembered_for_the_next_wave(room_server):
     assert wait_for(lambda: stream() is not None)
     # ‏udp-sender המזויף מסיים מיד — המונה לא זז בין שתי דגימות, ולכן קצב
     # הזרם "לא נמדד" (None), לא אפס.
-    assert stream() == {"sent_bytes": 64_000 * len(recorder.commands), "loss_blocks": 0,
-                        "stream_bps": None, "stream_s": None}
+    # ‏#1758: ‏`ended` — איך השולח סיים; ‏`wall_s` — משך הזרם בשעון, וכאן
+    # ‏udp-sender המזויף מסיים לפני דגימה שזזה, ולכן גם הוא "לא נמדד".
+    # ‏#1761: יומן השולח נקרא ואין בו `Dropping client` / ‏`Timeout notAnswered`
+    # — אפס שנקרא, לא None.
+    got = stream()
+    assert got == {"sent_bytes": 64_000 * len(recorder.commands), "loss_blocks": 0,
+                   "stream_bps": None, "stream_s": None, "ended": "send_done",
+                   "wall_s": got["wall_s"], "dropped_clients": 0, "timeouts": 0}
+    assert got["wall_s"] is None or got["wall_s"] < 5
 
 
 def test_a_clean_wave_with_the_same_drives_raises_the_next_one(room_server):
@@ -179,11 +193,13 @@ def test_a_clean_wave_with_the_same_drives_raises_the_next_one(room_server):
               for mac, s in ((CLONER1, "S1"), (CLONER1, "S2"), (CLONER2, "S3"),
                              (CLONER2, "S4"))]
     ctx.conn.execute(
-        "INSERT INTO wave_rates (session_id, decision, at, stream) VALUES (?,?,?,?)",
+        "INSERT INTO wave_rates (session_id, decision, at, stream, drops)"
+        " VALUES (?,?,?,?,?)",
         ("ses_before", json.dumps({"max_bitrate": "600m", "roster": roster}),
          "2026-10-11T09:00:00+00:00",
          json.dumps({"sent_bytes": 10 ** 10, "loss_blocks": 0,
-                     "stream_bps": 71 * MB, "stream_s": 140.8})))   # ‏95% מ-600m
+                     "stream_bps": 71 * MB, "stream_s": 140.8}),   # ‏95% מ-600m
+         _clean_receivers()))
     for d in roster:
         ctx.conn.execute(
             "INSERT INTO drive_rates (serial, model, session_id, rate_bps, cap_bps,"
@@ -209,11 +225,13 @@ def test_new_drawers_in_the_same_cloners_raise_the_next_wave(room_server):
               for mac, s in ((CLONER1, "O1"), (CLONER1, "O2"), (CLONER2, "O3"),
                              (CLONER2, "O4"))]
     ctx.conn.execute(
-        "INSERT INTO wave_rates (session_id, decision, at, stream) VALUES (?,?,?,?)",
+        "INSERT INTO wave_rates (session_id, decision, at, stream, drops)"
+        " VALUES (?,?,?,?,?)",
         ("ses_before", json.dumps({"max_bitrate": "600m", "roster": roster}),
          "2026-10-16T09:00:00+00:00",
          json.dumps({"sent_bytes": 10 ** 10, "loss_blocks": 0,
-                     "stream_bps": 71 * MB, "stream_s": 140.8})))
+                     "stream_bps": 71 * MB, "stream_s": 140.8}),
+         _clean_receivers()))
     for d in roster:
         ctx.conn.execute(
             "INSERT INTO drive_rates (serial, model, session_id, rate_bps, cap_bps,"

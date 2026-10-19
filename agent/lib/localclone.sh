@@ -34,7 +34,7 @@ local_clone_arm() {
     _lc_armed=1; _lc_n=$(list_drawers | wc -l)
     [ "$_lc_n" -ge 1 ] || { log "local clone: no disks -- no boot choice"; return 0; }
     mkdir -p "$LC" || return 0
-    rm -f "$LC/boot.decision" "$LC/measure.req" "$LC/start.req" "$LC/stop.req" "$LC/end.req" "$LC/pull.req"
+    rm -f "$LC/boot.decision" "$LC/measure.req" "$LC/start.req" "$LC/stop.req" "$LC/end.req" "$LC/pull.req" "${GUI_DIR:-$RUN_DIR/gui}/lcboot.shown"
     if [ "$_lc_n" -ge 2 ]; then echo 1; else echo 0; fi > "$LC/boot.local"
     echo "0|0" > "$LC/boot"; echo boot > "$LC/screen"
 }
@@ -71,14 +71,15 @@ lc_boot_choice() {
     LC_CHOICE=server
     rm -f "$LC/boot.decision"
     if [ "$LC_PAUSED" = 1 ]; then echo "0|1" > "$LC/boot"
-    else _bc_dl=$(( $(date +%s) + LC_BOOT_S )); echo "$_bc_dl|0" > "$LC/boot"; fi
+    else _bc_dl=0; _bc_w0=$(date +%s); echo "0|0" > "$LC/boot"; fi   # 0: counted from its first frame (lc_boot_due)
     echo boot > "$LC/screen"
-    log "local clone: boot choice on screen (${LC_BOOT_S}s to the server unless touched)"
+    log "local clone: boot choice offered -- the ${LC_BOOT_S}s count starts with its first frame on the screen"
     attended_start "Local clone screen: from the server, or a local clone"; lc_quiet_reset
     while :; do
         if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi
         lc_gui_alive || { log "local clone: the GUI is gone -- from the server"; return 0; }
         lc_power_check
+        if lc_round_calls; then log "local clone: a round is open for this machine -- from the server"; return 0; fi   # #1560
         _bc_d=""; [ -f "$LC/boot.decision" ] && { _bc_d=$(cat "$LC/boot.decision"); rm -f "$LC/boot.decision"; }
         case "$_bc_d" in
             server) log "local clone: 'from the server' chosen"; return 0 ;;
@@ -88,7 +89,7 @@ lc_boot_choice() {
             pause) [ "$LC_PAUSED" = 1 ] || log "local clone: touched -- the countdown stops"
                    LC_PAUSED=1; echo "0|1" > "$LC/boot"; lc_quiet_reset ;;
         esac
-        if [ "$LC_PAUSED" != 1 ] && [ "$(date +%s)" -ge "$_bc_dl" ]; then
+        if [ "$LC_PAUSED" != 1 ] && lc_boot_due; then
             log "local clone: no touch for ${LC_BOOT_S}s -- from the server"; return 0
         fi
         if [ "$LC_PAUSED" = 1 ] && lc_quiet_over; then
@@ -110,6 +111,7 @@ lc_session() {
         if command -v watchdog_beat >/dev/null 2>&1; then watchdog_beat; fi
         lc_gui_alive || { log "local clone: the GUI is gone -- leaving the local flow"; LC_END=back; return 0; }
         lc_power_check
+        [ "$(cat "$LC/phase")" = idle ] && lc_round_calls && { log "local clone: a round is open for this machine -- leaving the local screen"; LC_END=round; return 0; }   # #1560
         if [ -f "$LC/measure.req" ]; then
             _ss_m=$(cat "$LC/measure.req"); rm -f "$LC/measure.req"; lc_quiet_reset
             if [ -f "$LC/inv/$_ss_m.line" ]; then echo "$_ss_m" > "$LC/source"; lc_measure "$_ss_m"; fi
@@ -123,6 +125,7 @@ lc_session() {
             # the copy by the beat (lc_power_during_copy); this one was not.
             [ -s "$RUN_DIR/power.resp" ] && { log "local clone: a power request came during the copy, not confirmed -- not carried out"; rm -f "$RUN_DIR/power.resp"; }
             lc_quiet_reset   # the count starts when the result is on the screen
+            [ "$(cat "$LC/phase")" != "done" ] || lc_end_count || :   # #1560: failed too; stopped by hand: the choice
             # stopped (the mockup: back to choosing): the drawers are read again --
             # what is on the targets now is half a copy, and the screen must say so
             if [ "$(cat "$LC/phase")" = stopped ]; then
@@ -179,6 +182,7 @@ lc_run() {
         if [ "$_lr_t" = "$_lr_src" ] || [ ! -f "$LC/inv/$_lr_t.line" ] || [ "$(_lc_clean "$(disk_serial "$_lr_t")")" != "$(lc_inv_field "$_lr_t" 4)" ]; then
             fail_written_target "$_lr_t" "היעד אינו מה שנבדק — לא נכתב"; continue
         fi
+        smart_red "$_lr_t" && { fail_written_target "$_lr_t" "$(smart_red_he "$_lr_t") — לא נכתב"; continue; }   # #1732: never a target; #1742: why
         IFS='|' read -r _lr_v _lr_n _lr_w <<EOF
 $(lc_verdict_for "$_lr_src" "$_lr_t")
 EOF

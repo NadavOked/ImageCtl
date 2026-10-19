@@ -484,7 +484,7 @@ def node_id_from_spki(spki: str) -> str:
 
     ‏#860: ‏SPKI ריק אינו "sn_" — זו זהות בלי מקור, ומעלה ``ValueError``."""
     if not spki:
-        raise ValueError("SPKI ריק — אין ממנו מזהה משני")
+        raise ValueError("SPKI ריק — אין ממנו מזהה שרת משנה")
     return "sn_" + spki[:16]
 
 

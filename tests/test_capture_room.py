@@ -112,3 +112,76 @@ def test_a_disk_that_fills_mid_capture_fails_loudly_not_500(
     task = server["admin"].get("/api/console/tasks").json()[0]
     assert task["state"] == "failed", task
     assert task["error"], task
+
+
+# --- ‏#1737: הרזרבה למערכת ------------------------------------------------------
+
+
+@pytest.mark.system_reserve   # #1737: the real 10GiB (conftest _host_free_space)
+def test_a_capture_that_would_eat_into_the_system_reserve_is_refused(
+        server, images_root, monkeypatch):
+    """‏#1737: לא "יש מקום לקובץ" אלא "יש מקום לקובץ **ועוד** הרזרבה". בית אחד
+    פחות מזה — 507 לפני הבייט הראשון, ובהודעה מה נשמר למערכת."""
+    import server.capture as capmod
+    from server.disk_reserve import SYSTEM_RESERVE_BYTES
+
+    mac = setup_build_machine(server)
+    created = make_task(server, mac).json()
+    monkeypatch.setattr(capmod, "_free_bytes",
+                        lambda path: SYSTEM_RESERVE_BYTES + len(PART_A) - 1)
+
+    response = _put_partition(server, created["id"])
+
+    assert response.status_code == 507, response.text
+    assert not list(images_root.glob(".capture-*/p1.esp.pcl.zst"))
+    task = server["admin"].get("/api/console/tasks").json()[0]
+    assert task["state"] == "failed", task
+    assert "נשמרים למערכת" in task["error"], task["error"]
+    assert f"({len(PART_A)} בייט)" in task["error"], task["error"]
+
+
+@pytest.mark.system_reserve   # #1737: the real 10GiB (conftest _host_free_space)
+def test_a_capture_that_leaves_exactly_the_reserve_is_accepted(server, monkeypatch):
+    import server.capture as capmod
+    from server.disk_reserve import SYSTEM_RESERVE_BYTES
+
+    mac = setup_build_machine(server)
+    created = make_task(server, mac).json()
+    monkeypatch.setattr(capmod, "_free_bytes",
+                        lambda path: SYSTEM_RESERVE_BYTES + len(PART_A))
+
+    assert _put_partition(server, created["id"]).status_code == 200
+
+
+@pytest.mark.system_reserve   # #1737: the real 10GiB (conftest _host_free_space)
+def test_a_chunked_capture_stops_when_the_reserve_is_reached_mid_stream(
+        server, images_root, monkeypatch):
+    """‏#1737: הסוכן מזרים ב-chunked, בלי אורך מוצהר — הבדיקה המוקדמת יודעת רק
+    על מגה אחד. כשהדיסק מתמלא (קליטה אחרת במקביל) הזרם נעצר **ברזרבה**, לא
+    באפס: 507, קובץ חלקי מוסר, ומשימה שנכשלה בשם."""
+    import server.capture as capmod
+    from server import disk_reserve
+
+    mac = setup_build_machine(server)
+    created = make_task(server, mac).json()
+    calls = {"n": 0}
+
+    def shrinking(path):
+        calls["n"] += 1
+        return 10 ** 13 if calls["n"] == 1 else disk_reserve.SYSTEM_RESERVE_BYTES - 1
+
+    monkeypatch.setattr(capmod, "_free_bytes", shrinking)
+    monkeypatch.setattr(disk_reserve, "STREAM_CHECK_EVERY", 1)
+    body = b"z" * (3 * capmod.CHUNK)
+
+    response = server["anon"].put(
+        f"/api/v1/capture/{created['id']}/files/p1.esp.pcl.zst",
+        content=iter([body[i:i + 65536] for i in range(0, len(body), 65536)]),
+        headers={TOKEN_HEADER: task_token(server, created["id"])})
+
+    assert response.status_code == 507, response.text
+    assert calls["n"] >= 2, "the guard never measured during the stream"
+    assert not list(images_root.glob(".capture-*/p1.esp.pcl.zst"))
+    task = server["admin"].get("/api/console/tasks").json()[0]
+    assert task["state"] == "failed", task
+    assert "נעצרה" in task["error"] and "נשמרים למערכת" in task["error"], task["error"]

@@ -17,6 +17,13 @@ from .sessions import HOSTNAME_MAX, NONCLASSROOM_NAME_MAX
 _MAC_CLEAN = re.compile(r"[^0-9a-f]")
 _SUFFIX_NUM = re.compile(r"^\d{1,2}$")
 
+#: חדר המשכפלים: הסבב והגל הם session על הקבוצה הקבועה הזו.
+CLONERS_GROUP = "grp_CLONERS"
+#: ‏#1554: **חברי** החדר הם כל מחשב בקבוצה שתפקידה cloner — הקונסולה מציעה
+#: קבוצות משכפלים נוספות ("חיפה — משכפלים"), ומשכפל בהן לא הוצג, לא נבחר
+#: ולא הצטרף לגל. ‏SQL: ‏``f"m.group_id IN {ROOM_GROUPS}"``.
+ROOM_GROUPS = "(SELECT id FROM groups WHERE role = 'cloner')"
+
 #: הדחייה לשם לא-כיתתי ארוך מדי — נגזרת מ-`HOSTNAME_MAX` ומהקידומת
 #: הארוכה ביותר, ונוקבת בשני המספרים כדי שמי שרושם יבין מה התקרה ומאין
 #: היא באה. אותה מחרוזת בכל שלושת מסלולי הרישום (ייבוא/הוספה/עריכה) (#405).

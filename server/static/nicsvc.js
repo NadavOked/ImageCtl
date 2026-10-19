@@ -33,7 +33,7 @@ const NICSVC_DEF = [
   { k: "monitor", n: "מוניטור", d: "צפייה במסך של מחשב ושליטה בו מהדפדפן." },
   { k: "multicast", n: "שידור", pt: "multicast UDP", d: "שליחת אימג' לכמה מחשבים בבת אחת. תעבורה כבדה — רק ברשת של מחשבי השיכפול." },
   { k: "netboot", n: "אתחול מהרשת", pt: "DHCP 67 · TFTP 69", d: "מחשב שעולה מהרשת מקבל מהשרת כתובת ותפריט אתחול. השרת מחלק כתובות ברשת הזאת." },
-  { k: "interserver", n: "בין-שרתים", port: "interserver", d: "הקו בין השרת הראשי למשני — אימג'ים והגדרות." },
+  { k: "interserver", n: "בין-שרתים", port: "interserver", d: "הקו בין השרת הראשי לשרת המשנה — אימג'ים והגדרות." },
 ];
 const NICSVC_NAME = Object.fromEntries(NICSVC_DEF.map((s) => [s.k, s.n]));
 
@@ -42,7 +42,7 @@ const NICSVC_ODD = {
   mgmt: { netboot: "ברשת השרתים כבר יש DHCP של המכללה. שני שרתי DHCP באותה רשת — מחשבים יקבלו כתובת מהשרת הלא נכון.",
           multicast: "שידור מציף את הרשת בתעבורה כבדה. ברשת השרתים הוא יאט את כל מי שמחובר אליה." },
   dist: { console: "הקונסולה המלאה לא אמורה להיות זמינה ברשת ההפצה — כל מחשב שמחובר שם יגיע למסך הכניסה.",
-          interserver: "הקו בין השרתים לא עובר ברשת ההפצה. השרת המשני מתחבר דרך רשת השרתים." },
+          interserver: "הקו בין השרתים לא עובר ברשת ההפצה. שרת המשנה מתחבר דרך רשת השרתים." },
   office: { netboot: "ברשת המשרדים יש DHCP של המכללה. שני שרתי DHCP באותה רשת — מחשבי משרד יקבלו כתובת מהשרת הלא נכון.",
             multicast: "שידור מציף את הרשת בתעבורה כבדה. ברשת המשרדים הוא יאט את כל מי שמחובר אליה." },
 };
@@ -160,7 +160,7 @@ function nicsvcOpen(enc) {
   if (!row) { toast(`אין כרטיס ${name} במצב השירותים`); return; }
   NICSVC_DRAFT = { name, base: new Set(row.services), draft: new Set(row.services), tried: false };
   const n = nicsvcNic(name) || {};
-  const role = typeof netRolePill === "function" && n.name ? String(netRolePill(n)).replace(/<[^>]*>/g, "") : "";
+  const role = typeof netRolePill === "function" && n.name ? stripTags(netRolePill(n)) : "";
   const sub = [n.description, row.address || "בלי כתובת", role].filter(Boolean).join(" · ");
   openDrawer(`שירותים — ${name}`, nicsvcDrawerHtml(), { sub });
   nicsvcFoot();

@@ -456,8 +456,8 @@ def test_gui_source_mirrors_under_the_seqlock_and_keeps_one_shared_cursor():
     assert steps[0] < present.index("memcpy(") < steps[1], present
     input_c = (gui / "input.c").read_text(encoding="utf-8")
     monitor_c = MONITOR_C.read_text(encoding="utf-8")
-    assert '#define MONITOR_UINPUT_NAME "ImageCtl remote monitor"' in input_c
-    assert '#define UINPUT_NAME "ImageCtl remote monitor"' in monitor_c
+    assert '#define MONITOR_UINPUT_NAME "ImageSrv remote monitor"' in input_c
+    assert '#define UINPUT_NAME "ImageSrv remote monitor"' in monitor_c
     screens = (gui / "screens.c").read_text(encoding="utf-8")
     assert "void app_draw_pointer(App *a,cairo_t *cr){if(a->ptr_visible)draw_cursor(" in screens
     main_c = (gui / "main.c").read_text(encoding="utf-8")

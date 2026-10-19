@@ -52,7 +52,8 @@ def note(conn: sqlite3.Connection, mac: str, raw: object, *, known: bool) -> boo
     try:
         journal(conn, "gui_failed", text)
     except sqlite3.Error:
-        # codeql[py/log-injection] false positive: MAC מנורמל (#291)
-        log.exception("gui_failed for %s was not journaled", mac)
+        # ‏#1535: ה-MAC מגיע מה-hello — שבירת שורה אינה מגיעה ליומן.
+        log.exception("gui_failed for %s was not journaled",
+                      mac.replace("\r", " ").replace("\n", " "))
         return False
     return True

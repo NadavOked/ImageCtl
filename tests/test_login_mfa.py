@@ -17,6 +17,15 @@ from server import totp, users
 from server.app import create_console_app, create_runtime
 
 
+@pytest.fixture(autouse=True)
+def _mfa_required_for_admins(monkeypatch):
+    """נדב 18/10: החיוב כבוי כברירת מחדל (‏test_mfa_required_setting.py בודק את שני
+    המצבים). הקובץ הזה בודק את זרימת ה-MFA עצמה — הרשמה כפויה, קוד, קודי גיבוי —
+    ולכן הוא רץ עם החיוב **דלוק**, כמו שרת שבו המנהל הדליק אותו."""
+    from server import db
+    monkeypatch.setitem(db.DEFAULT_SETTINGS, "mfa_required_for_admins", "true")
+
+
 def _fresh(tmp_path, images_root, clock, monkeypatch):
     """אפליקציית הקונסולה (:8081) — MFA והחלפה כפויה. הקיוסק נבדק בנפרד.
 

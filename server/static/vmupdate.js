@@ -604,7 +604,7 @@ async function vmuStartDialog(idEnc) {
       + (v.open_rounds ? `<span class="n-chip n">בסבב ${v.open_rounds}</span>` : "");
     const what = v.description ? esc(v.description) : prev ? `מבוסס על v${prev.version}` : "גרסה ראשונה";
     const line2 = [what, how, esc(v.created_by || ""), vmuHHMM(v.created) ? fmtDate(v.created) : "", vmuGB(v.total_compressed_bytes)].filter(Boolean).join(" · ");
-    return `<label class="vmu-vopt" title="${esc(line2.replace(/<[^>]*>/g, ""))}"><input type="radio" name="vmuSrc" value="${esc(v.id)}"${v.id === chosen ? " checked" : ""}><span class="rd"></span>`
+    return `<label class="vmu-vopt" title="${esc(stripTags(line2))}"><input type="radio" name="vmuSrc" value="${esc(v.id)}"${v.id === chosen ? " checked" : ""}><span class="rd"></span>`
       + `<span class="vt"><span class="l1"><b>v${esc(v.version)}</b> · <span class="nm">${esc(v.name)}</span>${chips}</span><small>${line2}</small></span></label>`;
   };
   const busy = pre && pre.code === "busy", nokvm = pre && pre.code === "no_kvm";

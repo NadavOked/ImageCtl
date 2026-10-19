@@ -381,9 +381,17 @@ def render(cfg: NetConfig, hostname: str = "") -> str:
         return "\n".join(lines) + "\n"
     lines += ["", f"auto {cfg.name}"]
     if cfg.mode == MODE_DHCP:
-        lines.append(f"iface {cfg.name} inet dhcp")
+        # Debian 13's ifupdown 0.8.44 invokes dhcpcd without -b.  When no
+        # lease is available before dhcpcd's timeout it exits, so no client
+        # remains to notice that DHCP has returned.  Run the installed client
+        # explicitly in background mode: it keeps retrying while ifup can
+        # finish, and still leaves a missing address visible in live state.
+        lines.append(f"iface {cfg.name} inet manual")
+        command = "/usr/sbin/dhcpcd -4 -b"
         if hostname.strip():
-            lines.append(f"    hostname {hostname.strip()}")
+            command += f" -h {hostname.strip()}"
+        lines += [f"    up {command} {cfg.name}",
+                  f"    down /usr/sbin/dhcpcd -4 -k {cfg.name}"]
         return "\n".join(lines) + "\n"
     lines += [
         f"iface {cfg.name} inet static",

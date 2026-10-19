@@ -14,7 +14,8 @@ const UPD_POLL_MS = 3000;          // בקשה זעירה כל 3 שניות, מ�
 const UPD_CEIL_MS = 10 * 60 * 1000; // תקרת הזמן: 10 דקות בלי התקדמות
 /* ‏#1463: תקרה לשלב, כשהשרת עונה. בניית ה-initrd לבדה: 498 ש' בשרת המעבדה (6 vCPU, הרצה נפרדת,
    ‏16/10) — 10 דקות היו מכריזות "לא התקדם" על שרת איטי יותר שעדיין בונה. */
-const UPD_STAGE_CEIL_MS = { payload: 25 * 60 * 1000 };
+/* ‏#1411: ‏packages — עדכוני Debian מהמאגר שבגרסה; ל-apt בשרת תקרה של 20 דקות (install/security-upgrade.sh). */
+const UPD_STAGE_CEIL_MS = { payload: 25 * 60 * 1000, packages: 25 * 60 * 1000 };
 const UPD_RELOAD_S = 5;            // "נכנס לקונסולה בעוד 5 ש׳"
 const UPD_LOG = "/var/log/imagectl/server-upgrade.log";
 /* ארבעת השלבים — מול stage שהסקריפט כותב (‏done = אחרי האחרון). ‏payload (‏#1463) הוא חלק
@@ -25,7 +26,7 @@ const UPD_STEPS = [
   { k: "install", t: "מתקין", d: "קבצי השרת וקבצי האתחול של המחשבים" },
   { k: "restart", t: "עולה מחדש", d: "הקונסולה מתנתקת לרגע — זה צפוי" },
 ];
-const UPD_STAGE_IDX = { fetch: 0, verify: 1, install: 2, payload: 2, restart: 3, done: 4 };
+const UPD_STAGE_IDX = { fetch: 0, verify: 1, install: 2, packages: 2, payload: 2, restart: 3, done: 4 };
 const UPD_FAIL_PHASE = { signature: "sigfail", fetch: "dlfail", rollback: "rollback" };
 const UPD_NET_RE = /could not resolve host|couldn't resolve host|timed out|timeout|connection refused|network is unreachable|no route to host/i;
 const UPD_IC = {
@@ -76,7 +77,9 @@ function updShort(text) {
 /* פותח את המסך. ‏status — מסמך שכבר נקרא (טעינה עם עדכון רץ); בלעדיו — מיד אחרי "החל". */
 function updStart({ tag, from = null, by = null, status = null }) {
   const now = updClock();
-  UPD = { tag, from, by, phase: "run", status: null, skew: 0, startedMs: null, stageIdx: -1,
+  // ‏#1776: "עדכן" בלשונית של שרת משנה — המסך עוקב אחרי **שרת המשנה**, דרך ה-relay של הראשי.
+  const node = typeof SERVER_CTX !== "undefined" && SERVER_CTX ? SERVER_CTX : null;
+  UPD = { tag, from, by, node, phase: "run", status: null, skew: 0, startedMs: null, stageIdx: -1,
           changeAt: now, off: false, offAt: null, tries: 0, backAfter: null, mode: "status",
           lastReadAt: null, noSession: false, cd: UPD_RELOAD_S, liveVersion: null, stuck: false, stage: null };
   if (status) { updApply(status, true); updCheckCeiling(); }
@@ -91,6 +94,13 @@ function updStart({ tag, from = null, by = null, status = null }) {
 function updSchedule(ms = UPD_POLL_MS) {
   clearTimeout(updPollTimer);
   if (UPD && UPD.phase === "run") updPollTimer = setTimeout(updPoll, ms);
+}
+
+/* ‏#1776: הסטטוס של השרת שמתעדכן — של הראשי עצמו, או של שרת המשנה דרך ה-relay (אותו ערוץ מאומת
+   של שאר הלשוניות; ‏/update/status ב-CONSOLE_GETS). */
+function updStatusUrl() {
+  return UPD && UPD.node ? `/api/console/storage-nodes/${encodeURIComponent(UPD.node)}/console/update/status`
+    : "/api/console/update/status";
 }
 
 /* בקשה בלי api(): ‏401 כאן אינו "התנתקת" (api() היה מציג את מסך הכניסה), וכשל רשת הוא מצב. */
@@ -163,6 +173,13 @@ function updCountdown() {
 /* טעינה מלאה — הקבצים בדף הם של הגרסה הישנה. ‏?updated= אומר לדף הבא להציג "עודכן ✓". */
 function updReload() {
   clearInterval(updCdTimer);
+  // ‏#1776: התעדכן שרת המשנה — הקבצים בדף הם של הראשי, שלא השתנה: בלי טעינה, חזרה ללשונית.
+  if (UPD && UPD.node) {
+    const tag = UPD.tag;
+    updClose();
+    if (typeof toast === "function") toast(`שרת המשנה עודכן ל-${tag} ✓`, 5000, "ok");
+    return;
+  }
   updNavigate(location.pathname + "?updated=" + encodeURIComponent(UPD.tag));
 }
 
@@ -180,8 +197,14 @@ function updCheckCeiling() {
 async function updPoll(manual = false) {
   if (!UPD || (UPD.phase !== "run" && !(manual && UPD.phase === "timeout"))) return;
   const before = UPD.phase;
-  if (UPD.mode === "status") {
-    const r = await updGet("/api/console/update/status");
+  if (UPD.node) {
+    // ‏#1776: שרת המשנה נשאל רק דרך ה-relay. ‏/health/live של הראשי אינו ראיה על שרת המשנה (הוא עונה
+    // תמיד), ולכן אין מצב live: כל עוד ה-relay לא ענה (502 — שרת המשנה עולה מחדש) — "לא עונה".
+    const r = await updGet(updStatusUrl());
+    if (r.ok) updApply(r.body);
+    else updGoOff();
+  } else if (UPD.mode === "status") {
+    const r = await updGet(updStatusUrl());
     if (r.ok) updApply(r.body);
     else if (r.status === 401 || r.status === 403) { UPD.noSession = true; UPD.mode = "live"; }
     else updGoOff();
@@ -344,7 +367,8 @@ function updHtml() {
       "אל תכבו את השרת"].filter(Boolean).join(" · ");
     const at = updShownStep();
     steps = updStepsHtml(UPD_STEPS.map((_, i) => i < at ? "done" : i === at ? "cur" : "pend"),
-      u.stage === "payload" && !u.off ? { 2: "בונה את קבצי האתחול של המחשבים — החלק הארוך" } : {});
+      u.stage === "payload" && !u.off ? { 2: "בונה את קבצי האתחול של המחשבים — החלק הארוך" }
+        : u.stage === "packages" && !u.off ? { 2: "מתקין את עדכוני האבטחה של Debian שבגרסה" } : {});
     // ‏#1463: נמדד 16/10 בשרת המעבדה (update_status.stages) — 8:49 מקצה לקצה, 8:43 מהם בשלב install.
     hint = "בדרך כלל 8–10 דקות, רובן בבניית קבצי האתחול של המחשבים. אם שלב לא יתקדם בזמן הצפוי, נעצור ונסביר מה לבדוק. אפשר לסגור את הדף — העדכון ממשיך בשרת.";
   } else if (u.phase === "done") {
@@ -354,7 +378,7 @@ function updHtml() {
     sub = `השרת חזר וענה עם הגרסה החדשה${total ? ` · לקח ${total}` : ""}`;
     steps = updStepsHtml(["done", "done", "done", "done"], { 3: "השרת ענה עם הגרסה החדשה" });
     time = false;
-    foot = `<span class="n-hint" id="updFootHint">נכנס לקונסולה בעוד <span class="u-cd" id="updCd">${u.cd}</span> ש׳ — הדף נטען מחדש עם קבצי הגרסה החדשה</span>${updBtn("המשך עכשיו", "updReload()", "pri")}`;
+    foot = `<span class="n-hint" id="updFootHint">נכנס לקונסולה בעוד <span class="u-cd" id="updCd">${u.cd}</span> ש׳ — ${u.node ? "חזרה ללשונית של שרת המשנה" : "הדף נטען מחדש עם קבצי הגרסה החדשה"}</span>${updBtn("המשך עכשיו", "updReload()", "pri")}`;
     if (st.warning) {
       // ‏#1334: העדכון עצמו עבר ואומת; רכיב לא הותקן — אומרים זאת, לא "✓" נקי.
       badge = updBadge("warn", "warn");

@@ -32,12 +32,17 @@ log = logging.getLogger("imagectl.boot")
 
 #: כותרות שחייבות ללוות כל תשובה — באותיות גדולות, בשביל GRUB.
 #: בלי no-store, proxy ברשת המכללה יכול להגיש למחשב את ההחלטה של מחשב
-#: אחר — או את זו של אתמול. Connection: close הוא חגורה נוספת ל-GRUB:
-#: גם קורא-עד-EOF מקבל סוף קובץ אמיתי.
+#: אחר — או את זו של אתמול.
+#:
+#: **אין כאן `Connection: close`, בכוונה (#1423).** ‏GRUB יודע איפה הקובץ
+#: נגמר לפי Content-Length, וסוגר את החיבור בעצמו כשהוא סוגר את הקובץ.
+#: עם `close` השרת סגר ראשון ונשאר ב-TIME_WAIT לשישים שניות. ‏GRUB יוצא
+#: מאותם פורטי מקור בכל אתחול (21550 ואילך) ואינו עונה ב-RST, ולכן אתחול
+#: חוזר מהיר נתקע על כל פורט כזה כ-15.6 שניות של SYN חוזרים. החצי השני
+#: של התיקון — RST כש-GRUB סוגר, במקום LAST-ACK — ב-`server/grub_close.py`.
 BASE_HEADERS = [
     (b"Cache-Control", b"no-store, no-cache, must-revalidate, max-age=0"),
     (b"Pragma", b"no-cache"),
-    (b"Connection", b"close"),
 ]
 
 MEDIA_TYPE = "text/plain; charset=us-ascii"

@@ -26,7 +26,9 @@
  *                    logout  (11/10: sign-out; the bridge drops the session) |
  *                    theme-light | theme-dark  (#1499: a signed-in switch, saved) |
  *                    ask-<answer>|<nonce>  (11/10: the question dialog --
- *                    ask-restore / ask-leave, ask-poweroff / ask-menu)),
+ *                    ask-restore / ask-leave, ask-poweroff / ask-menu) |
+ *                    drawer-cancel|<dev>  (#1386: the cloner's own drawer) |
+ *                    room-drawer-cancel  (#1386: cloner=<mac> dev=<dev>)),
  *                    then key=value detail lines, then an empty line.
  *   exit 0           after "restore" (the agent takes the disk);
  *   exit 1           could not start / render, or stopped by a signal.
@@ -52,6 +54,8 @@
 #include "lcui.h"   /* #1322 */
 #include "screens_rounds.h"   /* 16/10: smart_level, cloner_port_label, idle_for_port */
 #include "smartdlg.h"        /* 16/10: the SMART warning window */
+#include "splash.h"         /* 17/10: the last-resort screen */
+#include "canceldlg.h"       /* #1386: "בטל דיסק זה" */
 
 static volatile sig_atomic_t stop_now = 0;
 static void on_signal(int sig) { (void)sig; stop_now = 1; }
@@ -70,7 +74,9 @@ static const char *USAGE =
 "  --backend mem draws into --fb-file (default /run/imagectl/fb.mem) for the remote\n"
 "  monitor when the machine has no display (#835); auto falls back to it last.\n"
 "  --fb-mirror PATH also writes every frame shown on a display into PATH in the\n"
-"  same format, so the monitor reads RAM instead of /dev/fb0 (#1475).\n";
+"  same format, so the monitor reads RAM instead of /dev/fb0 (#1475).\n"
+"       imagectl-station-gui --splash-raw PATH --size WxH\n"
+"  writes the last-resort screen as raw XRGB8888 rows (build time; agent/lib/splash.sh).\n";
 
 /* ---- login through the agent's command ------------------------------------- */
 
@@ -132,6 +138,28 @@ static void do_login(App *a, const char *auth_cmd, int demo) {
     memset(a->pass, 0, sizeof a->pass);
     a->menu_focus = -1; a->logout_confirming = 0;
     a->mode = MODE_MENU;                            /* afterLogin: both roles start at the menu */
+}
+
+/* Metal 18/10 (rc6, cloner 2): the agent's count on the boot choice starts at
+ * its first frame on the display, not when the agent wrote it -- the display
+ * came up after the 20 s were gone. Called after each present: the first frame
+ * of SCREEN_LCBOOT leaves <GUI_DIR>/lcboot.shown = the second it was shown
+ * (localclone.sh/lcwait.sh lc_boot_due). Written whole (renamed into place) and
+ * once: a GUI started again finds it there. A stamp that cannot be written is
+ * said once; the agent's own ceiling (LC_SHOWN_WAIT_S) starts the count. */
+static void lcboot_mark_shown(const App *a) {
+    static int failed;
+    if (failed || a->screen != SCREEN_LCBOOT || !a->tools_dir[0]) return;
+    char path[600], next[620];
+    snprintf(path, sizeof path, "%s/lcboot.shown", a->tools_dir);
+    if (access(path, F_OK) == 0) return;            /* this choice's first frame is stamped */
+    snprintf(next, sizeof next, "%s.next", path);
+    FILE *f = fopen(next, "w");
+    int ok = f && fprintf(f, "%lld\n", (long long)time(NULL)) > 0;
+    if (f && fclose(f) != 0) ok = 0;
+    if (ok && rename(next, path) == 0) return;
+    fprintf(stderr, "native-gui: cannot stamp the boot choice as shown (%s): %s\n", path, strerror(errno));
+    unlink(next); failed = 1;
 }
 
 /* ---- stdout records --------------------------------------------------------- */
@@ -431,8 +459,8 @@ static int choose_card(App *a, int id) {
     switch (id) {
     case HIT_CAPTURE: a->mode = MODE_CAPTURE; a->chosen_disk = -1; a->newfolder_shown = 0; emit1("capture"); break;
     case HIT_RESTORE: a->mode = MODE_RESTORE; a->restore_image_sel = 0; a->pick_in_folder = 0; emit1("restore"); break;
-    case HIT_ROOM:    a->mode = MODE_ROOM; a->room_target_set = 0; a->image_sel = 0; a->pick_in_folder = 0; a->nroom_selection = 0; room_drv_reset(a); emit1("room"); break;   /* #1275: ticks are targets; #1269: drivers off */
-    case HIT_DIRECT:  a->mode = MODE_DIRECT; a->room_target_set = 0; a->nroom_selection = 0; room_drv_reset(a); emit1("direct"); break;   /* #715; #1269: drivers off */
+    case HIT_ROOM:    a->mode = MODE_ROOM; a->room_target_set = 0; a->image_sel = 0; a->pick_in_folder = 0; a->nroom_selection = 0; a->nroom_pick = 0; room_drv_reset(a); emit1("room"); break;   /* #1275: ticks are targets; #1269: drivers off */
+    case HIT_DIRECT:  a->mode = MODE_DIRECT; a->room_target_set = 0; a->nroom_selection = 0; a->nroom_pick = 0; room_drv_reset(a); emit1("direct"); break;   /* #715; #1269: drivers off */
     case HIT_CLASSES: a->mode = MODE_CLASSES; emit1("classes"); break;
     case HIT_TOOLS:                                       /* #649: ask the bridge for the list */
         a->mode = MODE_TOOLS; a->tools_view = TOOLS_LIST; a->tool_sel = -1;
@@ -585,7 +613,7 @@ static void restore_confirmed(App *a) {
 /* 16/10: "כתוב בכל זאת" on the cloner's SMART prompt opens the window; the
  * window answers the request it was opened for (the nonce), or nothing. */
 static void cloner_smart_ask(App *a) {
-    if (!a->st.smart_pending || !strcmp(a->st.smart_verdict, "failed_last")) return;   /* #872: red has no rescue */
+    if (!a->st.smart_pending) return;   /* #1580: red too -- the window and its red button are the confirmation */
     char label[SLOT_NAME_MAX + 64];
     cloner_port_label(&a->st, a->st.smart_port, label, sizeof label);   /* #1495: by the drawer mapping */
     const IdleDisk *id = idle_for_port(&a->st, a->st.smart_port);
@@ -607,6 +635,18 @@ static int smart_modal(App *a, const Event *e) {
     return 1;
 }
 
+/* #1386: the window's answer -- the cloner cancels its own drawer by device (no
+ * sign-in, like the SMART choice); the build machine names the cloner and the
+ * drawer, and the bridge posts it with the signed-in user's session. */
+static int cancel_modal(App *a, const Event *e) {
+    CancelPick d;
+    if (!cdlg_handle(a, e, &d)) return 0;
+    if (d.dev[0] && a->cdlg.build) { emit("room-drawer-cancel"); emit_kv("cloner", d.mac); emit_kv("dev", d.dev); emit_end(); }
+    else if (d.dev[0]) { char tok[48]; snprintf(tok, sizeof tok, "drawer-cancel|%s", d.dev); emit1(tok); }
+    if (e->type == UIEV_CLICK) { a->ptr_x = e->x; a->ptr_y = e->y; }
+    return 1;
+}
+
 static int room_effective_selected(const App *a, const Machine *m, const RoomDrawer *d);
 
 /* #715: the chosen drawers, as the bridge's record value:
@@ -622,7 +662,7 @@ static int room_selection_encode(const App *a, char *out, size_t n) {
         int first = 1;
         for (int i = 0; i < m->nroom_drawers; i++) {
             const RoomDrawer *d = &m->room_drawers[i];
-            if (!room_selectable(d)) continue;
+            if (!room_pickable(d)) continue;   /* #1732 */
             if (!room_effective_selected(a, m, d)) continue;
             int k = snprintf(out + used, n - used, "%s%s%s%d",
                              first ? (drawers ? "/" : "") : ",",
@@ -735,6 +775,7 @@ static void confirm_do(App *a) {
     else if (what == CONFIRM_ROOM_STOP && a->st.has_round) stop_round("room-close", a->st.round_image);
     else if (what == CONFIRM_CLASS_STOP && a->st.has_session && class_gate(a)) stop_round("class-close", a->st.sess_image);
     else if (what == CONFIRM_TOOL) tool_run(a);
+    else if (what == CONFIRM_RESTORE_CANCEL && a->st.can_cancel) emit1("restore-cancel");   /* #1561 */
 }
 
 /* #1270: the dialog is modal -- Enter confirms, Esc cancels, its two buttons
@@ -776,7 +817,7 @@ static void room_toggle_selected(App *a, int mi, int port) {
             d = &m->room_drawers[i];
             break;
         }
-    if (!m->awake || !d || !room_selectable(d)) return;
+    if (!m->awake || !d || !room_pickable(d)) return;   /* #1732 */
     for (int i = 0; i < a->nroom_selection; i++)
         if (a->room_selection[i].port == port &&
             strcmp(a->room_selection[i].mac, m->mac) == 0) {
@@ -798,7 +839,7 @@ static void room_set_selected(App *a, const Machine *m, int port, int val) {
     const RoomDrawer *drawer = NULL;
     for (int j = 0; j < m->nroom_drawers; j++)
         if (m->room_drawers[j].port == port) { drawer = &m->room_drawers[j]; break; }
-    if (!drawer || !room_selectable(drawer)) return;
+    if (!drawer || !room_pickable(drawer)) return;   /* #1732 */
     for (int i = 0; i < a->nroom_selection; i++)
         if (a->room_selection[i].port == port &&
             strcmp(a->room_selection[i].mac, m->mac) == 0) {
@@ -816,34 +857,74 @@ static void room_set_selected(App *a, const Machine *m, int port, int val) {
 }
 
 /* #714: are all present disks in [begin,end) machines already selected? At
- * least one present disk is required, so an empty room is "not all selected". */
+ * least one present disk is required, so an empty room is "not all selected".
+ * Nadav 17/10: and every machine of the range picked as a whole -- an off
+ * machine counts, by its pick alone. */
 static int room_range_all_selected(const App *a, int begin, int end) {
     int any = 0;
     for (int mi = begin; mi < end; mi++) {
         const Machine *m = &a->st.machines[mi];
+        any = 1;
+        if (!room_picked(a, m->mac)) return 0;
         if (!m->awake) continue;
         for (int j = 0; j < m->nroom_drawers; j++) {
             const RoomDrawer *d = &m->room_drawers[j];
-            if (!room_selectable(d)) continue;
-            any = 1;
+            if (!room_pickable(d)) continue;   /* #1732 */
             if (!room_effective_selected(a, m, d)) return 0;
         }
     }
     return any;
 }
 
+/* Nadav 17/10: pick or drop a whole cloner (by MAC, so a reload that
+ * reorders the list keeps it). */
+static void room_pick_set(App *a, const char *mac, int val) {
+    for (int i = 0; i < a->nroom_pick; i++)
+        if (!strcmp(a->room_pick[i], mac)) {
+            if (!val) memmove(a->room_pick[i], a->room_pick[i + 1], (size_t)(--a->nroom_pick - i) * sizeof a->room_pick[0]);
+            return;
+        }
+    if (val && a->nroom_pick < MAX_MACHINES) snprintf(a->room_pick[a->nroom_pick++], sizeof a->room_pick[0], "%s", mac);
+}
+
 /* #714: select every present disk in [begin,end) machines, or clear them if
- * they are already all selected (one button that toggles). */
+ * they are already all selected (one button that toggles). Nadav 17/10: the
+ * machines themselves too, off ones included -- they are what "הער" wakes. */
 static void room_select_range(App *a, int begin, int end) {
     int val = !room_range_all_selected(a, begin, end);
     for (int mi = begin; mi < end; mi++) {
         Machine *m = &a->st.machines[mi];
+        char mac[24];                            /* -Wrestrict: both inside *a */
+        snprintf(mac, sizeof mac, "%s", m->mac);
+        room_pick_set(a, mac, val);
         if (!m->awake) continue;
         for (int j = 0; j < m->nroom_drawers; j++) {
             const RoomDrawer *d = &m->room_drawers[j];
-            if (room_selectable(d)) room_set_selected(a, m, d->port, val);
+            if (room_pickable(d)) room_set_selected(a, m, d->port, val);   /* #1732 */
         }
     }
+}
+
+/* Nadav 17/10: "הער" wakes the picked cloners and nothing else -- a whole
+ * machine (off ones too) or one with a ticked drawer; in a live round, the
+ * round's cloners (the grid shows only them). The 16/10 button was grey and
+ * sent nothing; the server woke the whole room on any wake. None picked = a
+ * toast, never "everyone". */
+static void room_wake(App *a) {
+    char macs[MAX_MACHINES * 24]; size_t used = 0; int n = 0;
+    macs[0] = 0;
+    for (int mi = 0; mi < a->st.nmachines; mi++) {
+        const Machine *m = &a->st.machines[mi];
+        int want = a->st.has_round || room_picked(a, m->mac);
+        for (int j = 0; !want && j < m->nroom_drawers; j++)
+            want = room_pickable(&m->room_drawers[j]) && room_effective_selected(a, m, &m->room_drawers[j]);
+        if (!want) continue;
+        int k = snprintf(macs + used, sizeof macs - used, "%s%s", n ? "," : "", m->mac);
+        if (k < 0 || (size_t)k >= sizeof macs - used) break;
+        used += (size_t)k; n++;
+    }
+    if (!n) { toast(a, "סמנו מחשב שיכפול אחד לפחות — רק המחשבים שנבחרו מתעוררים"); return; }
+    emit("room-wake"); emit_kv("cloner", macs); emit_end();
 }
 
 /* #434: a key press or click is activity for the agent's idle clock. Sent at
@@ -856,6 +937,35 @@ static void emit_touch(App *a, int demo) {
     last = now; emit("touch"); emit_end();
 }
 
+/* #1560: a count to a power-off is on the screen -- the idle warning (#434),
+ * the end-of-task count, or an end question (its subject is the epoch). The
+ * loop then wakes on every second, so the number goes 20, 19, 18 -- the 2 s
+ * wake made it skip. */
+static int counting(const App *a) {
+    const int end_ask = a->st.ask_pending && (a->st.ask_kind == ASK_CAPTURE_END ||
+        a->st.ask_kind == ASK_SEND_END || a->st.ask_kind == ASK_ROUND_END);
+    return a->st.idle_poweroff_at > 0 || a->st.end_poweroff_at > 0 || end_ask;
+}
+
+/* #1560: while the end-of-task count shows (screens_ask.c draw_end_dialog) it
+ * is modal over every screen, the local clone's included: Enter or "כבה
+ * עכשיו" says end-poweroff -- the agent powers off now. Some targets failed:
+ * Esc or "עצור את הספירה" says end-hold, and the count becomes a bar over
+ * the results (held) -- the screen behind it is the screen again, and the
+ * bar's one button (or Enter) still powers off. */
+static int end_modal(App *a, const Event *e) {
+    if (a->st.end_poweroff_at <= 0) return 0;
+    if (e->type == UIEV_MOVE || e->type == UIEV_CLICK) { a->ptr_x = e->x; a->ptr_y = e->y; }
+    if (e->type == UIEV_MOVE) a->ptr_visible = !e->is_touch;
+    const int hit = e->type == UIEV_CLICK ? app_hit(a, e->x, e->y) : -1;
+    if ((e->type == UIEV_KEY && e->key == KEYSYM_ENTER) || hit == HIT_END_NOW) { emit1("end-poweroff"); return 1; }
+    if (a->st.end_held) return 0;                  /* the bar: the rest is the screen's */
+    if (a->st.end_kind == END_PARTIAL || a->st.end_kind == END_FAILED) {
+        if ((e->type == UIEV_KEY && e->key == KEYSYM_ESC) || hit == HIT_END_HOLD) emit1("end-hold");
+    }
+    return 1;
+}
+
 static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
     if (e->type == UIEV_CLICK || e->type == UIEV_CHAR || e->type == UIEV_KEY) emit_touch(a, demo);
     /* #1499: the theme switch first -- every screen has it, modals and the
@@ -865,6 +975,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         toggle_theme(a);
         return 0;
     }
+    if (end_modal(a, e)) return 0;                 /* #1560: before the local clone's own keys */
     if (a->screen == SCREEN_LCBOOT || a->screen == SCREEN_LOCAL) {   /* #1322: its own keys and clicks */
         if (e->type == UIEV_MOVE || e->type == UIEV_CLICK) { a->ptr_x = e->x; a->ptr_y = e->y; }
         if (e->type == UIEV_MOVE) a->ptr_visible = !e->is_touch;
@@ -872,6 +983,14 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
         return 0;
     }
     if (smart_modal(a, e)) return 0;               /* 16/10: the SMART warning window */
+    if (a->screen == SCREEN_FAILURE) {             /* #1569: one thing to do here -- unfold the technical lines */
+        if (e->type == UIEV_MOVE || e->type == UIEV_CLICK) { a->ptr_x = e->x; a->ptr_y = e->y; }
+        if (e->type == UIEV_MOVE) a->ptr_visible = !e->is_touch;
+        if ((e->type == UIEV_KEY && e->key == KEYSYM_ENTER) ||
+            (e->type == UIEV_CLICK && app_hit(a, e->x, e->y) == HIT_FAIL_DETAILS)) a->fail_open = !a->fail_open;
+        return 0;
+    }
+    if (cancel_modal(a, e)) return 0;              /* #1386: "בטל דיסק זה" */
     /* 16/10: the cloner's restore screen -- its drawers, its way back, its red
      * button; the folders and the images below are the build machine's */
     if (a->screen == SCREEN_RESTORE && lc_pull_active(a)) {
@@ -917,6 +1036,10 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             break;
         }
         /* #65 "כבה אותו": asks first (#1270); the machine's name is the confirmation */
+        if (id >= HIT_BAY_CANCEL_BASE && id < HIT_BAY_CANCEL_BASE + MAX_CANCEL_PICKS) {   /* #1386: a row's "בטל…" */
+            cdlg_open(a, a->screen == SCREEN_ROOM, id - HIT_BAY_CANCEL_BASE, 0);
+            break;
+        }
         if (id >= HIT_ROOM_POWEROFF_BASE && id < HIT_ROOM_POWEROFF_BASE + MAX_ROOM_NOTES) {
             int i = id - HIT_ROOM_POWEROFF_BASE;
             if (i < a->st.nroom_missing && a->st.room_missing[i].can_poweroff) {
@@ -981,11 +1104,13 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             break;
         case HIT_START:  start_capture(a, 0); break;
         case HIT_RESTORE_START: if (restore_ready(a)) a->confirm = CONFIRM_RESTORE; break;   /* #1270: asks first */
+        case HIT_RESTORE_CANCEL: if (a->st.can_cancel) a->confirm = CONFIRM_RESTORE_CANCEL; break;   /* #1561: asks first */
         case HIT_BACK:   go_menu(a); emit1("back"); break;
         case HIT_AGAIN:  a->showing_done = 0; go_menu(a); emit1("again"); break;
         case HIT_ROOM_SELECT_ALL: room_select_range(a, 0, a->st.nmachines); break;
         case HIT_ROOM_OPEN:  open_round(a); break;
-        case HIT_ROOM_WAKE:  if (a->st.has_round) emit1("room-wake"); break;   /* Nadav 16/10: no round, nothing */
+        case HIT_ROOM_WAKE:  room_wake(a); break;   /* Nadav 17/10: the picked cloners only */
+        case HIT_CDLG_OPEN:  cdlg_open(a, 1, 0, 1); break;   /* #1386: "בטל דיסק…", the choice among the writers */
         case HIT_ROOM_START: if (a->st.has_round) room_start(a); break;   /* #432: asks first on a warning */
         case HIT_ROOM_CLOSE: if (a->st.has_round) a->confirm = CONFIRM_ROOM_STOP; break;   /* #1270 */
         case HIT_ROOM_POWEROFF_ALL: if (a->admin && a->st.room_label[0]) a->confirm = CONFIRM_ROOM_POWEROFF_ALL; break;
@@ -1042,9 +1167,17 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
             a->restore_image_sel = idx[at] + 1;
             break;
         }
-        /* Nadav 16/10: W and N act on a round -- without one they send nothing (drawn grey) */
-        if (a->screen == SCREEN_ROOM && (e->ch == 'w' || e->ch == 'W')) { if (a->st.has_round) emit1("room-wake"); break; }
+        /* W wakes the picked cloners (Nadav 17/10); N acts on a round -- without one it sends nothing */
+        if (a->screen == SCREEN_ROOM && (e->ch == 'w' || e->ch == 'W')) { room_wake(a); break; }
         if (a->screen == SCREEN_ROOM && (e->ch == 'n' || e->ch == 'N')) { if (a->st.has_round) room_start(a); break; }
+        /* #1386: X on the build machine -- the drawer numbers repeat between cloners, so one key
+         * and a choice; on the cloner the drawer's own number opens it on that drawer */
+        if (a->screen == SCREEN_ROOM && (e->ch == 'x' || e->ch == 'X')) { if (a->st.has_round) cdlg_open(a, 1, 0, 1); break; }
+        if (a->screen == SCREEN_CLONER && !a->st.smart_pending && e->ch >= '1' && e->ch <= '9') {
+            CancelPick p[MAX_CANCEL_PICKS]; int n = cloner_cancel_picks(a, p, MAX_CANCEL_PICKS);
+            for (int i = 0; i < n; i++) if (p[i].drawer == e->ch - '0') { cdlg_open(a, 0, i, 0); break; }
+            break;
+        }
         if (a->screen == SCREEN_CLONER && a->st.smart_pending) {
             if (e->ch == 's' || e->ch == 'S') { emit_smart(a, "smart-skip"); break; }
             if (e->ch == 'r' || e->ch == 'R') { emit_smart(a, "smart-replace"); break; }
@@ -1097,8 +1230,7 @@ static int handle(App *a, const Event *e, const char *auth_cmd, int demo) {
                 if (restore_ready(a)) a->confirm = CONFIRM_RESTORE;    /* #1270: Enter asks, Enter again erases */
             }
             else if (a->screen == SCREEN_CLONER && a->st.smart_pending) {
-                if (!strcmp(a->st.smart_verdict, "failed_last")) emit_smart(a, "smart-skip");
-                else cloner_smart_ask(a);                     /* 16/10: Enter opens the window, it never writes */
+                cloner_smart_ask(a);                          /* 16/10: Enter opens the window, it never writes */
             }
             else if (a->screen == SCREEN_PICK) start_capture(a, 0);
             else if (a->screen == SCREEN_DONE) { a->showing_done = 0; go_menu(a); emit1("again"); }
@@ -1135,11 +1267,13 @@ static void after_reload(App *a) {
     if ((a->confirm == CONFIRM_ROOM_STOP && !a->st.has_round) ||
         (a->confirm == CONFIRM_CLASS_STOP && !a->st.has_session) ||
         (a->confirm == CONFIRM_ROOM_START_WARN && (!a->st.has_round || !a->st.wave_open)) ||   /* #432 */
-        (a->confirm == CONFIRM_ROOM_POWEROFF && !poweroff_target_live(a))) a->confirm = CONFIRM_NONE;   /* #65 */
+        (a->confirm == CONFIRM_ROOM_POWEROFF && !poweroff_target_live(a)) ||   /* #65 */
+        (a->confirm == CONFIRM_RESTORE_CANCEL && !a->st.can_cancel)) a->confirm = CONFIRM_NONE;   /* #1561: the write ended */
     /* 16/10: the SMART window about a request that is gone, or a disk that moved, is closed */
     if (a->sdlg.kind == SDLG_CLONER && (!a->st.smart_pending || strcmp(a->st.smart_nonce, a->sdlg.nonce))) a->sdlg.kind = SDLG_NONE;
     if ((a->sdlg.kind == SDLG_RESTORE || a->sdlg.kind == SDLG_CAPTURE) &&
         (a->sdlg.ref >= a->st.ndisks || strcmp(a->st.disks[a->sdlg.ref].dev, a->sdlg.dev))) a->sdlg.kind = SDLG_NONE;
+    cdlg_after_reload(a);                                 /* #1386: a drawer that stopped writing closes it */
     room_drv_after_reload(a);                             /* #1269: the first model is the default */
     lc_after_reload(a);                                   /* #1322: default roles, the source to measure */
     /* #408: rate from consecutive reads; a counter that went backwards
@@ -1151,6 +1285,28 @@ static void after_reload(App *a) {
 }
 
 /* ---- --png: every card, both themes, to files -------------------------------------- */
+
+/* #1569: the failure screen's sample -- mockup PR #1550 case 6 (a capture). Also
+ * the "failure" cards of a --state file that carries no fail= block (tests). */
+static void sample_failure(State *s) {
+    snprintf(s->fail_title, sizeof s->fail_title, "הקליטה נכשלה");
+    snprintf(s->fail_sub, sizeof s->fail_sub, "capture did not complete");
+    snprintf(s->fail_why, sizeof s->fail_why, "הקליטה לא הסתיימה: ההעלאה לשרת לא הסתיימה (HTTP 503). האימג׳ לא נכנס לספרייה.");
+    snprintf(s->fail_safe, sizeof s->fail_safe, "הדיסק של המחשב הזה לא שונה — קליטה רק קוראת ממנו. אפשר להתחיל מחדש.");
+    s->fail_hold = 1; s->nfail_ctx = 3;
+    snprintf(s->fail_ctx[0].label, 48, "מכונה"); snprintf(s->fail_ctx[0].value, 96, "BUILD-01");
+    snprintf(s->fail_ctx[1].label, 48, "אימג׳"); snprintf(s->fail_ctx[1].value, 96, "office365-חדש");
+    snprintf(s->fail_ctx[2].label, 48, "יעדים"); snprintf(s->fail_ctx[2].value, 96, "1 מתוך 1 נכשלו או דולגו");
+    s->nfail_steps = 3;
+    snprintf(s->fail_steps[0], 240, "השאירו את המחשב דלוק — השרת עדיין מקבל ממנו דיווחים.");
+    snprintf(s->fail_steps[1], 240, "בדקו שכבל הרשת מחובר ושהשרת פעיל (הסטטוס למטה).");
+    snprintf(s->fail_steps[2], 240, "כבו והדליקו, ובחרו שוב \"קליטת אימג׳ חדש\".");
+    s->nfail_code = 4;
+    snprintf(s->fail_code[0], 240, "targets/sda/state failed");
+    snprintf(s->fail_code[1], 240, "targets/sda/error upload rc=22 (HTTP 503) -> manifest upload failed");
+    snprintf(s->fail_code[2], 240, "[agent] ui_error_hold: capture did not complete");
+    snprintf(s->fail_code[3], 240, "task 52 · mac 3C:52:82:A1:00:10");
+}
 
 static void sample_state(State *s) {
     memset(s, 0, sizeof *s);
@@ -1215,9 +1371,9 @@ static void sample_state(State *s) {
     snprintf(s->sess_group, sizeof s->sess_group, "כיתה 12");
     s->sess_open = 1; s->joined = 3; s->expected = 14; s->starts_in = 272;
     s->ndrawers = 3;
-    s->drawers[0] = (Drawer){ 1, "sda", "writing", "", 44814663680ULL, 85899345920ULL, 98000000, 419, 0, "" };   /* #410 */
-    s->drawers[1] = (Drawer){ 2, "sdb", "failed", "", 0, 85899345920ULL, -1, -1, 0, "" };
-    s->drawers[2] = (Drawer){ 3, "sdc", "waiting", "", 0, 85899345920ULL, -1, -1, 0, "" };
+    s->drawers[0] = (Drawer){ 1, "sda", "writing", "", 44814663680ULL, 85899345920ULL, 98000000, 419, 0, "", "", 0, "", "", "", "", "", "", "", "" };   /* #410 */
+    s->drawers[1] = (Drawer){ 2, "sdb", "failed", "", 0, 85899345920ULL, -1, -1, 0, "", "", 0, "", "", "", "", "", "", "", "" };
+    s->drawers[2] = (Drawer){ 3, "sdc", "waiting", "", 0, 85899345920ULL, -1, -1, 0, "", "", 0, "", "", "", "", "", "", "", "" };
     snprintf(s->cloner_image, sizeof s->cloner_image, "Office 2024 — סטנדרט");
     s->smart_pending = 1; s->smart_port = 2;
     snprintf(s->smart_nonce, sizeof s->smart_nonce, "1-2");
@@ -1241,10 +1397,11 @@ static void sample_state(State *s) {
     snprintf(s->msg_sub, sizeof s->msg_sub, "רשמו אותו בקונסולה כמחשב בניית אימג'ים ורעננו.");
     snprintf(s->machine_name, sizeof s->machine_name, "BUILD-01");   /* #1073: the restore card's confirm field */
     /* #1252: --png sample only -- a real screen reads these from the state file */
-    snprintf(s->server_name, sizeof s->server_name, "imagectl-ta");
+    snprintf(s->server_name, sizeof s->server_name, "imagesrv-ta");
     snprintf(s->server_addr, sizeof s->server_addr, "10.44.0.1");
     snprintf(s->server_version, sizeof s->server_version, "v0.59.2");
     s->hello_age = 4; s->hello_rc = 200;
+    sample_failure(s);
 }
 
 static const char *PNG_CARDS[] = { "login", "menu", "pick", "progress", "done", "room", "room-live",
@@ -1253,8 +1410,59 @@ static const char *PNG_CARDS[] = { "login", "menu", "pick", "progress", "done", 
                                    "restore-folder", "room-images", "restore-confirm", "room-drivers", "pick-hebrew",
                                    "room-start-warn", "room-poweroff", "room-poweroff-local-copy",
                                    "room-poweroff-all",
-                                   "growback", "capture-end",
-                                   "cloner-smart", "restore-smart", "pick-smart" };   /* 16/10 */
+                                   "growback", "capture-end", "send-end", "round-end", "end-countdown",   /* #1560 */
+                                   "cloner-smart", "restore-smart", "pick-smart",   /* 16/10 */
+                                   "failure", "failure-open",   /* #1569: folded / unfolded technical lines */
+                                   "cloner-cancel", "cloner-canceled", "room-cancel", "room-canceled" };   /* #1386 */
+
+static int png_builtin;   /* #1386: --png on the built-in sample, not a --state file */
+
+/* #1386: the cancel cards -- the state's own writing drawers when it has them
+ * (a --state file from a test), else the mockup's: cloner disks 1 and 2 writing
+ * (63% / 41%); the build machine's two cloners writing. */
+static void png_cancel_sample(App *a, const char *card) {
+    CancelPick p[MAX_CANCEL_PICKS];
+    int room = !strncmp(card, "room-", 5);
+    a->st.smart_pending = 0;
+    if (room) {
+        a->mode = MODE_ROOM; a->st.has_round = 1; a->st.wave_open = 0; a->st.wave_number = 1;
+        if (png_builtin || !room_cancel_picks(a, p, MAX_CANCEL_PICKS))   /* a state without a live round: the sample's */
+            for (int i = 0; i < 2 && i < a->st.nmachines; i++) {
+                Machine *m = &a->st.machines[i]; snprintf(m->state, sizeof m->state, "writing");
+                for (int j = 0; j < m->nroom_drawers; j++) {
+                    RoomDrawer *d = &m->room_drawers[j];
+                    d->own_progress = 1; d->pct = j ? 81 : 37; d->selected = 1;
+                    snprintf(d->tstate, sizeof d->tstate, "%s", j < 2 ? "writing" : "");
+                    snprintf(d->dev, sizeof d->dev, "sd%c", 'a' + j);
+                    snprintf(d->model, sizeof d->model, "%s", j ? "Crucial MX500" : "Samsung SSD 870 EVO");
+                }
+            }
+        if (!strcmp(card, "room-canceled") && a->st.nmachines) {
+            RoomDrawer *d = &a->st.machines[0].room_drawers[0];
+            snprintf(d->tstate, sizeof d->tstate, "cancelled"); d->cancel_done = 1;
+            snprintf(d->cancel_text, sizeof d->cancel_text, "בוטל ממחשב הבנייה (admin) · 16:06");
+        } else cdlg_open(a, 1, 0, 1);
+        return;
+    }
+    a->force_cloner = 1;
+    if (png_builtin || !cloner_cancel_picks(a, p, MAX_CANCEL_PICKS)) {   /* the mockup's two drawers, with their models */
+        a->st.ndrawers = 2; a->st.nidisks = 2;
+        snprintf(a->st.machine_name, sizeof a->st.machine_name, "CLONER-02");
+        a->st.idisks[0] = (IdleDisk){ .port = 1, .dev = "sda", .model = "Samsung SSD 870 EVO", .size = 500107862016ULL, .smart = "ok" };
+        a->st.idisks[1] = (IdleDisk){ .port = 2, .dev = "sdb", .model = "WDC WD5000AAKX", .size = 500107862016ULL, .smart = "ok" };
+        a->st.drawers[0] = (Drawer){ 1, "sda", "writing", "", 12285713408ULL, 19500000000ULL, 68000000, 120, 1, "SATA 0", "", 0, "", "", "", "", "", "", "", "" };
+        a->st.drawers[1] = (Drawer){ 2, "sdb", "writing", "", 7995000000ULL, 19500000000ULL, 68000000, 240, 2, "SATA 1", "", 0, "", "", "", "", "", "", "", "" };
+    }
+    int n = cloner_cancel_picks(a, p, MAX_CANCEL_PICKS);
+    if (!strcmp(card, "cloner-canceled")) {
+        for (int i = 0; i < a->st.ndrawers; i++)
+            if (n && !strcmp(a->st.drawers[i].dev, p[n - 1].dev)) {
+                Drawer *d = &a->st.drawers[i];
+                snprintf(d->state, sizeof d->state, "cancelled"); d->bytes = 0;
+                snprintf(d->cancel, sizeof d->cancel, "ממסך מחשב השיכפול"); d->cancel_at = 1792249560;
+            }
+    } else if (n) cdlg_open(a, 0, n - 1, 0);
+}
 
 /* Put the App in the state that routes to <card>; the flags that override
  * the route (message, task, round, session, done) are cleared first so a
@@ -1263,11 +1471,13 @@ static void png_setup(App *a, const State *base, const char *card) {
     a->st = *base;
     memset(&a->st.lc, 0, sizeof a->st.lc); memset(&a->lcu, 0, sizeof a->lcu);   /* #1322: its own cards below */
     a->st.msg_title[0] = a->st.msg_sub[0] = 0;
+    a->st.fail_title[0] = 0; a->fail_open = 0;   /* #1569: on its two cards only */
     a->st.task = TASK_NONE; a->st.has_round = 0; a->st.has_session = 0;
     a->showing_done = a->watching = a->force_progress = a->force_cloner = a->force_standby = 0;
     a->signed_in = 1; a->admin = 1; a->mode = MODE_MENU; a->logout_confirming = 0; a->menu_focus = -1;
     a->chosen_disk = -1; a->confirm = CONFIRM_NONE; a->dd_open = 0;
     memset(&a->sdlg, 0, sizeof a->sdlg);                                       /* 16/10: on its three cards only */
+    memset(&a->cdlg, 0, sizeof a->cdlg);                                       /* #1386: on its cards only */
     a->pick_in_folder = 0; a->pick_folder[0] = 0;
     room_drv_reset(a); room_drv_after_reload(a);                               /* #1269: off, but for one card */
     a->focus = HIT_USER; a->lang_he = 0;   /* #1245: every card starts in English (HIT_USER: what main() sets) */
@@ -1277,12 +1487,22 @@ static void png_setup(App *a, const State *base, const char *card) {
      * grow-back is turned into the end-of-capture question for that card. */
     a->st.ask_pending = 0; a->ask_sent[0] = 0;
     if (!strcmp(card, "growback") && base->ask_pending && base->ask_kind == ASK_GROWBACK) a->st.ask_pending = 1;
-    if (!strcmp(card, "capture-end") && base->ask_pending) {
+    /* #1560: the direct send's and the round's end ask the same way */
+    const int end_ask = !strcmp(card, "capture-end") ? ASK_CAPTURE_END : !strcmp(card, "send-end") ? ASK_SEND_END
+                      : !strcmp(card, "round-end") ? ASK_ROUND_END : ASK_NONE;
+    if (end_ask != ASK_NONE && base->ask_pending) {
         a->st.ask_pending = 1;
-        if (base->ask_kind != ASK_CAPTURE_END) {
-            a->st.ask_kind = ASK_CAPTURE_END; a->st.nask = 0;
-            snprintf(a->st.ask_subject, sizeof a->st.ask_subject, "20");
+        if (base->ask_kind != end_ask) {
+            a->st.ask_kind = end_ask; a->st.nask = 0;
+            snprintf(a->st.ask_subject, sizeof a->st.ask_subject, "%lld", (long long)time(NULL) + 300);   /* #1560: the epoch */
         }
+    }
+    /* #1560: the end-of-task count on its card only; the sample counts 20 s */
+    a->st.end_poweroff_at = 0;
+    if (!strcmp(card, "end-countdown")) {
+        a->st.end_poweroff_at = base->end_poweroff_at > 0 ? base->end_poweroff_at : (long long)time(NULL) + 20;
+        a->st.end_kind = base->end_kind ? base->end_kind : END_DRAWERS;
+        a->st.end_held = base->end_held; a->st.end_done = base->end_done; a->st.end_total = base->end_total;
     }
     snprintf(a->signed_user, sizeof a->signed_user, "%s", a->user[0] ? a->user : "admin");
     if (!strcmp(card, "login"))         { a->signed_in = 0; }
@@ -1296,12 +1516,12 @@ static void png_setup(App *a, const State *base, const char *card) {
     else if (!strcmp(card, "shrink"))   { a->st.task = TASK_RUNNING; }   /* #928: the question comes mid-capture */
     else if (!strcmp(card, "capture-end")) { a->st.task = TASK_RUNNING; }   /* 11/10: over the finished capture */
     else if (!strcmp(card, "done"))     { a->st.task = TASK_DONE; a->watching = 1; }
-    else if (!strcmp(card, "room"))     { a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0; }
+    else if (!strcmp(card, "room"))     { a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0; a->nroom_pick = 0; }
     else if (!strcmp(card, "room-live")){ a->mode = MODE_ROOM; a->st.has_round = 1; }
-    else if (!strcmp(card, "direct"))   { a->mode = MODE_DIRECT; a->room_target_set = 0; a->nroom_selection = 0; }   /* #715 */
+    else if (!strcmp(card, "direct"))   { a->mode = MODE_DIRECT; a->room_target_set = 0; a->nroom_selection = 0; a->nroom_pick = 0; }   /* #715 */
     else if (!strcmp(card, "room-drivers")) {                                    /* #1269 */
         /* every awake disk chosen, "לבחור דיסקים", the first machine's second disk "בלי" */
-        a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0;
+        a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0; a->nroom_pick = 0;
         for (int i = 0; i < a->st.nmachines; i++)
             for (int j = 0; a->st.machines[i].awake && j < a->st.machines[i].nroom_drawers; j++)
                 if (room_selectable(&a->st.machines[i].room_drawers[j]))
@@ -1324,6 +1544,11 @@ static void png_setup(App *a, const State *base, const char *card) {
     else if (!strcmp(card, "standby"))  { a->force_standby = 1; a->force_cloner = 1; a->st.ndrawers = 0; a->st.cloner_image[0] = 0; a->st.smart_pending = 0; }
     else if (!strcmp(card, "message"))  { snprintf(a->st.msg_title, sizeof a->st.msg_title, "%s", base->msg_title);
                                           snprintf(a->st.msg_sub, sizeof a->st.msg_sub, "%s", base->msg_sub); }
+    else if (!strcmp(card, "failure") || !strcmp(card, "failure-open")) {   /* #1569: the state file's block, or the sample */
+        if (base->fail_title[0]) snprintf(a->st.fail_title, sizeof a->st.fail_title, "%s", base->fail_title);
+        else sample_failure(&a->st);   /* a state file without the block still renders the card */
+        a->fail_open = !strcmp(card, "failure-open");
+    }
     else if (!strcmp(card, "logout"))   { a->logout_confirming = 1; }   /* mockup 10/10: what Esc opens */
     else if (!strcmp(card, "restore-folder")) { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1;
                                                 pick_open_folder(a, 0); }   /* owner 10/10: inside a folder */
@@ -1347,7 +1572,7 @@ static void png_setup(App *a, const State *base, const char *card) {
         if (!room_local_copies(&a->st)) a->st.machines[0].local_copy = 1;
         a->confirm = CONFIRM_ROOM_POWEROFF_ALL;
     }
-    else if (!strcmp(card, "room-images")) { a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0;
+    else if (!strcmp(card, "room-images")) { a->mode = MODE_ROOM; a->room_target_set = 0; a->nroom_selection = 0; a->nroom_pick = 0;
                                              a->dd_open = HIT_ROOM_IMAGE; }   /* the picker, on the folders */
     else if (!strcmp(card, "restore"))  { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1; }
     else if (!strcmp(card, "cloner-smart")) {                                    /* 16/10: Enter on "כתוב בכל זאת" */
@@ -1373,6 +1598,7 @@ static void png_setup(App *a, const State *base, const char *card) {
                     a->folder_sel = base->nfolders ? 1 : 0; disk_smart_ask(a, SDLG_CAPTURE, 0); }
         else { a->mode = MODE_RESTORE; if (base->nimages) a->restore_image_sel = 1; disk_smart_ask(a, SDLG_RESTORE, 0); }
     }
+    else if (!strncmp(card, "cloner-cancel", 13) || !strncmp(card, "room-cancel", 11)) png_cancel_sample(a, card);   /* #1386 */
     else if (!strncmp(card, "tools", 5)) {                                       /* #649 */
         a->mode = MODE_TOOLS; a->tools_view = TOOLS_LIST; a->tool_sel = -1; a->tool_running = 0;
         if (!a->ntools) tools_sample(a);
@@ -1428,9 +1654,14 @@ static int render_png(App *a, const State *base, const char *prefix, int w, int 
                                        SCREEN_ROOM, /* "room-poweroff-all" (#1367): plural disk-break warning */
                                        SCREEN_MENU, /* "growback" (11/10): the dialog over the menu, at boot */
                                        SCREEN_PROGRESS, /* "capture-end" (11/10): the dialog over the capture */
+                                       SCREEN_MENU, SCREEN_MENU, /* "send-end", "round-end" (#1560): the same question */
+                                       SCREEN_MENU, /* "end-countdown" (#1560): the count to power-off, over any screen */
                                        SCREEN_CLONER,  /* "cloner-smart" (16/10): the SMART warning window */
                                        SCREEN_RESTORE, /* "restore-smart" (16/10): the same, before a restore */
-                                       SCREEN_PICK     /* "pick-smart" (16/10): the same, before a capture */ };
+                                       SCREEN_PICK,    /* "pick-smart" (16/10): the same, before a capture */
+                                       SCREEN_FAILURE, SCREEN_FAILURE, /* "failure", "failure-open" (#1569) */
+                                       SCREEN_CLONER, SCREEN_CLONER, /* #1386: the window; a drawer cancelled */
+                                       SCREEN_ROOM, SCREEN_ROOM };   /* #1386: X and its choice; cancelled */
         /* One entry per card, or want[c] reads past the table -- that is exactly
          * what the lab saw when "direct" was added to PNG_CARDS alone. */
         _Static_assert(sizeof want / sizeof want[0] == sizeof PNG_CARDS / sizeof PNG_CARDS[0],
@@ -1476,7 +1707,7 @@ int main(int argc, char **argv) {
     a.st.hello_age = -1;
     a.st.hello_rc = -1;
     snprintf(a.title, sizeof a.title, "מחשב בניית אימג'ים");
-    const char *auth_cmd = NULL, *png = NULL, *backend = "auto", *fb_file = NULL, *fb_mirror = NULL, *screen = NULL, *role = "deploy";
+    const char *auth_cmd = NULL, *png = NULL, *splash = NULL, *backend = "auto", *fb_file = NULL, *fb_mirror = NULL, *screen = NULL, *role = "deploy";
     InstallBridge wizard = { "python3 -m server.wizard.bridge", "/opt/imagectl-src", 0 };
     int install_screen = 0, dcui_screen = 0;
     StateFile sf_state; memset(&sf_state, 0, sizeof sf_state);
@@ -1504,6 +1735,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(o, "--signed-in")) { snprintf(a.signed_user, sizeof a.signed_user, "%s", argv[++i]); a.signed_in = 1; }
         else if (!strcmp(o, "--role")) role = argv[++i];
         else if (!strcmp(o, "--png")) png = argv[++i];
+        else if (!strcmp(o, "--splash-raw")) splash = argv[++i];
         else if (!strcmp(o, "--size")) { if (sscanf(argv[++i], "%dx%d", &pw, &ph) != 2 || pw < 320 || ph < 240) { fputs(USAGE, stderr); return 2; } }
         else { fprintf(stderr, "unknown option %s\n%s", o, USAGE); return 2; }
     }
@@ -1527,8 +1759,13 @@ int main(int argc, char **argv) {
     if (!text_fonts_present(missing, sizeof missing)) {
         fprintf(stderr, "native-gui: font family not found: %s (FONTCONFIG_FILE=%s)\n",
                 missing, getenv("FONTCONFIG_FILE") ? getenv("FONTCONFIG_FILE") : "(unset)");
+        if (dcui_screen && !png) {                  /* #1364: the text screen shows this, not "exit 1" */
+            printf("FAIL font family not found: %s\n", missing);
+            fflush(stdout);
+        }
         return 1;
     }
+    if (splash) return splash_render_raw(splash, pw, ph);   /* 17/10: build time, no display */
 
     if (dcui_screen) {                              /* #1203: its own loop, see dcui.h */
         if (!png) return dcui_main(a.theme);
@@ -1544,7 +1781,7 @@ int main(int argc, char **argv) {
         if (sf_state.path[0]) {
             if (state_poll(&sf_state, &base) < 0) return 1;
         } else {
-            sample_state(&base);
+            sample_state(&base); png_builtin = 1;
         }
         return render_png(&a, &base, png, pw, ph);
     }
@@ -1609,6 +1846,7 @@ int main(int argc, char **argv) {
             cairo_destroy(cr);
             backend_present(b);
             need_present = 0;
+            lcboot_mark_shown(&a);                  /* the boot choice's count starts now */
         }
 
         /* setInterval(poll, 2000): wake at least every 2 s for the state
@@ -1621,6 +1859,11 @@ int main(int argc, char **argv) {
         if (a.screen == SCREEN_STANDBY && timeout > 500) { timeout = 500; scene_dirty = 1; }
         if (a.screen == SCREEN_LCBOOT && timeout > 200) { timeout = 200; scene_dirty = 1; }    /* #1322: the count */
         if (a.screen == SCREEN_LOCAL && timeout > 1000) { timeout = 1000; scene_dirty = 1; }
+        if (counting(&a)) {   /* #1560: wake just after the next wall-clock second */
+            struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+            int left = 1000 - (int)(ts.tv_nsec / 1000000) + 5;
+            if (left < timeout) timeout = left;
+        }
         if (in) input_rescan(in);               /* pick up a late/hot-plugged keyboard or mouse */
         int n = in ? input_fill_pollfds(in, fds, 32) : 0;
         int r = poll(n ? fds : NULL, n, timeout);
@@ -1650,7 +1893,7 @@ int main(int argc, char **argv) {
         /* #410: "עודכן לפני N שנ'" must keep counting when the state file
          * stops changing -- that is the whole point of the stamp. One
          * redraw per wake (2 s) while a stamp is on screen. */
-        if ((a.st.updated > 0 || a.st.idle_poweroff_at > 0) && (long long)time(NULL) != last_age_tick) { last_age_tick = (long long)time(NULL); scene_dirty = 1; }
+        if ((a.st.updated > 0 || counting(&a) || a.st.fail_at > 0) && (long long)time(NULL) != last_age_tick) { last_age_tick = (long long)time(NULL); scene_dirty = 1; }   /* #1569: the reboot count */
     }
     if (in) input_close(in);
     cairo_surface_destroy(scene);

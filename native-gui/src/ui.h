@@ -37,9 +37,16 @@
  * the grow-back of a disk left shrunk. A request with more is not drawn. */
 #define MAX_ASK_ROWS 16
 /* 11/10: the kinds of question the agent asks through the dialog (ask_prompt=) */
-enum { ASK_NONE, ASK_GROWBACK, ASK_CAPTURE_END };
+enum { ASK_NONE, ASK_GROWBACK, ASK_CAPTURE_END, ASK_SEND_END, ASK_ROUND_END };   /* #1560: send/round */
+/* #1560: what ended before the count to power-off (end_poweroff=<epoch>|<kind>) */
+enum { END_NONE, END_DRAWERS, END_PARTIAL, END_LOCALCLONE, END_FAILED };
 /* #1269: the models the driver library has (GET /api/console/room/driver-models). */
 #define MAX_DRIVER_MODELS 32
+/* #1569: the failure screen's lists (failscreen.sh writes at most these) */
+#define MAX_FAIL_CTX 4
+#define MAX_FAIL_ROWS 8
+#define MAX_FAIL_STEPS 4
+#define MAX_FAIL_CODE 12
 /* #432/#65: round.precheck (room_warn=) and round.missing (room_missing=)
  * lines on the live room screen; more than this are said, not cut silently. */
 #define MAX_ROOM_NOTES 32
@@ -130,6 +137,7 @@ enum {
      * asks in a dialog: [ביטול] and the red action */
     HIT_CONFIRM_OK,
     HIT_CONFIRM_CANCEL,
+    HIT_RESTORE_CANCEL,   /* #1561: "ביטול השחזור" on the restore's progress card (cancel=1) */
     /* #1269: drivers per target disk, on the room / direct setup screen */
     HIT_ROOM_DRV_SWITCH,  /* "להוסיף דרייברים" */
     HIT_ROOM_DRV_MODEL,   /* the model (select) */
@@ -140,12 +148,17 @@ enum {
     /* 11/10 (GUI only): the agent's question dialog (screens_ask.c) */
     HIT_ASK_PRIMARY,
     HIT_ASK_SECONDARY,
+    HIT_END_NOW,          /* #1560: "כבה עכשיו" on the end-of-task count */
+    HIT_END_HOLD,         /* #1560: "עצור את הספירה" -- read the results (partial/failed) */
     /* #1322: the boot choice and the local clone */
     HIT_LC_BOOT_SERVER, HIT_LC_BOOT_LOCAL, HIT_LC_BACK, HIT_LC_NEXT, HIT_LC_GO, HIT_LC_CANCEL,
     HIT_LC_STOP, HIT_LC_STOP_GO, HIT_LC_STOP_NO, HIT_LC_OFF, HIT_LC_AGAIN,
     HIT_LC_BOOT_PULL,     /* 16/10: "שחזור אימג' מהשרת" */
     /* 16/10 (Nadav): the SMART warning window -- "דלג" and "כתוב בכל זאת" */
     HIT_SDLG_SKIP, HIT_SDLG_GO,
+    HIT_FAIL_DETAILS,     /* #1569: the "פרטים טכניים" bar of the failure screen */
+    /* #1386: "בטל דיסק זה" -- the window's two buttons, and "בטל דיסק…" in the foot */
+    HIT_CDLG_KEEP, HIT_CDLG_GO, HIT_CDLG_OPEN,
     HIT_INSTALL_SUMMARY_BASE = 1000,
     HIT_INSTALL_NIC_BASE = 1020,
     /* ranges: base + index */
@@ -171,6 +184,10 @@ enum {
     HIT_LC_BAY_BASE = 3000, HIT_LC_ROLE_BASE = 3100, HIT_LC_DROP_BASE = 3200,
     /* 16/10: a drawer of the cloner's restore screen (+port, 1..MAX_DRAWERS) */
     HIT_PULL_DRAWER_BASE = 3300,
+    /* #1386: "בטל…" on a writing drawer's row (+index into the screen's cancel
+     * picks, cloner_cancel_picks / room_cancel_picks) and a row of the window's
+     * picker (+index) */
+    HIT_BAY_CANCEL_BASE = 3400, HIT_CDLG_PICK_BASE = 3500,
 };
 
 typedef struct { Rect r; int id; } Hit;
@@ -181,7 +198,8 @@ typedef enum {
     SCREEN_TOOLS,       /* #649 */
     SCREEN_INSTALL,     /* #1188 */
     SCREEN_LCBOOT,      /* #1322: "מהשרת" or "שיכפול מקומי", on a cloner's boot */
-    SCREEN_LOCAL        /* #1322: the local clone -- source, progress, result */
+    SCREEN_LOCAL,       /* #1322: the local clone -- source, progress, result */
+    SCREEN_FAILURE      /* #1569: the one failure screen (fail= records, failscreen.sh) */
 } Screen;
 
 /* station.js MODE: null (menu) / "capture" / "room" / "classes"; #706 adds restore */
@@ -195,7 +213,8 @@ typedef enum { TASK_NONE, TASK_PENDING, TASK_RUNNING, TASK_DONE, TASK_FAILED } T
 enum { CONFIRM_NONE, CONFIRM_RESTORE, CONFIRM_ROOM_STOP, CONFIRM_CLASS_STOP, CONFIRM_TOOL,
        CONFIRM_ROOM_START_WARN,   /* #432: start a wave that has a precheck warning */
        CONFIRM_ROOM_POWEROFF,     /* #65: power off one missing cloner */
-       CONFIRM_ROOM_POWEROFF_ALL }; /* #1367: power off the room */
+       CONFIRM_ROOM_POWEROFF_ALL,   /* #1367: power off the room */
+       CONFIRM_RESTORE_CANCEL };    /* #1561: stop "שחזור לדיסק הזה" and leave the disk empty */
 
 /* 16/10 (Nadav): a write to -- or a read from -- a disk with a SMART warning
  * is allowed, but only after this window: the disk by its number, its colour
@@ -207,11 +226,29 @@ typedef struct {
     int kind;                   /* SDLG_*; SDLG_NONE = closed */
     int go;                     /* the focus: 0 = "דלג" (the default), 1 = the red button */
     int level;                  /* smart_level of the disk: 1 orange, 2 red */
+    int retry;                  /* #1580: failed_last -- the red button is "נסה שוב" */
+    int readonly;               /* #1742: the reason is "readonly" -- the refusal says so, not "SMART נכשל" */
     int ref;                    /* the disk: an index into st.disks / st.lc.disks */
     char dev[32];               /* ... and its device: a reload that moves it closes the window */
     char nonce[32];             /* SDLG_CLONER: the request it answers -- a new request closes it */
     char disk[SLOT_NAME_MAX + 64], model[80], serial[80], reason[200];   /* disk: #1495 label, "(לא ממופה)" too */
 } SmartDlg;
+
+/* #1386 (Nadav 17/10): "בטל דיסק זה" -- the window over the cloner's screen and
+ * the build machine's distribution screen (canceldlg.c). A pick is one writing
+ * drawer; the window confirms one of them. "המשך לכתוב" (Esc) is the way out,
+ * never a word "ביטול" next to "בטל"; the red "בטל את דיסק N" is Del, not Enter. */
+#define MAX_CANCEL_PICKS 32
+typedef struct {
+    char mac[24], dev[32];      /* what is cancelled: the bridge validates both again */
+    char label[SLOT_NAME_MAX + 64], where[160], model[80], size[32]; int pct;
+    int drawer;                 /* the drawer number: the cloner's key for it (0 = none) */
+} CancelPick;
+typedef struct {
+    int open, build, picker;    /* build: emits room-drawer-cancel; picker: X, choose among the writers */
+    int sel, n;
+    CancelPick picks[MAX_CANCEL_PICKS];
+} CancelDlg;
 
 typedef struct {
     char dev[32], model[80]; unsigned long long size_bytes; int has_data, removable;
@@ -229,15 +266,29 @@ typedef struct {
     int port, present, fresh, selected, unidentified;   /* #1235: no serial */
     int fallback;       /* #704: port 0 -- drawn in a borrowed slot, not that slot's name */
     char serial[80], model[80], smart[16];
+    char smart_reason[24];   /* #1742: room_drawer field 24 -- "readonly" says why red; "" = not reported */
     unsigned long long size_bytes;
     /* #1269: drawer_list[].drivers of the live round -- staged / skipped /
      * failed, "" = the step did not run on this drawer. detail = the
      * packages (staged), the error (failed) or the reason (skipped). */
     char drv_state[12], drv_detail[160];
+    /* #1331: room_drawer fields 21-23 -- drivers.boot (bootstorage.sh): enabled /
+     * already / skipped / failed, the service and the error; "" = not reported */
+    char drv_boot[12], drv_bsvc[24], drv_berr[160];
+    /* #1331 T8: room_drawer fields 24-26 -- drivers.linux: state, module, error|reason */
+    char drv_lstate[12], drv_lmod[12], drv_ldet[160];
     int link_slow;      /* #432: room_drawer field 12 = link_state "slow" -- orange like a SMART warning */
     long crc_suspect;   /* #1366: field 13 -- the CRC count over crc_warn_threshold, orange; 0 = no */
     char slot_name[SLOT_NAME_MAX];
     int drawer; char conn[32];
+    /* 17/10: room_drawer fields 16-17 -- the drawer's own target in the wave:
+     * pct (-1 = no total) and its state ("" = not a target). own_progress 0 =
+     * an older agent: the live grid falls back to the machine's progress. */
+    int own_progress, pct; char tstate[16];
+    /* #1386: room_drawer fields 18-20 -- the drawer's device (what "בטל דיסק זה"
+     * names), the server's "בוטל על ידי …" line ("" = not cancelled) and whether the
+     * agent reported it (0 = asked, still "מבטל…") */
+    char dev[32], cancel_text[120]; int cancel_done;
 } RoomDrawer;
 typedef struct { char conn[32], name[SLOT_NAME_MAX]; int set; } RoomSlot;
 /* #1269: one model the driver library has a package for, in its spelling. */
@@ -265,6 +316,15 @@ typedef struct {
      * rate_bps <= 0 / eta_s < 0 = not measured -- never drawn as 0. */
     long long rate_bps; int eta_s;
     int drawer; char conn[32];
+    /* #1386: drawer= fields 11-12 -- who asked to cancel it ("" = nobody, as the
+     * screens say it: "על ידי nadav", "ממסך מחשב השיכפול") and when the agent
+     * carried it out (epoch; 0 = not yet: "מבטל…") */
+    char cancel[120]; long long cancel_at;
+    /* #1331: drawer fields 13-17 -- this drawer's drivers outcome
+     * (targets/<dev>/drivers.json, drvgui.sh); drv_state "" = did not run */
+    char drv_state[12], drv_detail[160], drv_boot[12], drv_bsvc[24], drv_berr[160];
+    /* #1331 T8: drawer fields 18-20 -- drivers.linux: state, module, error|reason */
+    char drv_lstate[12], drv_lmod[12], drv_ldet[160];
 } Drawer;
 /* A physically connected disk shown on the cloner's IDLE screen (no round yet),
  * so the operator sees what is plugged in before a broadcast starts. */
@@ -287,6 +347,7 @@ typedef struct State {
     IdleDisk idisks[MAX_DRAWERS];       int nidisks;   /* cloner idle inventory */
     ClonerBay cbays[MAX_DRAWERS];        int ncbays;
     COptical copticals[MAX_DRAWERS];     int ncopticals;
+    int drawer_count;                    /* configured cloner bays; 0 = legacy default */
     char disk_probe[16];                /* drives / no_disks / no_ports / unchecked */
 
     /* the build machine's own task (station.js drawProgress / drawDone) */
@@ -297,6 +358,7 @@ typedef struct State {
     int pct, moving, partition;         /* pct -1 = unknown total */
     unsigned long long bytes;           /* bytes_written */
     char title[128], sub[200];          /* overrides for #st-prog-title / #st-prog-sub */
+    int can_cancel;                     /* #1561: cancel=1 -- the write may still be stopped */
 
     /* message=title|sub forces #st-message (like !state.known) */
     char msg_title[96], msg_sub[200];
@@ -309,9 +371,15 @@ typedef struct State {
      * _wave_pace); -1 = not measured. updated= is the epoch the agent wrote
      * this snapshot, so the screen can say how old it is (0 = no stamp). */
     int elapsed_s, eta_s; long long rate_bps, updated;
+    /* 17/10: round= field 11 -- the wave's own state (running / closed /
+     * failed); "" = an older agent. Only "running" may say "הגל משדר". */
+    char wave_state[16];
     /* #434: idle_poweroff_at=<epoch> from guistate.sh while the agent counts
      * down to a power-off; 0 = no countdown. Any key press emits "touch". */
     long long idle_poweroff_at;
+    /* #1560: end_poweroff=<epoch>|<kind> while the agent counts down to the
+     * power-off at the end of a task (idle.sh end_countdown); 0 = none. */
+    long long end_poweroff_at; int end_kind, end_done, end_total, end_held;
     /* classes.js live session */
     int has_session; char sess_image[96], sess_prefix[32], sess_group[80];
     int sess_open, joined, expected, starts_in;
@@ -356,6 +424,7 @@ typedef struct State {
      * bytes>|<new bytes> per row. Pending only when every row arrived and
      * is valid -- a partial table is never drawn as the whole question. */
     int shrink_pending, nshrink;
+    int shrink_direct;                  /* #1171: <nonce>|<count>|direct -- the direct send's words */
     char shrink_nonce[32];
     struct { int idx; unsigned long long old_bytes, new_bytes; } shrink[MAX_SHRINK_PARTS];
 
@@ -381,6 +450,9 @@ typedef struct State {
      * carries a model of up to 127 bytes (DriverModel.model); at 160 gcc
      * warns -Wformat-truncation, and a cut would split a UTF-8 letter. */
     char room_error[256];
+    /* 17/10: room_failed=<reason> -- the last round failed. It is not a live
+     * round (it never sets has_round): the picker stays, with one line why. */
+    char room_failed[300];
 
     /* #432: round.precheck of an open wave -- room_warn=<text>, one per
      * drawer the wave would write on a slow link or a risen CRC. Orange: a
@@ -392,6 +464,19 @@ typedef struct State {
     int nroom_missing, hidden_room_missing;
     /* #1322: the boot choice and the local clone (lcgui.sh) */
     LcState lc;
+
+    /* #1569 (mockup PR #1550): the failure screen, from failscreen.sh --
+     * fail=<tone bad|warn>|<hold 0/1>|<title>|<sub> opens a block; the
+     * fail_why= / fail_safe= / fail_ctx= / fail_row= / fail_step= / fail_code=
+     * lines after it belong to it (a second fail= replaces the block). A
+     * non-empty title routes to SCREEN_FAILURE before everything else.
+     * fail_at: the epoch of die_local's reboot (0 = the machine holds). */
+    char fail_title[128], fail_sub[160], fail_why[400], fail_safe[240];
+    int fail_warn, fail_hold, fail_cloner; long long fail_at;   /* fail_cloner: field 5 = cloner (the header's role) */
+    struct { char label[48], value[96]; } fail_ctx[MAX_FAIL_CTX]; int nfail_ctx;
+    struct { char label[96], sub[240], kind[8], pill[32]; } fail_rows[MAX_FAIL_ROWS]; int nfail_rows;
+    char fail_steps[MAX_FAIL_STEPS][240]; int nfail_steps;
+    char fail_code[MAX_FAIL_CODE][240]; int nfail_code;
 } State;
 
 /* #649: one row of $GUI_DIR/tools (id|domain|title|risk|args). risk is
@@ -439,6 +524,7 @@ typedef struct App {
     int force_standby;          /* --screen standby / idle cloner */
     int fixed_clock;            /* --png: header clock is a constant, so two renders
                                    a minute apart are byte-identical (test flake, 19/09) */
+    int fail_open;              /* #1569: "פרטים טכניים" unfolded (Enter / click) */
     int watching;               /* #st-progress was on screen (drawDone trigger) */
     /* #408: the capture rate, measured here from two state reads (bytes and
      * the agent's updated= epoch). <= 0 = not measured yet -- never drawn as 0.
@@ -473,6 +559,10 @@ typedef struct App {
      * port -- outside State so a 2 s state reload does not erase clicks. */
     struct { char mac[24]; int port, selected; } room_selection[MAX_ROOM_SELECTIONS];
     int nroom_selection;
+    /* Nadav 17/10: whole cloners picked (by MAC) -- an off machine that
+     * reported no drawer too. "הער" wakes exactly these plus every machine
+     * with a ticked drawer, and nothing else (room_wake in main.c). */
+    char room_pick[MAX_MACHINES][24]; int nroom_pick;
     /* #1269: "להוסיף דרייברים" -- off on every entry (room_drv_reset).
      * drv_pick 0 = one model for every chosen disk, 1 = per disk: a disk
      * with no drv_map entry takes the current model, an entry with an empty
@@ -522,6 +612,7 @@ typedef struct App {
 
     LcUi lcu;                   /* #1322: what the person chose on the local clone screens */
     SmartDlg sdlg;              /* 16/10: the SMART warning window (smartdlg.c); kind 0 = closed */
+    CancelDlg cdlg;             /* #1386: "בטל דיסק זה" (canceldlg.c); open 0 = closed */
 
     /* #1188: local UI state; validation and apply remain in wizard/core.py. */
     InstallState install;
@@ -588,6 +679,12 @@ int standby_conn(const State *s);
 void standby_status_info(App *a, cairo_t *cr, double left, double cy);
 void screen_restore(App *a, cairo_t *cr, double W, double H, double head_h);
 void screen_tools(App *a, cairo_t *cr, double W, double H, double head_h);
+/* #1569 (screens_failure.c): the one failure screen of mockup PR #1550.
+ * failure_status_word: the status bar's word and dot for it -- red "נכשל"
+ * on a hold the server hears, orange "אין קשר עם השרת" when the last hello
+ * says otherwise (principle 5: what the machine knows, not what it hopes). */
+void screen_failure(App *a, cairo_t *cr, double W, double H, double head_h);
+const char *failure_status_word(const App *a, Rgb *dot);
 void screen_install(App *a, cairo_t *cr, double W, double H);
 /* #928 (screens_shrink.c): the shrink question, modal over any screen while
  * st.shrink_pending -- it replaces the hit table with its three buttons. */
@@ -596,6 +693,8 @@ void draw_shrink_dialog(App *a, cairo_t *cr, double W, double H);
  * modal like the shrink question and drawn in its style; the shrink question
  * wins if both are pending. */
 void draw_ask_dialog(App *a, cairo_t *cr, double W, double H);
+/* #1560 (screens_ask.c): the end-of-task count to power-off, one button */
+void draw_end_dialog(App *a, cairo_t *cr, double W, double H);
 /* #1270 (screens.c): the confirm dialog of a->confirm, modal like the shrink
  * question -- it replaces the hit table with [ביטול] and the red action. */
 void draw_confirm_dialog(App *a, cairo_t *cr, double W, double H);

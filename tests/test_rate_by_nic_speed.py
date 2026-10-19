@@ -163,10 +163,11 @@ def test_the_learned_rate_never_goes_above_the_link(conn):
     הוחלף ל-1G — הזיכרון אינו גובר על הקישור."""
     assert drive_rates.decide(conn, "ses_1", lambda: [_drive("S1")], None,
                               link=lambda: _link(10000)) == "6000m"
-    drive_rates.record_stream(conn, "ses_1", {     # מעט שידורים חוזרים — "held"
-        "sent_bytes": 10 ** 10, "loss_blocks": 10, "stream_bps": None, "stream_s": None})
+    drive_rates.record_stream(conn, "ses_1", {     # מעט שידורים חוזרים, ומקלט
+        "sent_bytes": 10 ** 10, "loss_blocks": 10,  # שלא דיווח (17/10) — נשאר
+        "stream_bps": None, "stream_s": None})
     remembered = drive_rates.choose(conn, [_drive("S1")], None, link=_link(10000))
-    assert remembered["max_bitrate"] == "6000m" and remembered["basis"] == "held"
+    assert remembered["max_bitrate"] == "6000m" and remembered["basis"] == "unmeasured"
     got = drive_rates.choose(conn, [_drive("S1")], None, link=_link(1000))
     assert got["max_bitrate"] == "900m" and got["basis"] == "ceiling"
 

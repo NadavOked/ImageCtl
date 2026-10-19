@@ -39,6 +39,8 @@ _drivers_result() {
     # #1331: the boot-storage outcome (bootstorage.sh), when that step ran.
     _dr_out="${DR_OUT:-$RUN_DIR/drivers.json}"
     _boot=""; [ -n "${_dr_boot:-}" ] && _boot=",\"boot\":$_dr_boot"
+    # #1331: the Linux initramfs check (linuxdrivers.sh), on a Linux target.
+    [ -n "${_dr_linux:-}" ] && _boot="$_boot,\"linux\":$_dr_linux"
     if [ -n "${3:-}" ]; then
         _key="error"; [ "$1" = "skipped" ] && _key="reason"
         printf '{"state":"%s","packages":[%s],"%s":"%s"%s}\n' \
@@ -134,7 +136,7 @@ stage_drivers() {
 }
 
 _stage_drivers() {
-    _dr_mnt=""; _dr_why=""; _dr_boot=""
+    _dr_mnt=""; _dr_why=""; _dr_boot=""; _dr_linux=""
     rm -f "${DR_OUT:-$RUN_DIR/drivers.json}"
     _dr_plan="$RUN_DIR/drivers.plan"
     if ! manifest_plan "$2" > "$_dr_plan"; then
@@ -143,6 +145,13 @@ _stage_drivers() {
     fi
     grep -qE '^[^|]*\|[^|]*\|windows\|' "$_dr_plan"; _dr_plan_rc=$?
     if [ "$_dr_plan_rc" -eq 1 ]; then
+        # #1331: a Linux target is checked, never changed (linuxdrivers.sh).
+        grep -qE '^[^|]*\|[^|]*\|linux\|' "$_dr_plan"
+        case $? in
+            0) linux_initramfs_check "$1" "$2" "$_dr_plan" ;;
+            1) ;;
+            *) _dr_linux='{"state":"failed","error":"לא הצלחנו לבדוק את תוכנית המחיצות"}' ;;
+        esac
         _drivers_result "skipped" "" "not_windows"
         return 0
     fi

@@ -11,6 +11,7 @@ field_for_code() {
         invalid-network-mode) printf mode ;; invalid-address) printf address ;;
         invalid-netmask) printf netmask ;; invalid-gateway) printf gateway ;; invalid-dns) printf dns ;;
         invalid-network) printf address ;; invalid-hostname) printf hostname ;;
+        invalid-timezone|zones-list-missing) printf timezone ;;
         invalid-admin-user) printf admin_user ;; invalid-admin-password) printf password ;;
         *) printf disk ;;
     esac
@@ -37,6 +38,8 @@ he_for_code() {
         invalid-gateway) printf '%s' 'כתובת השער אינה תקינה' ;;
         invalid-dns) printf '%s' 'רשימת שרתי ה-DNS אינה תקינה (כתובות מופרדות בפסיק)' ;;
         invalid-hostname) printf '%s' 'שם השרת אינו תקין — אותיות לטיניות, ספרות ומקף, עד 63 תווים, בלי מקף בתחילה או בסוף' ;;
+        invalid-timezone) printf '%s' 'אזור הזמן אינו מוכר — שם אזור של tzdata באנגלית, למשל Asia/Jerusalem' ;;
+        zones-list-missing) printf '%s' 'רשימת אזורי הזמן חסרה במדיית ההתקנה — לא ניתן לבדוק את אזור הזמן' ;;
         invalid-admin-user) printf '%s' 'שם המנהל אינו תקין — אותיות קטנות, ספרות ו-. _ - עד 32 תווים, בלי מקף בתחילה' ;;
         invalid-admin-password) printf '%s' 'הסיסמה לא יכולה להיות ריקה' ;;
         *) printf '%s' 'ההגדרות לא עברו בדיקה' ;;

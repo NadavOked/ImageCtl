@@ -38,7 +38,7 @@ PRIMARY = Snapshot(
     deploy=NicInfo("ens34", "10.44.0.1/16", "static", "up", "1000",
                    "00:50:56:aa:44:01", "VMware VMXNET3"),
     services=dict(UP), storage_role="standalone", secondary_count=1,
-    refreshed="20:17:22",
+    refreshed="20:17:22", system_updates="2026-10-15",
 )
 PRIMARY_EXTRAS = view.Extras(uptime_seconds=12 * 86400 + 3600, secondaries=("HAIFA",))
 

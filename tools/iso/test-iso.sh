@@ -35,7 +35,7 @@ CONSOLE_PORT=18081
 
 usage() {
     cat <<'EOF'
-ImageCtl — בדיקת ISO ההתקנה ב-QEMU/OVMF (Secure Boot).
+ImageSrv — בדיקת ISO ההתקנה ב-QEMU/OVMF (Secure Boot).
 
   sudo tools/iso/test-iso.sh --iso FILE [--disk-gb N] [--timeout SEC] [--mem-mb N]
 

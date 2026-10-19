@@ -78,7 +78,8 @@ def test_the_parser_reads_the_models_and_says_unread_by_default():
     # שדות 9–10 של room_drawer: מצב ופירוט; מצב לא מוכר אינו מוצג כאילו הונח.
     # ‏#704: שדה 11 (שם החריץ) נוסף אחריהם, ו-#432 שדה 12 (מצב הקישור) — עדיין אופציונלי מ-8.
     # #1366: a 13th field, the CRC count; #1495: 14-15, the drawer and the connection
-    assert "int nf = split(val, f, 15);" in parse and "if (nf < 8) continue;" in parse
+    # #1386: 18-20 = dev, cancel text, done; #1331: 21-23 = drivers.boot; T8: 24-26 = drivers.linux; #1742: 27 = smart reason
+    assert "int nf = split(val, f, 27);" in parse and "if (nf < 8) continue;" in parse
     assert 'strcmp(f[8], "staged")' in parse and 'strcmp(f[8], "failed")' in parse
 
 

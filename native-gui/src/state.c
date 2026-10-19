@@ -23,6 +23,22 @@ static int split(char *v, char *f[], int max) {
 static void cp(char *dst, size_t n, const char *src) { snprintf(dst, n, "%s", src); }
 static int  num(const char *s, int dflt) { return s[0] ? atoi(s) : dflt; }
 
+/* #1331: a drawer's drivers outcome -- only the words the agent writes; anything
+ * else is "did not run", never drawn as staged. g = state, detail, boot-state,
+ * boot-service, boot-error; the boot part only with one of its four words. */
+static int drv_word(const char *s) { return !strcmp(s, "staged") || !strcmp(s, "skipped") || !strcmp(s, "failed"); }
+static void drv_boot_fields(char bo[12], char sv[24], char er[160], char *const *g) {
+    if (strcmp(g[0], "enabled") && strcmp(g[0], "already") && strcmp(g[0], "skipped") && strcmp(g[0], "failed")) return;
+    cp(bo, 12, g[0]); cp(sv, 24, g[1]); cp(er, 160, g[2]);
+}
+
+/* #1331 T8: drivers.linux -- only its five words; anything else is "not reported" */
+static void drv_linux_fields(char st[12], char mod[12], char det[160], char *const *g) {
+    static const char *const w[] = { "generic", "hostonly", "unsupported", "failed", "skipped" };
+    for (size_t i = 0; i < sizeof w / sizeof *w; i++)
+        if (!strcmp(g[0], w[i])) { cp(st, 12, g[0]); cp(mod, 12, g[1]); cp(det, 160, g[2]); return; }
+}
+
 static void apply_tz(const char *tz) {
     static char applied[65];
     const char *value = tz[0] ? tz : "UTC0";
@@ -118,7 +134,7 @@ void state_parse(State *s, FILE *fp) {
         if (!eq) continue;
         *eq = 0;
         const char *key = line;
-        char *val = eq + 1, *f[16];   /* #1366: room_drawer= has 13 fields */
+        char *val = eq + 1, *f[27];   /* #1386 + #1331 + #1742: room_drawer= has up to 27 fields (split writes f[0..max-1]) */
         if (lc_state_line(s, key, val)) continue;   /* #1322: lc_* records */
 #define KEY(k) (strcmp(key, k) == 0)
         if (KEY("disk")) {
@@ -200,8 +216,11 @@ void state_parse(State *s, FILE *fp) {
              * #1269: |drivers-state|drivers-detail -- optional (an older agent sends eight)
              * #704: |slot-name -- optional, "" = "דיסק N"
              * #432: |link-state -- optional; only "slow" colours the slot
-             * #1366: |crc -- optional; the count when over the threshold, "" = not */
-            int nf = split(val, f, 15);
+             * #1366: |crc -- optional; the count when over the threshold, "" = not
+             * 17/10: |pct|target-state -- this drawer's own progress in the wave
+             * #1386: |dev|cancel-text|cancel-done; #1331: |boot-state|boot-service|boot-error; T8: |linux-state|module|error-or-reason
+             * #1742: |smart-reason -- why red ("readonly"), only when there is one (24-26 then empty) */
+            int nf = split(val, f, 27);
             if (nf < 8) continue;
             unsigned long long mi, port, size;
             if (!parse_uint(f[0], &mi) ||
@@ -248,6 +267,18 @@ void state_parse(State *s, FILE *fp) {
             d->crc_suspect = parse_uint(f[12], &crc) && crc > 0 && crc < 100000000ULL ? (long)crc : 0;
             d->drawer = mapped_record ? parse_drawer(f[13]) : 0;
             if (mapped_record) cp(d->conn, sizeof d->conn, f[14]);
+            /* 17/10: the drawer's own target. Absent (an older agent) = the
+             * machine's progress, as before; present = only its own. */
+            d->own_progress = nf >= 17;
+            d->pct = nf >= 17 ? num(f[15], -1) : -1;
+            if (nf >= 17) cp(d->tstate, sizeof d->tstate, f[16]);
+            /* #1386: |dev|cancel-text|cancel-done -- optional (an older agent sends 17) */
+            if (nf >= 18) cp(d->dev, sizeof d->dev, f[17]);
+            if (nf >= 20) { cp(d->cancel_text, sizeof d->cancel_text, f[18]); d->cancel_done = num(f[19], 0) == 1; }
+            /* #1331: fields 21-23 -- drivers.boot, only next to a known drivers state */
+            if (nf >= 23 && d->drv_state[0]) drv_boot_fields(d->drv_boot, d->drv_bsvc, d->drv_berr, f + 20);
+            if (nf >= 26 && d->drv_state[0]) drv_linux_fields(d->drv_lstate, d->drv_lmod, d->drv_ldet, f + 23);   /* #1331 T8 */
+            if (nf >= 27) cp(d->smart_reason, sizeof d->smart_reason, f[26]);   /* #1742 */
         } else if (KEY("room_warn")) {
             /* #432: one line of round.precheck; an empty one is not a warning */
             if (!val[0]) continue;
@@ -328,7 +359,7 @@ void state_parse(State *s, FILE *fp) {
             cp(dm->vendor, sizeof dm->vendor, f[0]);
             cp(dm->model, sizeof dm->model, f[1]);
         } else if (KEY("drawer") && s->ndrawers < MAX_DRAWERS) {
-            int nf = split(val, f, 10);
+            int nf = split(val, f, 20);
             if (nf < 5) continue;                     /* malformed -- no phantom drawer */
             unsigned long long port, bytes, total;
             if (!parse_uint(f[0], &port) || port > INT_MAX) continue;  /* reject, don't fold to 0 */
@@ -347,6 +378,15 @@ void state_parse(State *s, FILE *fp) {
             d->eta_s = nf >= 8 ? num(f[7], -1) : -1;
             d->drawer = nf >= 9 ? parse_drawer(f[8]) : 0;
             if (nf >= 10) cp(d->conn, sizeof d->conn, f[9]);
+            /* #1386: fields 11-12 -- who asked to cancel ("" = nobody), when it was done */
+            if (nf >= 11) cp(d->cancel, sizeof d->cancel, f[10]);
+            d->cancel_at = nf >= 12 && f[11][0] ? strtoll(f[11], NULL, 10) : 0;
+            /* #1331: fields 13-17 -- the drawer's drivers (drvgui.sh); absent = did not run */
+            if (nf >= 17 && drv_word(f[12])) {
+                cp(d->drv_state, sizeof d->drv_state, f[12]); cp(d->drv_detail, sizeof d->drv_detail, f[13]);
+                drv_boot_fields(d->drv_boot, d->drv_bsvc, d->drv_berr, f + 14);
+                if (nf >= 20) drv_linux_fields(d->drv_lstate, d->drv_lmod, d->drv_ldet, f + 17);   /* #1331 T8: fields 18-20 */
+            }
         } else if (KEY("cdisk") && s->nidisks < MAX_DRAWERS) {
             /* cdisk=port|dev|model|size|smart|cause -- the cloner's idle
              * inventory. NOT "disk=" -- that key already holds the build
@@ -376,8 +416,9 @@ void state_parse(State *s, FILE *fp) {
             cp(id->smart, sizeof id->smart, sm);
             /* #1366: on fail the 6th field is the SMART reason of the F1 stop */
             const char *cause = (nf >= 6 && (!strcmp(sm, "failed_last") || !strcmp(sm, "fail"))) ? f[5] : "";
-            if (!strcmp(sm, "failed_last") ? strcmp(cause, "cable") && strcmp(cause, "disk")
-                    : strcmp(cause, "health_failed") && strcmp(cause, "pending_sectors") && strcmp(cause, "uncorrectable"))
+            if (!strcmp(sm, "failed_last") ? strcmp(cause, "cable") && strcmp(cause, "disk") && strcmp(cause, "readonly")   /* #1742 */
+                    : strcmp(cause, "health_failed") && strcmp(cause, "pending_sectors") && strcmp(cause, "uncorrectable")
+                      && strcmp(cause, "readonly"))   /* #1742: red because the disk is read-only */
                 cause = "";
             cp(id->cause, sizeof id->cause, cause);
             /* #432: fields 7/8 (link, port max), "6.0"-shaped or not read --
@@ -399,6 +440,10 @@ void state_parse(State *s, FILE *fp) {
                 cp(s->disk_probe, sizeof s->disk_probe, "unchecked");
         } else if (KEY("cloner")) {
             cp(s->cloner_image, sizeof s->cloner_image, val);
+        } else if (KEY("drawer_count")) {
+            unsigned long long count;
+            if (parse_uint(val, &count) && count >= 1 && count <= MAX_DRAWERS)
+                s->drawer_count = (int)count;
         } else if (KEY("server_restarted_wave")) {
             s->server_restarted_wave = !strcmp(val, "1");
         } else if (KEY("smart_prompt")) {
@@ -416,12 +461,13 @@ void state_parse(State *s, FILE *fp) {
             /* nonce|count. The nonce is echoed back on the answer, so it is
              * kept only in the shape the bridge accepts: digits and '-'. */
             unsigned long long n;
-            if (shrink_seen++ || split(val, f, 3) != 2 || !f[0][0] ||
+            int nf = split(val, f, 3);   /* #1171: a third field, "direct", or none */
+            if (shrink_seen++ || (nf != 2 && !(nf == 3 && !strcmp(f[2], "direct"))) || !f[0][0] ||
                 strspn(f[0], "0123456789-") != strlen(f[0]) ||
                 strlen(f[0]) >= sizeof s->shrink_nonce ||
                 !parse_uint(f[1], &n) || n < 1 || n > MAX_SHRINK_PARTS) { shrink_bad = 1; continue; }
             cp(s->shrink_nonce, sizeof s->shrink_nonce, f[0]);
-            shrink_declared = n;
+            shrink_declared = n; s->shrink_direct = nf == 3;
         } else if (KEY("shrink_partition")) {
             /* idx|old bytes|new bytes -- a shrink makes a partition smaller */
             unsigned long long idx, old_b, new_b;
@@ -442,13 +488,15 @@ void state_parse(State *s, FILE *fp) {
             if (ask_seen++ || split(val, f, 5) != 4) { ask_bad = 1; continue; }
             if (!strcmp(f[1], "growback")) kind = ASK_GROWBACK;
             else if (!strcmp(f[1], "capture-end")) kind = ASK_CAPTURE_END;
+            else if (!strcmp(f[1], "send-end")) kind = ASK_SEND_END;     /* #1560 */
+            else if (!strcmp(f[1], "round-end")) kind = ASK_ROUND_END;   /* #1560 */
             if (kind == ASK_NONE || !f[0][0] ||
                 strspn(f[0], "0123456789-") != strlen(f[0]) ||
                 strlen(f[0]) >= sizeof s->ask_nonce ||
                 strspn(f[3], "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-") != strlen(f[3]) ||
                 strlen(f[3]) >= sizeof s->ask_subject ||
                 !parse_uint(f[2], &n) || n > MAX_ASK_ROWS ||
-                (kind == ASK_GROWBACK && n < 1) || (kind == ASK_CAPTURE_END && n != 0)) { ask_bad = 1; continue; }
+                (kind == ASK_GROWBACK && n < 1) || (kind != ASK_GROWBACK && n != 0)) { ask_bad = 1; continue; }
             cp(s->ask_nonce, sizeof s->ask_nonce, f[0]);
             cp(s->ask_subject, sizeof s->ask_subject, f[3]);
             s->ask_kind = kind;
@@ -503,11 +551,12 @@ void state_parse(State *s, FILE *fp) {
         else if (KEY("bytes"))        s->bytes = strtoull(val, NULL, 10);
         else if (KEY("title"))        cp(s->title, sizeof s->title, val);
         else if (KEY("sub"))          cp(s->sub, sizeof s->sub, val);
+        else if (KEY("cancel"))       s->can_cancel = !strcmp(val, "1");   /* #1561 */
         else if (KEY("message")) {
             split(val, f, 2);
             cp(s->msg_title, sizeof s->msg_title, f[0]); cp(s->msg_sub, sizeof s->msg_sub, f[1]);
         } else if (KEY("round")) {
-            split(val, f, 10);
+            split(val, f, 11);
             s->has_round = 1;
             cp(s->round_image, sizeof s->round_image, f[0]);
             s->wave_number = num(f[1], 0); s->wave_open = num(f[2], 0);
@@ -517,10 +566,27 @@ void state_parse(State *s, FILE *fp) {
             s->elapsed_s = num(f[7], -1);
             s->rate_bps = f[8][0] ? strtoll(f[8], NULL, 10) : -1;
             s->eta_s = num(f[9], -1);
+            cp(s->wave_state, sizeof s->wave_state, f[10]);   /* 17/10; "" = an older agent */
         } else if (KEY("updated")) {
             s->updated = strtoll(val, NULL, 10);                 /* #410 */
         } else if (KEY("idle_poweroff_at")) {
             s->idle_poweroff_at = strtoll(val, NULL, 10);        /* #434 */
+        } else if (KEY("end_poweroff")) {
+            /* #1560: <epoch>|<kind>|<done>|<targets>|<held>; done/targets
+             * may be empty (not said). All or nothing: a record this screen
+             * cannot read draws no count -- the agent's count runs regardless. */
+            unsigned long long at = 0, dn = 0, tot = 0, held = 2; int kind = END_NONE;
+            if (split(val, f, 6) == 5 && parse_uint(f[0], &at) && at > 0 && at < (1ULL << 40) &&
+                (!f[2][0] || parse_uint(f[2], &dn)) && (!f[3][0] || parse_uint(f[3], &tot)) &&
+                dn <= tot && tot < 100 && parse_uint(f[4], &held) && held <= 1) {
+                if (!strcmp(f[1], "drawers")) kind = END_DRAWERS;
+                else if (!strcmp(f[1], "partial")) kind = END_PARTIAL;   /* some targets failed */
+                else if (!strcmp(f[1], "localclone")) kind = END_LOCALCLONE;
+                else if (!strcmp(f[1], "failed")) kind = END_FAILED;   /* a cloner round or local clone that failed */
+            }
+            if (kind == END_NONE) fprintf(stderr, "native-gui: state: end_poweroff malformed; not shown\n");
+            else { s->end_poweroff_at = (long long)at; s->end_kind = kind;
+                   s->end_done = (int)dn; s->end_total = (int)tot; s->end_held = (int)held; }
         } else if (KEY("session")) {
             split(val, f, 7);
             s->has_session = 1;
@@ -530,8 +596,36 @@ void state_parse(State *s, FILE *fp) {
             s->expected = num(f[5], 0); s->starts_in = num(f[6], 0);
         } else if (KEY("form_error"))  cp(s->form_error, sizeof s->form_error, val);
         else if (KEY("room_error"))    cp(s->room_error, sizeof s->room_error, val);
+        else if (KEY("room_failed"))   cp(s->room_failed, sizeof s->room_failed, val);   /* 17/10 */
         else if (KEY("class_error"))   cp(s->class_error, sizeof s->class_error, val);
         else if (KEY("toast"))         cp(s->toast, sizeof s->toast, val);
+        /* #1569: the failure screen (failscreen.sh). fail= opens the block and
+         * empties the lists, so a writer that composes the records twice
+         * (the kiosk's hello state and a display-only loop) draws them once. */
+        else if (KEY("fail")) {
+            split(val, f, 5);
+            s->fail_warn = !strcmp(f[0], "warn"); s->fail_hold = num(f[1], 1) != 0; s->fail_cloner = !strcmp(f[4], "cloner");
+            cp(s->fail_title, sizeof s->fail_title, f[2]); cp(s->fail_sub, sizeof s->fail_sub, f[3]);
+            s->fail_why[0] = s->fail_safe[0] = 0; s->fail_at = 0;
+            s->nfail_ctx = s->nfail_rows = s->nfail_steps = s->nfail_code = 0;
+        }
+        else if (KEY("fail_why"))  cp(s->fail_why, sizeof s->fail_why, val);
+        else if (KEY("fail_safe")) cp(s->fail_safe, sizeof s->fail_safe, val);
+        else if (KEY("fail_at"))   { unsigned long long v; if (parse_uint(val, &v) && v < (1ULL << 40)) s->fail_at = (long long)v; }
+        else if (KEY("fail_ctx")) {
+            if (s->nfail_ctx < MAX_FAIL_CTX) { split(val, f, 2);
+                cp(s->fail_ctx[s->nfail_ctx].label, sizeof s->fail_ctx[0].label, f[0]);
+                cp(s->fail_ctx[s->nfail_ctx].value, sizeof s->fail_ctx[0].value, f[1]); s->nfail_ctx++; }
+        }
+        else if (KEY("fail_row")) {
+            if (s->nfail_rows < MAX_FAIL_ROWS) { split(val, f, 4);
+                cp(s->fail_rows[s->nfail_rows].label, sizeof s->fail_rows[0].label, f[0]);
+                cp(s->fail_rows[s->nfail_rows].sub, sizeof s->fail_rows[0].sub, f[1]);
+                cp(s->fail_rows[s->nfail_rows].kind, sizeof s->fail_rows[0].kind, f[2]);
+                cp(s->fail_rows[s->nfail_rows].pill, sizeof s->fail_rows[0].pill, f[3]); s->nfail_rows++; }
+        }
+        else if (KEY("fail_step")) { if (s->nfail_steps < MAX_FAIL_STEPS) cp(s->fail_steps[s->nfail_steps++], sizeof s->fail_steps[0], val); }
+        else if (KEY("fail_code")) { if (s->nfail_code < MAX_FAIL_CODE) cp(s->fail_code[s->nfail_code++], sizeof s->fail_code[0], val); }
         else fprintf(stderr, "native-gui: state: unknown key '%s' ignored\n", key);
 #undef KEY
     }
@@ -549,7 +643,7 @@ void state_parse(State *s, FILE *fp) {
     int shrink_broken = (shrink_seen || s->nshrink) && !s->shrink_pending;
     if (shrink_broken) {
         fprintf(stderr, "native-gui: state: shrink question incomplete or malformed; not shown\n");
-        s->nshrink = 0; s->shrink_nonce[0] = 0;
+        s->nshrink = 0; s->shrink_nonce[0] = 0; s->shrink_direct = 0;
     }
     s->ask_pending = ask_seen && !ask_bad && s->ask_kind != ASK_NONE &&
                      (unsigned long long)s->nask == ask_declared;

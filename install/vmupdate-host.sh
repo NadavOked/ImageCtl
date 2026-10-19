@@ -14,14 +14,14 @@
 #   מותקנת · 5 המשתמש לא נוצר · 6 מקורות apt של שרת מה-ISO לא הוכנו.
 #   "apt יצא 0" אינו ראיה (עיקרון 5).
 #
-# ‏#1371 — שרת מה-ISO (יש sources.list.d/imagectl-iso.list): המקור היחיד שלו
-# הוא המאגר המקומי, ו-ISO ישן אינו נושא את חבילות ה-VM כלל. לכן, לפני apt:
+# ‏#1371/#1411/#1459 — שרת מה-ISO (יש sources.list.d/imagectl-iso.list): המקור
+# היחיד שלו הוא המאגר המקומי, **ואין מקור apt חי** (הכרעת נדב 15/10: עדכוני
+# Debian מגיעים רק בגרסאות החתומות). ISO ישן אינו נושא את חבילות ה-VM כלל. לכן:
 #   * המאגר המקומי מפרסם רק מה שיש בו (install/apt-repo-consistent.py) —
 #     שרת מ-ISO של לפני #1371 פרסם כ-500 חבילות בלי הקבצים.
-#   * ‏Debian מהאינטרנט ב-https, **בעדיפות נמוכה** (‏Pin-Priority 100 מול 500
-#     של המקומי): חבילה שקיימת מקומית נלקחת מהמאגר המקומי; חבילה חדשה —
-#     מהאינטרנט, כשחומת האש פותחת 443. סגור = מה שבמאגר המקומי בלבד.
-#   ואז `apt-get update` עם תקרת זמן — מקור שאינו נגיש אינו תוקע את ההתקנה.
+#   * שרת שכבר קיבל את מקור deb.debian.org מנקה אותו.
+#   * dpkg-query קודם: חבילה שכבר מותקנת לא נוגעת ב-apt בכלל; apt (מהמאגר
+#     המקומי) רק למה שחסר. חבילה שחסרה גם אחריו = יציאה 3/4 עם שמה, לא הורדה.
 #
 # בדיקות מחליפות את הכלים: IMAGECTL_APT, ‏IMAGECTL_DPKG_QUERY,
 # ‏IMAGECTL_USERADD, ‏IMAGECTL_ID, ‏IMAGECTL_PYTHON; ואת הנתיבים:
@@ -38,9 +38,6 @@ PYTHON="${IMAGECTL_PYTHON:-python3}"
 APT_ETC="${IMAGECTL_APT_ETC:-/etc/apt}"
 LOCAL_REPO="${IMAGECTL_APT_REPO:-/var/lib/imagectl/apt-repo}"
 VM_USER=imagectl-vm
-#: ‏#1371: המקור מהאינטרנט ועדיפותו. ‏500 היא ברירת המחדל של כל מקור אחר.
-NET_SOURCE="deb https://deb.debian.org/debian trixie main contrib"
-NET_PRIORITY=100
 
 pkgs=()
 if [[ -r "$LIST" ]]; then
@@ -61,33 +58,34 @@ if [[ -e "$APT_ETC/sources.list.d/imagectl-iso.list" ]]; then
         exit 6
     fi
     printf '%s\n' "$repo_out"
-    if ! { printf '%s\n' "$NET_SOURCE" > "$APT_ETC/sources.list.d/imagectl-debian.list" \
-           && mkdir -p "$APT_ETC/preferences.d" \
-           && printf 'Package: *\nPin: origin "deb.debian.org"\nPin-Priority: %s\n' "$NET_PRIORITY" \
-                > "$APT_ETC/preferences.d/imagectl-debian.pref"; }; then
-        echo "מקור Debian מהאינטרנט לא נכתב ל-$APT_ETC"
+    # שרת שקיבל את המקור החי בגרסה קודמת (#1459) — מסירים, ומוודאים שנעלם.
+    rm -f "$APT_ETC/sources.list.d/imagectl-debian.list" "$APT_ETC/preferences.d/imagectl-debian.pref"
+    if [[ -e "$APT_ETC/sources.list.d/imagectl-debian.list" || -e "$APT_ETC/preferences.d/imagectl-debian.pref" ]]; then
+        echo "מקור Debian חי לא הוסר מ-$APT_ETC"
         exit 6
     fi
-    echo "מקורות: המאגר המקומי, ו-deb.debian.org (https, עדיפות $NET_PRIORITY)"
+    echo "מקורות: המאגר המקומי בלבד (אין מקור apt חי)"
 fi
 
-# רשימות עדכניות — אחרת מקור שנוסף זה עתה אינו קיים בעיני apt. כשל כאן אינו
-# סוף הדרך (המאגר המקומי עשוי להספיק): ההתקנה והבדיקה בחזרה מכריעות, והסיבה
-# נוספת לשורת הכשל שלהן. "לא נגיש" הוא ב-apt אזהרה ויציאה 0 — ולכן נקרא מהפלט.
-net_note=""
-upd_out="$(env DEBIAN_FRONTEND=noninteractive "$APT" update -qq -o Acquire::Retries=0 \
-    -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 2>&1)" \
-    || net_note="apt-get update נכשל: $(printf '%s\n' "$upd_out" | grep -v '^\s*$' | tail -n 1)"
-if [[ -z "$net_note" ]] && grep -qE '^(W|E): .*deb\.debian\.org' <<<"$upd_out"; then
-    net_note="deb.debian.org לא נגיש (חומת האש סוגרת 443?) — רק מה שבמאגר המקומי"
-fi
-[[ -z "$net_note" ]] || echo "$net_note"
+# מה שכבר מותקן לא נוגע ב-apt (#1459): כל עדכון הריץ update+install גם כשהכול שם.
+need=()
+for pkg in "${pkgs[@]}"; do
+    status="$("$DPKG_QUERY" -W -f='${Status}' "$pkg" 2>/dev/null)" || status=""
+    [[ "$status" == "install ok installed" ]] || need+=("$pkg")
+done
 
-echo "מתקין: ${pkgs[*]}"
-if ! out="$(env DEBIAN_FRONTEND=noninteractive "$APT" install -y -qq "${pkgs[@]}" 2>&1)"; then
-    printf '%s\n' "$out" | tail -n 5
-    echo "apt-get install נכשל: $(printf '%s\n' "$out" | grep -v '^\s*$' | tail -n 1)${net_note:+ · $net_note}"
-    exit 3
+if [[ ${#need[@]} -gt 0 ]]; then
+    # רשימות עדכניות של המקורות שהמערכת כבר מכירה (המאגר המקומי) — לא מוסיפים מקור.
+    upd_note=""
+    upd_out="$(env DEBIAN_FRONTEND=noninteractive "$APT" update -qq -o Acquire::Retries=0 2>&1)" \
+        || upd_note="apt-get update נכשל: $(printf '%s\n' "$upd_out" | grep -v '^\s*$' | tail -n 1)"
+    [[ -z "$upd_note" ]] || echo "$upd_note"
+    echo "מתקין (מהמאגר המקומי): ${need[*]}"
+    if ! out="$(env DEBIAN_FRONTEND=noninteractive "$APT" install -y -qq "${need[@]}" 2>&1)"; then
+        printf '%s\n' "$out" | tail -n 5
+        echo "apt-get install נכשל: $(printf '%s\n' "$out" | grep -v '^\s*$' | tail -n 1)${upd_note:+ · $upd_note}"
+        exit 3
+    fi
 fi
 
 missing=()

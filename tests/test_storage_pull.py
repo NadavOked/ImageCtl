@@ -17,7 +17,7 @@ import pytest
 pytest.importorskip("OpenSSL", reason="pyOpenSSL נדרש ל-mTLS הבין-שרתי (#740)")
 
 from conftest import MANIFEST_256, PARTITION_BYTES, write_image
-from server import (db, interserver_api, interserver_auth, storage_client,
+from server import (db, disk_reserve, interserver_api, interserver_auth, storage_client,
                     storage_nodes, storage_transfer)
 from server.images import ImageLibrary
 
@@ -500,7 +500,7 @@ def _pull_with_free(server, paired, monkeypatch, free):
     def fake_free(path):
         if isinstance(free, Exception):
             raise free
-        return free
+        return free() if callable(free) else free
 
     monkeypatch.setattr(storage_transfer, "_free_bytes", fake_free)
     admin = server["admin"]
@@ -510,9 +510,12 @@ def _pull_with_free(server, paired, monkeypatch, free):
 
 
 def _pull_need(already=0):
-    return 3 * len(PARTITION_BYTES) - already + storage_transfer.PULL_FREE_SPACE_MARGIN
+    # ‏#1737: ועוד הרזרבה למערכת (`disk_reserve`).
+    return (3 * len(PARTITION_BYTES) - already + storage_transfer.PULL_FREE_SPACE_MARGIN
+            + disk_reserve.SYSTEM_RESERVE_BYTES)
 
 
+@pytest.mark.system_reserve   # #1737: the real 10GiB (conftest _host_free_space)
 def test_pull_refused_up_front_when_free_space_is_one_byte_short(
         server, secondary, paired, monkeypatch):
     write_image(secondary["root"], PULL3)
@@ -526,6 +529,7 @@ def test_pull_refused_up_front_when_free_space_is_one_byte_short(
     assert PULL3_ID not in server["ctx"].library.scan()
 
 
+@pytest.mark.system_reserve   # #1737: the real 10GiB (conftest _host_free_space)
 def test_pull_proceeds_when_free_space_is_exactly_enough(
         server, secondary, paired, monkeypatch):
     write_image(secondary["root"], PULL3)
@@ -534,6 +538,7 @@ def test_pull_proceeds_when_free_space_is_exactly_enough(
     assert PULL3_ID in server["ctx"].library.scan()
 
 
+@pytest.mark.system_reserve   # #1737: the real 10GiB (conftest _host_free_space)
 def test_pull_resume_needs_only_the_remainder(server, secondary, paired, monkeypatch):
     """בחידוש, מה שכבר ב-``.incoming`` כבר תפוס — דרישת המקום המלאה הייתה
     חוסמת בדיוק את החידוש שחוסך את ההורדה מחדש."""
@@ -559,6 +564,26 @@ def test_pull_fails_when_free_space_cannot_be_read(
     assert not (_incoming(server) / PULL3_ID).exists()
 
 
+@pytest.mark.system_reserve   # #1737: the real 10GiB (conftest _host_free_space)
+def test_pull_stops_at_the_system_reserve_when_the_disk_fills_mid_transfer(
+        server, secondary, paired, monkeypatch):
+    """‏#1737: הבדיקה המוקדמת עברה, ואז הדיסק התמלא (קליטה במקביל). ההורדה נעצרת
+    ברזרבה, בשמה — לא ממשיכה עד ENOSPC, והאימג' לא נכנס לספרייה."""
+    write_image(secondary["root"], PULL3)
+    calls = {"n": 0}
+
+    def shrinking():
+        calls["n"] += 1
+        return _pull_need() if calls["n"] == 1 else disk_reserve.SYSTEM_RESERVE_BYTES - 1
+
+    monkeypatch.setattr(disk_reserve, "STREAM_CHECK_EVERY", 1)
+    row = _pull_with_free(server, paired, monkeypatch, shrinking)
+    assert row["state"] == "failed", row
+    assert "נעצרה" in row["error"] and "נשמרים למערכת" in row["error"], row["error"]
+    assert calls["n"] >= 2
+    assert PULL3_ID not in server["ctx"].library.scan()
+
+
 def test_pull_fails_when_secondary_reports_no_size(
         server, secondary, paired, monkeypatch):
     write_image(secondary["root"], PULL3)
@@ -572,3 +597,47 @@ def test_pull_fails_when_secondary_reports_no_size(
     assert row["state"] == "failed", row
     assert "size_bytes" in row["error"]
     assert not (_incoming(server) / PULL3_ID).exists()
+
+
+# --- #1340: מניפסט של משני שנפרץ אינו קובע איפה הראשי כותב ---------------------
+
+@pytest.mark.parametrize("evil", ["../../escape.bin", "../escape.bin", "sub/p1.bin"])
+def test_secondary_manifest_cannot_write_outside_incoming(
+        server, secondary, paired, monkeypatch, evil):
+    """משני שנפרץ (סניף) מחזיר מניפסט ש-``file`` בו יוצא מ-``.incoming``.
+    הראשי רץ כ-root ו-``/etc`` ב-``ReadWritePaths`` — כתיבה כזו היא הרצת קוד
+    בראשי. ה-sha256 נבדק רק **אחרי** הכתיבה ומנקה רק את ``.incoming``, ולכן
+    השומר חייב לשבת לפני ``get_stream``: אף קובץ אינו נפתח מחוץ ל-``.incoming``,
+    וההעברה נכשלת בגלוי."""
+    write_image(secondary["root"], PULL)
+    real_get_json = storage_client.PinnedMTLSClient.get_json
+
+    def tampered(self, path, token, *a, **kw):
+        answer = real_get_json(self, path, token, *a, **kw)
+        if path.endswith("/manifest") and isinstance(answer, dict):
+            answer = json.loads(json.dumps(answer))
+            answer["partitions"][0]["file"] = evil
+        return answer
+
+    dests: list[Path] = []
+    real_stream = storage_client.PinnedMTLSClient.get_stream
+
+    def recording(self, path, token, dest, **kw):
+        dests.append(Path(dest))
+        return real_stream(self, path, token, dest, **kw)
+
+    monkeypatch.setattr(storage_client.PinnedMTLSClient, "get_json", tampered)
+    monkeypatch.setattr(storage_client.PinnedMTLSClient, "get_stream", recording)
+    admin = server["admin"]
+    resp = admin.post(f"/api/console/storage-nodes/{paired}/pull",
+                      json={"image_id": PULL_ID})
+    assert resp.status_code == 200, resp.text
+    row = _wait(admin, paired, resp.json()["id"])
+    assert row["state"] == "failed", row
+    incoming = (_incoming(server) / PULL_ID).resolve()
+    outside = [d for d in dests if d.resolve().parent != incoming]
+    assert not outside, f"נכתב מחוץ ל-.incoming: {outside}"
+    root = Path(server["ctx"].library.root)
+    assert not (root / "escape.bin").exists()
+    assert not (root.parent / "escape.bin").exists()
+    assert PULL_ID not in server["ctx"].library.scan()

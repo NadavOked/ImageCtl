@@ -58,6 +58,10 @@ firstboot_from_answers() {
     argv+=(--console-host "$servers_if" --storage-role "$role")
     [[ "$role" == secondary ]] && argv+=(--primary-url "$primary")
     argv+=(--admin-user "$(answers_get admin_user)" --admin-pass-fd 3)
+    # #1447: the zone chosen on the screen becomes the server's setting -- else
+    # the server's start would bring the OS back to the default. An answers
+    # file from an older ISO has none: the default, as before.
+    if [[ -n "$(answers_get timezone)" ]]; then argv+=(--timezone "$(answers_get timezone)"); fi
     # answers.secret is `admin_pass=<value>` (interfaces.md); setup-boot-server
     # reads fd 3 as the bare password. Feeding it the whole file made the
     # admin password literally "admin_pass=..." (ESXi, 21/09) -- the value

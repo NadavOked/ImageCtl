@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from test_json_escape import BUSYBOX, bb, source_line
 from native import requires_native
 
@@ -48,7 +50,10 @@ def _validate(tmp_path: Path, rows: list[str]) -> tuple[str, str]:
         + f'manifest_plan() {{ cat "{plan.as_posix()}"; }}\n'
         'blockdev() { echo 500118192; }\n'
         'json_get() { [ "$1" = manifest.json ] && echo 11111111-2222-3333-4444-555555555555; }\n'
-        f'sgdisk() {{ echo "$*" > "{calls.as_posix()}"; }}\n'
+        # ‏#1545: וגודל הקובץ שעליו רצה ההדמיה (הארגומנט האחרון). ‏ls -ln ולא
+        # wc -c: ‏wc של busybox קורא את כל 256GB של הקובץ הדליל, בייט-בייט.
+        f'sgdisk() {{ echo "$*" > "{calls.as_posix()}"; for _l; do :; done; '
+        f'ls -ln "$_l" > "{calls.as_posix()}.size"; }}\n'
         'if validate_restore_plan sda manifest.json; then echo OK; else echo "FAIL $PLAN_ERROR"; fi\n'
     )
     out = bb(tmp_path, body).strip()
@@ -58,7 +63,13 @@ def _validate(tmp_path: Path, rows: list[str]) -> tuple[str, str]:
 def test_a_windows_plan_with_msr_passes_and_sgdisk_sees_the_real_disk(tmp_path):
     out, args = _validate(tmp_path, ROWS)
     assert out == "OK", out
-    assert args.endswith(f" {(tmp_path / 'dev').as_posix()}/sda"), args                       # ‏#1418: לא /dev/sgdisk
+    # ‏#1418: לא /dev/sgdisk. ‏#1545: וגם לא הדיסק החי — קובץ דליל בגודלו (500118192
+    # סקטורים): טבלה ישנה פגומה על הדיסק גורמת ל-sgdisk לצאת 2 על כל תוכנית
+    disk = tmp_path / "run" / "preflight.disk"
+    assert args.endswith(f" {disk.as_posix()}"), args
+    listed = (tmp_path / "sgdisk.args.size").read_text().split()
+    assert listed[4] == str(500118192 * 512), listed   # הגודל מ-blockdev --getsz של הדיסק
+    assert not disk.exists(), "קובץ ההדמיה נשאר ב-tmpfs"
     assert "-U 11111111-2222-3333-4444-555555555555" in args       # ‏#1418: המניפסט, לא "--pretend"
     assert "-n 2:206848:" in args and f"-t 2:{MSR}" in args        # ‏#1419: MSR נשאר בטבלה
     assert "-A 1:=:0x8000000000000000" in args
@@ -71,14 +82,14 @@ def test_a_file_name_with_a_path_separator_is_still_rejected(tmp_path):
     for bad in ("../p3.img.zst", "sub\\p3.img.zst", ""):
         rows = ROWS[:2] + [ROWS[2].replace("p3.img.zst", bad)]
         out, args = _validate_in(tmp_path, bad, rows)
-        assert out == "FAIL תוכנית השחזור פגומה — הדיסק לא שונה", (bad, out)
+        assert out == "FAIL תוכנית השחזור פגומה (מחיצה 3: קובץ או sha256 חסרים או לא חוקיים) — הדיסק לא שונה", (bad, out)
         assert args == "", "sgdisk רץ על תוכנית שנדחתה"
 
 
 def test_an_unknown_filesystem_is_still_rejected(tmp_path):
     rows = ROWS[:2] + [ROWS[2].replace("|ntfs|", "|xfs|")]
     out, args = _validate(tmp_path, rows)
-    assert out == "FAIL תוכנית השחזור פגומה — הדיסק לא שונה", out
+    assert out == "FAIL תוכנית השחזור פגומה (מחיצה 3: מערכת קבצים לא מוכרת) — הדיסק לא שונה", out
     assert args == ""
 
 
@@ -99,7 +110,7 @@ def test_partitions_out_of_disk_order_pass_and_a_real_overlap_is_rejected(tmp_pa
     assert out == "OK", out
     overlap = ROWS[:2] + [ROWS[2].replace("|239616|", "|206848|")]   # על MSR
     out, args = _validate_in(tmp_path, "overlap", overlap)
-    assert out == "FAIL תוכנית השחזור פגומה — הדיסק לא שונה", out
+    assert out == "FAIL תוכנית השחזור פגומה (מחיצה 3: חופפת למחיצה אחרת) — הדיסק לא שונה", out
     assert args == ""
 
 
@@ -117,4 +128,48 @@ def test_a_local_clone_plan_and_a_swap_partition_pass_without_a_stream_file(tmp_
                 ROWS[2].replace(f"p3.img.zst|{SHA}", "|"),                  # ntfs בלי קובץ
                 ROWS[2].replace(f"p3.img.zst|{SHA}", "local:../p3|")):
         out, args = _validate_in(tmp_path, bad, ROWS[:2] + [bad])
-        assert out == "FAIL תוכנית השחזור פגומה — הדיסק לא שונה", (bad, out)
+        assert out == "FAIL תוכנית השחזור פגומה (מחיצה 3: קובץ או sha256 חסרים או לא חוקיים) — הדיסק לא שונה", (bad, out)
+
+
+#: ‏#1435: כל כלל של השער — השורה ששוברת אותו, והסיבה שהטכנאי רואה.
+RULES = [
+    ("fields", ROWS[2] + "|x|y", "מחיצה 3: מספר שדות שגוי (13)"),
+    ("dup", ROWS[2].replace("3|", "2|", 1), "מחיצה 2: מספר המחיצה אינו חוקי או כפול"),
+    ("type", ROWS[2].replace(BASIC, BASIC.lower()), "מחיצה 3: סוג ה-GPT אינו GUID חוקי"),
+    ("role", ROWS[2].replace("|windows|", "|games|"), "מחיצה 3: תפקיד לא מוכר"),
+    ("fs", ROWS[2].replace("|ntfs|", "|xfs|"), "מחיצה 3: מערכת קבצים לא מוכרת"),
+    ("geometry", ROWS[2].replace("|10737418240|", "|1000|"), "מחיצה 3: התחלה או גודל לא חוקיים"),
+    ("cap", ROWS[2].replace("|239616|", "|500000000|"), "מחיצה 3: חורגת מסוף הדיסק"),
+    ("overlap", ROWS[2].replace("|239616|", "|206848|"), "מחיצה 3: חופפת למחיצה אחרת"),
+    ("file", ROWS[2].replace(f"|{SHA}|", "|abc|"), "מחיצה 3: קובץ או sha256 חסרים או לא חוקיים"),
+    ("expandable", ROWS[2].replace("|true|", "|yes|"), "מחיצה 3: ערך expandable אינו true/false"),
+    ("twelve-fields", ROWS[2] + "|", None),                  # ‏12 שדות, ה-12 ריק — תקין
+    ("unique_guid", ROWS[2].replace("|true||", "|true|nope|"), "מחיצה 3: ה-GUID הייחודי אינו חוקי"),
+    ("uuid", ROWS[2] + "BAD", "מחיצה 3: ה-UUID של מערכת הקבצים אינו חוקי"),
+    ("attrs", ROWS[2] + "|12", "מחיצה 3: מאפייני ה-GPT אינם חוקיים"),
+]
+
+
+@pytest.mark.parametrize("tag,row,why", RULES, ids=[r[0] for r in RULES])
+def test_a_rejected_plan_names_the_partition_and_the_rule(tmp_path, tag, row, why):
+    """‏#1435: שלושה באגים שונים (#1420, ‏#1428, ‏#1433) הגיעו למעבדה באותה
+    הודעה בדיוק, וכל אחד עלה שעה של חפירה. ההודעה נוקבת עכשיו במחיצה
+    ובכלל שהכשיל אותה."""
+    out, args = _validate_in(tmp_path, tag, ROWS[:2] + [row])
+    if why is None:
+        assert out == "OK", out
+        return
+    assert out == f"FAIL תוכנית השחזור פגומה ({why}) — הדיסק לא שונה", out
+    assert args == "", "sgdisk רץ על תוכנית שנדחתה"
+
+
+def test_every_rule_says_something_different():
+    reasons = [why.split(": ", 1)[1] for _tag, _row, why in RULES if why]
+    assert len(set(reasons)) == len(reasons)
+
+
+def test_a_row_whose_index_is_not_a_number_is_named_by_its_line(tmp_path):
+    """מספר מחיצה שאינו מספר אינו נדפס כמו שהוא — הוא הגיע מהמניפסט, ואולי
+    עם תווי בקרה. השורה בתוכנית נקובה במקומו."""
+    out, _ = _validate_in(tmp_path, "nan", ROWS[:2] + [ROWS[2].replace("3|", "x\x1b|", 1)])
+    assert out == "FAIL תוכנית השחזור פגומה (שורה 3: מספר המחיצה אינו חוקי או כפול) — הדיסק לא שונה", out

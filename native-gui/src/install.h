@@ -18,6 +18,7 @@ typedef struct {
 #define HIT_INSTALL_BOOT_LOCAL     1104
 #define HIT_INSTALL_TECHNICAL      1105
 #define HIT_INSTALL_CANCEL_REBOOT  1106
+#define HIT_INSTALL_TIMEZONE       1107   /* #1447 */
 #define HIT_INSTALL_DISK_BASE      1120
 
 void install_demo(App *a, int view);

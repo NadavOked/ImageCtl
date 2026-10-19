@@ -162,6 +162,34 @@ def test_logout_and_revocation_remove_the_session(net, presence_clock):
     assert [s["user"] for s in net["admin"].get("/api/console/sessions").json()] == ["noc"]
 
 
+def test_logout_revokes_a_copied_cookie_and_only_that_one(net, presence_clock, monkeypatch):
+    """‏#1633: logout מחק רק את העוגייה בדפדפן. העוגייה חסרת-מצב, ולכן עותק
+    שנגנב לפני היציאה נשאר תקף עד 12 שעות אחריה. אחרי התיקון השרת דוחה את
+    העותק — ורק אותו: כניסה אחרת של אותו משתמש (דפדפן שני) נשארת מחוברת.
+
+    הכניסה השנייה מוזזת בחמש שניות: אין nonce בעוגייה, ושתי כניסות של אותו
+    משתמש באותה שנייה מקבלות עוגייה זהה — ו-logout של אחת מבטל את שתיהן."""
+    import time
+    from types import SimpleNamespace
+
+    from server import auth
+    stolen = net["admin2"].cookies.get(auth.COOKIE_NAME)
+    assert stolen
+    later = time.time() + 5
+    monkeypatch.setattr(auth, "time", SimpleNamespace(time=lambda: later))
+    other = TestClient(net["app"])
+    assert other.post("/api/console/login",
+                      json={"username": "noc2", "password": "admin-pass-456"}).status_code == 200
+    attacker = TestClient(net["app"])
+    attacker.cookies.set(auth.COOKIE_NAME, stolen)
+    assert attacker.get("/api/console/me").status_code == 200, "העותק תקף לפני היציאה"
+
+    assert net["admin2"].post("/api/console/logout").status_code == 200
+    assert attacker.get("/api/console/me").status_code == 401, "עותק העוגייה עדיין תקף אחרי logout"
+    assert other.get("/api/console/me").status_code == 200, "logout ניתק גם דפדפן אחר של המשתמש"
+    assert auth.check(net["conn"], stolen) is None
+
+
 # --- leases ---------------------------------------------------------------------
 
 

@@ -76,12 +76,13 @@ static Rgb soft_of(const Theme *t, int lvl) {
     return lvl == 2 ? t->danger_soft : lvl == 1 ? t->warning_soft : t->success_soft;
 }
 
-/* What the chip says, by the #872 rule (smart_level): failed_last red, fail
- * (and an old agent's warn) orange -- a question comes before writing --
- * the rest green, unchecked said in words. */
+/* What the chip says, by the #1580 rule (smart_level, Nadav 17/10): fail red
+ * (written only after the red button; no answer skips), failed_last and an old
+ * agent's warn orange -- a question comes before writing -- the rest green. */
 static const char *chip_he(const char *smart) {
     if (!strcmp(smart, "passed")) return RLM "SMART תקין";   /* RLM: a Latin-first label stays RTL */
     if (!strcmp(smart, "failed_last")) return "נכשל בשיכפול הקודם";
+    if (!strcmp(smart, "fail")) return "SMART תקול";
     if (smart_level(smart) == 1) return "אזהרת SMART";
     return RLM "SMART לא נבדק";
 }
@@ -90,13 +91,15 @@ static const char *chip_he(const char *smart) {
  * ever health_failed (smart.sh smart_classify); failed_last carries the
  * server's cause (#874, the console's FAILURE_CAUSE_HE words). */
 static const char *reason_he(const IdleDisk *d) {
-    /* #1366 (Nadav 13/10): fail is what stops an HP BIOS on "press F1" -- orange, cloned */
+    /* #1366: fail is what stops an HP BIOS on "press F1"; #1580 (17/10): red */
     if (!strcmp(d->smart, "fail"))
-        return !strcmp(d->cause, "pending_sectors") ? "ה-BIOS יעצור ב-F1 — SMART: סקטורים ממתינים (197)"
+        return !strcmp(d->cause, "readonly") ? smart_reason_text(d->cause)   /* #1742 */
+             : !strcmp(d->cause, "pending_sectors") ? "ה-BIOS יעצור ב-F1 — SMART: סקטורים ממתינים (197)"
              : !strcmp(d->cause, "uncorrectable") ? "ה-BIOS יעצור ב-F1 — SMART: סקטורים שלא ניתנים לתיקון (198)"
              : "ה-BIOS יעצור ב-F1 — SMART: בדיקת הבריאות נכשלה";
     if (!strcmp(d->smart, "failed_last"))
-        return !strcmp(d->cause, "cable") ? "סיבה: כבל/חריץ" : !strcmp(d->cause, "disk") ? "סיבה: הדיסק" : "סיבה: לא סווגה";
+        return !strcmp(d->cause, "cable") ? "סיבה: כבל/חריץ" : !strcmp(d->cause, "disk") ? "סיבה: הדיסק"
+             : !strcmp(d->cause, "readonly") ? "סיבה: הדיסק במצב קריאה בלבד" : "סיבה: לא סווג";   /* #1742 */
     return NULL;
 }
 

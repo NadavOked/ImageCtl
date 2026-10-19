@@ -103,6 +103,20 @@ def test_writes_are_admin_only(server, paired):
     assert resp.status_code == 403
 
 
+@pytest.mark.parametrize("path", ["/room", "/room/close"])
+def test_secondary_round_control_is_admin_only_on_a_primary(server, secondary, paired, path):
+    """הנתיבים החדשים אינם משנים את שער הכניסה: deploy=403, משני=409,
+    ובשני המצבים המשני המרוחק אינו נשאל."""
+    from server import db                                      # noqa: PLC0415
+    url = f"/api/console/storage-nodes/{paired}/console{path}"
+    before = _untouched(server, paired)
+    assert server["deploy"].post(url, json={}).status_code == 403
+    db.set_setting(server["ctx"].conn, storage_nodes.ROLE_KEY, "secondary")
+    assert server["admin"].post(url, json={}).status_code == 409
+    assert _untouched(server, paired) == before
+    assert _journal(secondary["conn"]) == []
+
+
 def test_writes_go_only_from_a_primary(server, secondary, paired):
     """שרת שאינו standalone אינו מנהל ילדים — 409, והמשני לא נשאל (ההיררכיה חד-כיוונית)."""
     from server import db                                      # noqa: PLC0415
@@ -231,15 +245,27 @@ def test_run_console_write_rechecks_the_allowlist_and_the_cap():
     assert interserver_api.run_console_write(object(), "POST", "/users", "", "p", big)[0] == 413
 
 
+@pytest.mark.parametrize(("method", "path", "allowed"), [
+    ("POST", "/room", True), ("POST", "/room/close", True),
+    ("GET", "/room", False), ("PUT", "/room", False),
+    ("POST", "/room/start", False), ("POST", "/room/wake", False),
+    ("POST", "/room/answer", False), ("POST", "/room/poweroff", False),
+    ("POST", "/room/close/extra", False), ("POST", "/monitor/aa:bb/power", False),
+])
+def test_only_open_and_stop_are_added_to_the_secondary_room_write_allowlist(method, path, allowed):
+    assert interserver_api.console_write_allowed(method, path) is allowed
+
+
 # --- הגדרות -----------------------------------------------------------------------
 
 def test_a_setting_is_written_on_the_secondary_not_the_primary(server, secondary, paired):
     from server.db import get_setting                          # noqa: PLC0415
-    resp = _write(server, paired, "POST", "/settings", {"server_name": "haifa-1"})
+    # נדב 17/10: שם השרת הוא שם המארח ואינו הגדרה — הטסט כותב הגדרה רגילה.
+    resp = _write(server, paired, "POST", "/settings", {"session_wait_seconds": "420"})
     assert resp.status_code == 200, resp.text
-    assert get_setting(secondary["conn"], "server_name") == "haifa-1"
-    assert get_setting(server["ctx"].conn, "server_name") != "haifa-1"
-    assert ("primary:noc", "server_name=haifa-1") in _journal(secondary["conn"], "setting_change")
+    assert get_setting(secondary["conn"], "session_wait_seconds") == "420"
+    assert get_setting(server["ctx"].conn, "session_wait_seconds") != "420"
+    assert ("primary:noc", "session_wait_seconds=420") in _journal(secondary["conn"], "setting_change")
     assert _journal(secondary["conn"])[-1] == ("primary:noc", "POST /settings → 200")
     assert "POST /settings → 200" in _journal(server["ctx"].conn)[-1][1]
 

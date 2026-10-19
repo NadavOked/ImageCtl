@@ -115,12 +115,15 @@ test('every page of the secondary has the primary\'s tabs and cards — same nam
       assert.ok(tabs.length >= 2, `${page}: the primary page has tabs (${JSON.stringify(tabs)})`);
     }
     assert.ok(cardsOf(first).length + tabs.length > 0 || /class="obj/.test(first), `${page}: something was drawn`);
-    for (let i = 0; i < Math.max(1, tabs.length); i++) {
+    // נדב 18/10: הלשונית "שרתי משנה" בהגדרות קיימת בראשי בלבד — בהקשר שרת משנה היא אינה קיימת כלל.
+    const count = page === 'settings' ? 1 : Math.max(1, tabs.length);
+    if (page === 'settings') assert.equal(JSON.stringify(tabs), JSON.stringify(['כללי', 'שרתי משנה']), 'settings: the primary has the secondaries tab');
+    for (let i = 0; i < count; i++) {
       const p = setup(both());
       const s = setup(both());
       const primary = await draw(p, page, i, false);
       const secondary = await draw(s, page, i, true);
-      assert.equal(JSON.stringify(tabsOf(secondary)), JSON.stringify(tabsOf(primary)), `${page} tab ${i}: tabs`);
+      assert.equal(JSON.stringify(tabsOf(secondary)), JSON.stringify(page === 'settings' ? [] : tabsOf(primary)), `${page} tab ${i}: tabs`);
       assert.equal(JSON.stringify(cardsOf(secondary)), JSON.stringify(cardsOf(primary)), `${page} tab ${i}: cards`);
       assert.doesNotMatch(secondary, /לא הצלחתי לצייר את העמוד/, `${page} tab ${i} rendered`);
     }
@@ -320,7 +323,7 @@ test('#1008: a request to the primary for the secondaries that failed is one "ל
   f['/storage-nodes'] = new Error('500');
   const t = setup(f);
   const html = await draw(t, 'monitor', 0, false);
-  assert.match(html, /data-unread>.*?השרתים המשניים.*?לא נקרא/);
+  assert.match(html, /data-unread>.*?שרתי המשנה.*?לא נקרא/);
 });
 
 test('#1008: in the secondary\'s context the monitor is that server\'s list only — no branches are asked', async () => {

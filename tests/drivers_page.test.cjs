@@ -157,10 +157,10 @@ test('memberRow shows the staging outcome — and failed is visible, not silent'
   const {run} = setup({});
   const row = (drivers) => run(`memberRow(${JSON.stringify({mac: 'b4:2e:99:07:1a:c4', state: 'done', done: true,
     bytes_written: 1, bytes_total: 1, disks: [], drivers})}, {})`);
-  assert.match(row({state: 'staged', packages: ['intel-nic']}), /דרייברים הונחו: intel-nic/);
+  assert.match(row({state: 'staged', packages: ['intel-nic']}), /דרייברים הונחו \(חבילה אחת\): intel-nic/);
   assert.match(row({state: 'no_match', packages: []}), /אין חבילה תואמת/);
   assert.match(row({state: 'failed', packages: [], error: 'sha256 mismatch: x <script>'}),
-    /דרייברים לא הונחו: sha256 mismatch: x &lt;script&gt;/);
+    /class="notice warn">דרייברים לא הונחו — sha256 mismatch: x &lt;script&gt;\. המחשב יעלה בלי הדרייברים של הדגם\./);   // #1331: orange, the restore is done
   assert.doesNotMatch(row({state: 'skipped', packages: [], reason: 'not_windows'}), /דרייברים/);
   assert.doesNotMatch(row(null), /דרייברים/, 'null = the stage did not report');
 });
